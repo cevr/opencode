@@ -1231,3 +1231,105 @@ describe("Tool", () => {
     }),
   )
 })
+
+describe("Tool runtime", () => {
+  // A runtime tool that runs one call through its context and reports what it saw.
+  const runtime = (name: string, input: unknown): Info => ({
+    name: "kernel",
+    description: "Run code",
+    input: Schema.Struct({ text: Schema.String }),
+    output: Schema.Struct({ text: Schema.String }),
+    execute: (_, context) =>
+      Effect.gen(function* () {
+        const access = context.runtime
+        if (!access) return { output: { text: "no runtime" }, content: "no runtime" }
+        const listed = access.tools.map((tool) => tool.name).join(",")
+        const result = yield* access.call(name, input).pipe(
+          Effect.map((value) => JSON.stringify(value.output)),
+          Effect.catchTag("Tool.Error", (error) => Effect.succeed(`error: ${error.message}`)),
+        )
+        return { output: { text: `${listed} | ${result}` }, content: result }
+      }),
+  })
+
+  it.effect("is the only tool the model sees while it is active", () =>
+    Effect.gen(function* () {
+      const service = yield* Tool.Service
+      yield* transform(service, { echo: make() }, { codemode: false })
+      yield* transform(service, { constant: constant("mcp") })
+      yield* service.transform((editor) =>
+        editor.add({ ...runtime("echo", { text: "x" }), options: { codemode: false, runtime: true } }),
+      )
+      const snapshot = yield* service.snapshot()
+      expect(snapshot.definitions.map((tool) => tool.name)).toEqual(["kernel"])
+      expect(snapshot.codeModeCatalog).toBeUndefined()
+      // Denying the runtime tool gives the agent its usual tools back.
+      expect(
+        (yield* toolDefinitions(service, [{ action: "kernel", resource: "*", effect: "deny" }])).map(
+          (tool) => tool.name,
+        ),
+      ).toEqual(["echo", "execute"])
+    }),
+  )
+
+  it.effect("reaches every other active tool through the registry hooks", () =>
+    Effect.gen(function* () {
+      const service = yield* Tool.Service
+      const hooks = yield* PluginHooks.Service
+      const seen: string[] = []
+      yield* transform(service, { echo: make() }, { codemode: false })
+      yield* transform(service, { constant: constant("mcp") })
+      yield* service.transform((editor) =>
+        editor.add({ ...runtime("echo", { text: "asked" }), options: { codemode: false, runtime: true } }),
+      )
+      yield* hooks.register("tool", "execute.before", (event) =>
+        Effect.sync(() => {
+          seen.push(`before ${event.tool} ${event.id}`)
+          if (event.tool === "echo") event.input = { text: "rewritten" }
+        }),
+      )
+      yield* hooks.register("tool", "execute.after", (event) =>
+        Effect.sync(() => void seen.push(`after ${event.tool}`)),
+      )
+      const snapshot = yield* service.snapshot()
+      const result = yield* snapshot.execute(call("kernel"))
+      expect(result.output).toEqual({ text: 'constant,echo | {"text":"rewritten"}' })
+      // The inner call runs under the runtime call's id, as a Code Mode call does.
+      expect(seen).toEqual(["before kernel call-kernel", "before echo call-kernel", "after echo", "after kernel"])
+    }),
+  )
+
+  it.effect("offers the description its describe writes from the tools it reaches", () =>
+    Effect.gen(function* () {
+      const service = yield* Tool.Service
+      yield* transform(service, { echo: make() }, { codemode: false })
+      yield* service.transform((editor) =>
+        editor.add({
+          ...runtime("echo", { text: "x" }),
+          options: {
+            codemode: false,
+            runtime: {
+              describe: (tools) =>
+                `Run code. ${tools.map((tool) => `${tool.name}(${Object.keys(tool.input.properties ?? {}).join(", ")})`).join("; ")}`,
+            },
+          },
+        }),
+      )
+      const definitions = yield* toolDefinitions(service)
+      expect(definitions.map((tool) => [tool.name, tool.description])).toEqual([["kernel", "Run code. echo(text)"]])
+    }),
+  )
+
+  it.effect("leaves wholly denied tools out of reach", () =>
+    Effect.gen(function* () {
+      const service = yield* Tool.Service
+      yield* transform(service, { echo: make() }, { codemode: false })
+      yield* service.transform((editor) =>
+        editor.add({ ...runtime("echo", { text: "asked" }), options: { codemode: false, runtime: true } }),
+      )
+      const snapshot = yield* service.snapshot([{ action: "echo", resource: "*", effect: "deny" }])
+      const result = yield* snapshot.execute(call("kernel"))
+      expect(result.output).toEqual({ text: ' | error: No tool named "echo" is available to this runtime.' })
+    }),
+  )
+})

@@ -1,5 +1,5 @@
 export { CallID, Error } from "@opencode/schema/tool"
-export type { Metadata, Options, Result } from "@opencode/schema/tool"
+export type { Metadata, Options, Result, RuntimeTool } from "@opencode/schema/tool"
 
 import { Tool } from "@opencode/schema/tool"
 import type { Agent } from "@opencode/schema/agent"
@@ -8,9 +8,17 @@ import type { SessionMessage } from "@opencode/schema/session-message"
 import type { Types } from "effect"
 import type { Hooks, Transform } from "./registration.js"
 
-export interface ToolContext extends Omit<Tool.Context, "progress"> {
+export interface ToolContext extends Omit<Tool.Context, "progress" | "runtime"> {
   readonly signal: AbortSignal
   readonly progress: (update: Tool.Metadata) => Promise<void>
+  /** The agent's other tools, present while this tool is its runtime (`options.runtime`). */
+  readonly runtime?: ToolRuntime
+}
+
+export interface ToolRuntime {
+  readonly tools: ReadonlyArray<Tool.RuntimeTool>
+  /** Runs one tool through the registry's hooks with this call's context; rejects with the tool's error. */
+  readonly call: (name: string, input: unknown) => Promise<Tool.Result>
 }
 
 export type Info<

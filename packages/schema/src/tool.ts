@@ -17,6 +17,25 @@ export interface Context {
   readonly messageID: SessionMessage.ID
   readonly id: CallID
   readonly progress: (update: Metadata) => Effect.Effect<void>
+  /** The agent's other tools, present while this tool is its runtime (`options.runtime`). */
+  readonly runtime?: Runtime
+}
+
+/** What a runtime tool reaches: every other tool the agent may use, called as the registry calls it. */
+export interface Runtime {
+  readonly tools: ReadonlyArray<RuntimeTool>
+  /**
+   * Runs one tool by name with this call's context, through the `execute.before` and
+   * `execute.after` hooks, as a direct or Code Mode call runs. The tool asks for its
+   * own permissions; a wholly denied tool is not listed and cannot be called.
+   */
+  readonly call: (name: string, input: unknown) => Effect.Effect<Result, Error>
+}
+
+export interface RuntimeTool {
+  readonly name: string
+  readonly description: string
+  readonly input: JsonSchema.JsonSchema
 }
 
 export interface Namespace {
@@ -27,6 +46,13 @@ export interface Namespace {
 interface BaseOptions {
   readonly namespace?: string
   readonly permission?: string
+  /**
+   * Makes this tool the agent's runtime: while it is active, the model is offered this
+   * tool alone (no other direct tool and no Code Mode `execute`), and its context
+   * carries `runtime` to reach the rest. Deny the tool to give an agent its usual tools.
+   * `describe` writes the description the model is offered from the tools it reaches.
+   */
+  readonly runtime?: boolean | { readonly describe: (tools: ReadonlyArray<RuntimeTool>) => string }
 }
 
 export type Options = BaseOptions &

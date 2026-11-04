@@ -136,3 +136,58 @@ it.live("Promise tools that rethrow a decline attach it to the tool failure", ()
     expect(Option.getOrUndefined(Exit.findErrorOption(exit))?.error).toBe(declined)
   }),
 )
+
+it.live("A Promise runtime tool calls other tools through the hooks, and a refusal rejects its call", () =>
+  Effect.gen(function* () {
+    const plugins = yield* Plugin.Service
+    const tools = yield* Tool.Service
+    yield* PluginPromise.fromPromise({
+      id: "runtime-tools",
+      async setup(context) {
+        await context.tool.hook("execute.before", (event) => {
+          if (event.tool === "guarded") throw new Error("guarded refuses")
+        })
+        await context.tool.transform((editor) => {
+          editor.add({
+            name: "echo",
+            description: "Echo",
+            input: { type: "object", properties: { text: { type: "string" } }, additionalProperties: false },
+            options: { codemode: false },
+            execute: async (input) => ({ content: `echo ${(input as { text?: string }).text}` }),
+          })
+          editor.add({
+            name: "guarded",
+            description: "Refused by a hook",
+            input: { type: "object", properties: {}, additionalProperties: false },
+            options: { codemode: false },
+            execute: async () => ({ content: "ran" }),
+          })
+          editor.add({
+            name: "kernel",
+            description: "Run code",
+            input: { type: "object", properties: {}, additionalProperties: false },
+            options: { codemode: false, runtime: true },
+            execute: async (_input, context) => {
+              const runtime = context.runtime!
+              const echoed = await runtime.call("echo", { text: "hi" })
+              const refused = await runtime.call("guarded", {}).then(
+                () => "ran",
+                (error: unknown) => (error instanceof Error ? error.message : String(error)),
+              )
+              return {
+                content: `${runtime.tools.map((tool) => tool.name).join(",")} | ${JSON.stringify(echoed.content)} | ${refused}`,
+              }
+            },
+          })
+        })
+      },
+    }).effect(yield* PluginHost.make(plugins))
+
+    const snapshot = yield* tools.snapshot()
+    expect(snapshot.definitions.map((tool) => tool.name)).toEqual(["kernel"])
+    const exit = yield* execute(snapshot, "kernel")
+    expect(Exit.isSuccess(exit) && exit.value.content).toEqual([
+      { type: "text", text: 'echo,guarded | [{"type":"text","text":"echo hi"}] | guarded refuses' },
+    ])
+  }),
+)

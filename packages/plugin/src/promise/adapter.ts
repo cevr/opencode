@@ -9,7 +9,7 @@ import { define } from "../effect/plugin.js"
 import type { ToolFailures, ToolHooks } from "../effect/tool.js"
 import { AssertInput } from "../permission.js"
 import type { Plugin } from "./plugin.js"
-import type { Info } from "./tool.js"
+import type { Info, ToolRuntime } from "./tool.js"
 import type { RpcDomain, RpcHandlers } from "./rpc.js"
 
 type HostRegistration = { readonly dispose: Effect.Effect<void> }
@@ -254,11 +254,12 @@ export function fromPromise(plugin: Plugin) {
 
         const promiseExecutor =
           (execute: Tool.Info["execute"]): Info["execute"] =>
-          (input, context) =>
+          (input, { runtime: promised, ...context }) =>
             Effect.runPromiseWith(runtime)(
               execute(input, {
                 ...context,
                 progress: (update) => Effect.promise(() => context.progress(update)),
+                ...(promised === undefined ? {} : { runtime: effectRuntime(promised) }),
               }),
               { signal: context.signal },
             )
@@ -690,13 +691,27 @@ const toolHook: {
   "execute.after": (run) => Effect.promise(run),
 }
 
-const executePromiseTool = (tool: Info, input: any, context: Tool.Context) =>
+// A Promise runtime handed to an Effect tool, the reverse of executePromiseTool's.
+const effectRuntime = (runtime: ToolRuntime): Tool.Runtime => ({
+  tools: runtime.tools,
+  call: (name, input) => Effect.tryPromise({ try: () => runtime.call(name, input), catch: toolError }),
+})
+
+const executePromiseTool = (tool: Info, input: any, { runtime, ...context }: Tool.Context) =>
   Effect.tryPromise({
     try: (signal) =>
       tool.execute(input, {
         ...context,
         signal,
         progress: (update) => Effect.runPromise(context.progress(update), { signal }),
+        ...(runtime === undefined
+          ? {}
+          : {
+              runtime: {
+                tools: runtime.tools,
+                call: (name: string, value: unknown) => Effect.runPromise(runtime.call(name, value), { signal }),
+              },
+            }),
       }),
     catch: toolError,
   })

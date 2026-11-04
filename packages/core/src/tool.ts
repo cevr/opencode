@@ -1,6 +1,6 @@
 export * as Tool from "./tool.js"
 export { CallID, Content, Error, FileContent, TextContent } from "@opencode/schema/tool"
-export type { Context, Metadata, Namespace, Options, Result } from "@opencode/schema/tool"
+export type { Context, Metadata, Namespace, Options, Result, Runtime, RuntimeTool } from "@opencode/schema/tool"
 
 import { ToolDefinition, type ToolCall } from "@opencode/ai/effect"
 import type { CodeMode } from "@opencode/codemode"
@@ -258,6 +258,70 @@ const layer = Layer.effect(
       },
     })
 
+    const callContext = (input: Parameters<Snapshot["execute"]>[0]): Tool.Context => ({
+      sessionID: input.sessionID,
+      agent: input.agent,
+      messageID: input.messageID,
+      id: Tool.CallID.make(input.call.id),
+      progress: input.progress ?? (() => Effect.void),
+    })
+
+    // A runtime tool is the model's only tool; every other active tool is reached through it.
+    const runtimeSnapshot = (
+      data: Data,
+      active: ReadonlyMap<string, Tool.Info>,
+      [runtimeName, runtimeTool]: readonly [string, Tool.Info],
+    ): Snapshot => {
+      const reachable = new Map(Array.from(active).filter(([name]) => name !== runtimeName))
+      const tools = Array.from(reachable.keys())
+        .sort()
+        .map((name) => {
+          const value = data.definitions.get(name)!
+          return { name, description: value.description, input: value.inputSchema }
+        })
+      const access = ({ runtime: _, ...context }: Tool.Context): Tool.Runtime => ({
+        tools,
+        call: (name, input) => {
+          const tool = reachable.get(name)
+          if (!tool)
+            return Effect.fail(new Tool.Error({ message: `No tool named "${name}" is available to this runtime.` }))
+          // Progress belongs to the runtime call's own row, as in Code Mode.
+          const inner: Tool.Context = { ...context, progress: () => Effect.void }
+          return beforeExecute(name, input, inner).pipe(
+            Effect.flatMap((event) => executeTool(tool, name, event.input, inner)),
+          )
+        },
+      })
+      const offered = data.definitions.get(runtimeName)!
+      const describe =
+        typeof runtimeTool.options?.runtime === "object" ? runtimeTool.options.runtime.describe : undefined
+      return {
+        definitions: [
+          describe
+            ? ToolDefinition.make({
+                name: offered.name,
+                description: describe(tools),
+                inputSchema: offered.inputSchema,
+                ...(offered.outputSchema === undefined ? {} : { outputSchema: offered.outputSchema }),
+              })
+            : offered,
+        ],
+        execute: Effect.fnUntraced(function* (input: Parameters<Snapshot["execute"]>[0]) {
+          const context = callContext(input)
+          const event = yield* beforeExecute(input.call.name, input.call.input, context)
+          const requested = input.definitions?.get(event.tool)
+          if (!requested && input.definitions && event.tool === runtimeName)
+            return yield* new Tool.Error({ message: `Tool is not available for this request: ${event.tool}` })
+          const name = requested?.name ?? event.tool
+          if (name === runtimeName)
+            return yield* executeTool(runtimeTool, name, event.input, { ...context, runtime: access(context) })
+          return yield* new Tool.Error({
+            message: `No tool named "${name}" is currently available. Please use a tool from the available tool list.`,
+          })
+        }),
+      }
+    }
+
     return Service.of({
       transform: state.transform,
       reload: state.reload,
@@ -271,6 +335,8 @@ const layer = Layer.effect(
             if (whollyDisabled(tool.options?.permission ?? name, rules)) continue
             active.set(name, tool)
           }
+          const runtime = Array.from(active).find(([, tool]) => isRuntime(tool))
+          if (runtime) return runtimeSnapshot(data, active, runtime)
           const codeModeEnabled = !whollyDisabled("execute", rules)
           // Without Code Mode its tools would be unreachable, so expose them as direct tools instead.
           const direct = codeModeEnabled
@@ -314,13 +380,7 @@ const layer = Layer.effect(
               ...(codeModeDefinition ? [codeModeDefinition] : []),
             ],
             execute: Effect.fnUntraced(function* (input: Parameters<Snapshot["execute"]>[0]) {
-              const context: Tool.Context = {
-                sessionID: input.sessionID,
-                agent: input.agent,
-                messageID: input.messageID,
-                id: Tool.CallID.make(input.call.id),
-                progress: input.progress ?? (() => Effect.void),
-              }
+              const context = callContext(input)
               const event = yield* beforeExecute(input.call.name, input.call.input, context)
               const requested = input.definitions?.get(event.tool)
               // Preserve session context removal and alias resolution, now after the repair hook.
@@ -377,6 +437,8 @@ const layer = Layer.effect(
     })
   }),
 )
+
+const isRuntime = (tool: Tool.Info) => tool.options?.runtime === true || typeof tool.options?.runtime === "object"
 
 const whollyDisabled = (action: string, rules: Permission.Ruleset) => {
   const rule = rules.findLast((rule) => Wildcard.match(action, rule.action))
