@@ -7,7 +7,7 @@ import { createSignal } from "solid-js"
 import { Dock, ModeHint, Splash, TopBar } from "./chrome"
 import { ToolRow } from "./tools"
 import { AssistantText, ReasoningLine, UserBand } from "./transcript"
-import { type Detail } from "./view"
+import { nextDetail, type Detail } from "./view"
 
 // Blank rows between transcript rows. Overview packs everything; Details
 // and All keep a blank line around prose but stack tool calls tight.
@@ -22,7 +22,7 @@ export function rowGap(detail: Detail, row: { kind: TranscriptRowKind; previous?
 export default Plugin.define({
   id: "opencode.prime",
   setup(context) {
-    const [detail] = createSignal<Detail>("details")
+    const [detail, setDetail] = createSignal<Detail>("details")
 
     context.ui.layout({
       inset: 1,
@@ -64,5 +64,21 @@ export default Plugin.define({
       replace: "prompt.footer",
       render: (input) => <Dock context={context} sessionID={input.sessionID} />,
     })
+
+    context.keymap.layer(() => ({
+      mode: "global",
+      priority: 100,
+      commands: [
+        {
+          id: "prime.detail.cycle",
+          title: "Cycle transcript detail",
+          group: "Session",
+          bind: "ctrl+o",
+          run() {
+            setDetail(nextDetail)
+          },
+        },
+      ],
+    }))
   },
 })
