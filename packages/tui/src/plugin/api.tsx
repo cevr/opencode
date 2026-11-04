@@ -34,7 +34,7 @@ import { useSessionTabs } from "../context/session-tabs"
 import { useOptionalPanel } from "../context/panel"
 import { useLocal } from "../context/local"
 import { abbreviateHome } from "../util/path-format"
-import { PluginMarkdown } from "./render"
+import { PluginCode, PluginMarkdown } from "./render"
 
 export type Dispose = () => Promise<void>
 
@@ -329,6 +329,7 @@ export function createPluginContext(input: {
         return registration("tools", name)
       },
       Markdown: PluginMarkdown,
+      Code: PluginCode,
     },
   }
   return context

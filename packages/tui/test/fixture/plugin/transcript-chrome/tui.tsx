@@ -1,7 +1,8 @@
 import { Plugin } from "@opencode/plugin/tui"
 
-// Claims the transcript's chrome: a header, a first row, the user prompt and
-// the turn footer, with tight rows, a one-cell inset and a band composer.
+// Claims the transcript's chrome: a header, a first row, the user prompt, the
+// turn footer and a last row drawing host code, with tight rows, a one-cell
+// inset and a band composer.
 export default Plugin.define({
   id: "fixture.transcript-chrome",
   setup(context) {
@@ -25,6 +26,15 @@ export default Plugin.define({
     context.ui.slot({
       replace: "session.message.assistant.footer",
       render: (input) => <text>Footer for {input.messageID}</text>,
+    })
+    context.ui.slot({
+      append: "session.transcript.end",
+      render: () => (
+        <box flexDirection="row">
+          <text>Transcript end: </text>
+          <context.ui.Code content="const answer = 42" path="answer.ts" />
+        </box>
+      ),
     })
   },
 })

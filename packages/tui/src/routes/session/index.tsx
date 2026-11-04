@@ -1557,6 +1557,11 @@ export function Session(props: {
                     />
                   )}
                 </For>
+                <Show when={visibleEnd() === rows.length}>
+                  <box flexShrink={0}>
+                    <Slot path="session.transcript.end" input={{ sessionID: route.sessionID }} />
+                  </box>
+                </Show>
                 <BackgroundToolHint messages={messages()} />
                 <Show when={session()?.revert?.messageID}>
                   <RevertMessage

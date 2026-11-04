@@ -251,6 +251,8 @@ export interface SlotMap {
   readonly "session.header": { readonly sessionID: string }
   /** First child of the transcript scroll area. Empty by default. */
   readonly "session.transcript.start": { readonly sessionID: string }
+  /** After the newest transcript row, while it is in view. Empty by default. */
+  readonly "session.transcript.end": { readonly sessionID: string }
   /** A user prompt in the transcript. */
   readonly "session.message.user": SessionMessageInput
   /** The agent, model and duration line closing an assistant turn. */
@@ -595,6 +597,17 @@ export type MarkdownProps = {
   readonly bg?: RGBA
 }
 
+/** Host source code, highlighted with the current theme's syntax. */
+export type CodeProps = {
+  readonly content: string
+  /** The file the code comes from; its extension picks the highlighter. */
+  readonly path?: string
+  /** Text colour for unhighlighted code. The theme's base text by default. */
+  readonly fg?: RGBA
+  /** Background. Transparent by default. */
+  readonly bg?: RGBA
+}
+
 export interface UI {
   readonly dialog: Dialog
   readonly toast: Toast
@@ -658,6 +671,8 @@ export interface UI {
   readonly tool: (name: string, render: ToolRender) => () => void
   /** The host's markdown renderer, for text that should read like the transcript. */
   readonly Markdown: (props: MarkdownProps) => JSX.Element
+  /** The host's code renderer, for source that should read like the transcript's. */
+  readonly Code: (props: CodeProps) => JSX.Element
 }
 
 export interface Context {

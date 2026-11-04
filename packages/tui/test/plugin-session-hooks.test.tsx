@@ -161,7 +161,7 @@ test("the user's transcript config wins over a plugin's defaults", async () => {
   }
 })
 
-test("a plugin claims the transcript's header, first row, user prompt and turn footer", async () => {
+test("a plugin claims the transcript's header, first and last rows, user prompt and turn footer", async () => {
   await using app = await openSession("transcript-chrome")
   await app.ready
   const frame = await waitForHighlightedFrame(
@@ -171,9 +171,13 @@ test("a plugin claims the transcript's header, first row, user prompt and turn f
       frame.includes("Transcript start claimed") &&
       frame.includes("User band: Fix the parser") &&
       frame.includes("The parser is fixed.") &&
-      frame.includes("Footer for msg_reply"),
+      frame.includes("Footer for msg_reply") &&
+      frame.includes("Transcript end: const answer = 42"),
   )
   const lines = frame.split("\n")
+  // The last row follows the newest turn's footer, one row gap apart; ui.Code draws the source as written.
+  const end = lines.findIndex((line) => line.includes("Transcript end"))
+  expect(end).toBeGreaterThan(lines.findIndex((line) => line.includes("Footer for msg_reply")))
   // inset 1 starts rows one cell in.
   expect(lines.find((line) => line.includes("User band"))).toStartWith(" User band")
   // rowGap 0 for the footer puts it straight under the reply; every other row keeps one blank row above it.

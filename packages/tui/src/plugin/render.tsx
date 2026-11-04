@@ -14,7 +14,7 @@ import {
   type ParentProps,
 } from "solid-js"
 import { isShallowEqual } from "remeda"
-import type { MarkdownProps, SlotMap, SlotPath } from "@opencode/plugin/tui/context"
+import type { CodeProps, MarkdownProps, SlotMap, SlotPath } from "@opencode/plugin/tui/context"
 import type { SlotRender } from "./api"
 import { contains, emptySlotted, type Claim } from "./structure"
 import { useConfig } from "../config"
@@ -22,6 +22,7 @@ import { useRoute } from "../context/route"
 import { useTheme, useThemes } from "../context/theme"
 import { useToast } from "../ui/toast"
 import { errorMessage } from "../util/error"
+import { filetype } from "../util/filetype"
 import { usePlugin } from "./context"
 
 // Contain render-time plugin crashes: a throwing slot or route must not take
@@ -194,6 +195,23 @@ export function PluginMarkdown(props: MarkdownProps) {
       conceal={(config.data.session?.markdown ?? "rendered") === "rendered"}
       fg={props.fg ?? theme.markdown.text}
       bg={props.bg ?? theme.background.base}
+    />
+  )
+}
+
+// ui.Code: source highlighted like the transcript's, by the path's language.
+export function PluginCode(props: CodeProps) {
+  const theme = useTheme()
+  const { currentSyntax: syntax } = useThemes()
+  return (
+    <code
+      conceal={false}
+      wrapMode="none"
+      content={props.content}
+      filetype={filetype(props.path)}
+      syntaxStyle={syntax()}
+      fg={props.fg ?? theme.text.base}
+      bg={props.bg}
     />
   )
 }
