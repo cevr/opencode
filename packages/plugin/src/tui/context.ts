@@ -568,9 +568,14 @@ export interface Layout {
   /**
    * The composer's chrome. "bar" is the host default: a left accent bar and a
    * metadata row. "band" is a full-width band on raised.base with a blank row
-   * above and below the editor and the given prefix before it.
+   * above and below the editor and the given prefix before it. "rail" is a bare
+   * left rail in the text colour (the warning colour in shell mode) with no
+   * fill, padding or metadata row.
    */
-  readonly composer?: { readonly chrome: "bar" } | { readonly chrome: "band"; readonly prefix?: string }
+  readonly composer?:
+    | { readonly chrome: "bar" }
+    | { readonly chrome: "band"; readonly prefix?: string }
+    | { readonly chrome: "rail" }
   /**
    * Transcript defaults for users who have not chosen. The user's `session`
    * config wins over them. Fields merge across plugins one by one.

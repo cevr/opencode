@@ -1,3 +1,4 @@
+import { rgbToHex } from "@opentui/core"
 import { expect, test } from "bun:test"
 import { createAppFixture } from "./fixture/app"
 import { copyPlugin } from "./fixture/fixture"
@@ -187,4 +188,20 @@ test("a plugin claims the transcript's header, first and last rows, user prompt 
   expect(lines[user - 1]?.trim()).toBe("")
   // The band composer puts its prefix before the editor. Its bar is still drawn, in the band's colour.
   expect(lines.some((line) => line.startsWith(" ┃> "))).toBe(true)
+})
+
+test("a plugin picks the bare rail composer", async () => {
+  await using app = await openSession("composer-rail")
+  await app.ready
+  const frame = await waitForHighlightedFrame(app, (frame) => frame.includes("The parser is fixed."))
+  const lines = frame.split("\n")
+  // An empty draft is a bare rail: no fill, padding or metadata row before the footer.
+  const rail = lines.findLastIndex((line) => /^ *┃ *$/.test(line))
+  expect(rail).toBeGreaterThan(-1)
+  expect(lines[rail + 1]).toContain("ctrl+p commands")
+  // The rail is drawn in the text colour, as the reply's prose is in the default theme.
+  const spans = app.captureSpans().lines
+  const color = (y: number, text: string) => spans[y]!.spans.find((span) => span.text.includes(text))!.fg
+  const prose = spans.findIndex((line) => line.spans.some((span) => span.text.includes("is fixed")))
+  expect(rgbToHex(color(rail, "┃"))).toBe(rgbToHex(color(prose, "is fixed")))
 })

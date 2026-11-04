@@ -1683,9 +1683,18 @@ export function Prompt(props: PromptProps) {
     const composer = plugins.layout().composer
     return composer?.chrome === "band" ? { prefix: composer.prefix } : undefined
   })
+  // "rail" chrome: a bare left rail in the text colour (the warning colour in
+  // shell mode), no fill, padding or metadata row.
+  const rail = createMemo(() => plugins.layout().composer?.chrome === "rail")
+  const bare = () => band() !== undefined || rail()
   const promptBg = createMemo(() =>
-    band() ? theme.background.raised.base : theme.decrease(theme.background.raised.base),
+    rail()
+      ? RGBA.fromInts(0, 0, 0, 0)
+      : band()
+        ? theme.background.raised.base
+        : theme.decrease(theme.background.raised.base),
   )
+  const railColor = () => (store.mode === "shell" ? theme.text.feedback.warning.base : theme.text.base)
 
   return (
     <>
@@ -1696,7 +1705,7 @@ export function Prompt(props: PromptProps) {
           // Workaround: an OpenTUI box keeps its border once styled (setting
           // `border` back to false leaves the bar drawn), so the band paints the
           // bar in the band colour instead of removing it.
-          borderColor={band() ? promptBg() : borderHighlight()}
+          borderColor={band() ? promptBg() : rail() ? railColor() : borderHighlight()}
           backgroundColor={band() ? promptBg() : undefined}
           customBorderChars={{
             ...SplitBorder.customBorderChars,
@@ -1704,9 +1713,9 @@ export function Prompt(props: PromptProps) {
           }}
         >
           <box
-            paddingLeft={band() ? 0 : dimensions().width < 44 ? 1 : 2}
+            paddingLeft={band() ? 0 : rail() ? 1 : dimensions().width < 44 ? 1 : 2}
             paddingRight={dimensions().width < 44 ? 1 : 2}
-            paddingTop={1}
+            paddingTop={rail() ? 0 : 1}
             paddingBottom={band() ? 1 : 0}
             flexShrink={0}
             backgroundColor={promptBg()}
@@ -1878,7 +1887,7 @@ export function Prompt(props: PromptProps) {
               paddingTop={1}
               gap={1}
               justifyContent="space-between"
-              visible={!band()}
+              visible={!bare()}
             >
               <PromptMetadataRow
                 mode={store.mode}
@@ -1899,7 +1908,7 @@ export function Prompt(props: PromptProps) {
         </box>
         <box
           height={1}
-          visible={!band()}
+          visible={!bare()}
           border={["left"]}
           borderColor={borderHighlight()}
           customBorderChars={{
