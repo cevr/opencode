@@ -177,7 +177,7 @@ export function TextPart(props: {
 }) {
   const ctx = use()
   const theme = useTheme()
-  const { currentSyntax: syntax } = useThemes()
+  const { currentMarkdownSyntax: syntax } = useThemes()
   const plugins = usePlugin()
   return (
     <Show when={props.part.text.trim()}>

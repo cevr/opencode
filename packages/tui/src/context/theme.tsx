@@ -91,6 +91,8 @@ type Themes = {
   all: typeof allThemes
   has: typeof hasTheme
   currentSyntax: Accessor<SyntaxStyle>
+  /** The syntax style for markdown: unscoped text in the theme's `markdown.text`. */
+  currentMarkdownSyntax: Accessor<SyntaxStyle>
   mode: Accessor<"dark" | "light">
   modes: Accessor<readonly ("dark" | "light")[]>
   supports(mode: "dark" | "light"): boolean
@@ -317,10 +319,14 @@ const themeContext = createSimpleContext({
     createEffect(() => renderer.setBackgroundColor(tokens().background.base))
 
     const currentSyntax = createSyntaxStyleMemo(() => generateSyntax(tokens(), renderer.nativeScene))
+    const currentMarkdownSyntax = createSyntaxStyleMemo(() =>
+      generateSyntax(tokens(), renderer.nativeScene, tokens().markdown.text),
+    )
     const service: Themes = {
       current,
       currentTokens: tokens,
       currentSyntax,
+      currentMarkdownSyntax,
       get selected() {
         return store.active
       },

@@ -94,7 +94,7 @@ export function Answer(props: {
   const clipboard = useClipboard()
   const theme = useTheme().surface("dialog")
   const overlay = useTheme()
-  const syntax = useThemes().currentSyntax
+  const syntax = useThemes().currentMarkdownSyntax
   const config = useConfig().data
   const dimensions = useTerminalDimensions()
   const maxHeight = createMemo(() => Math.max(8, Math.floor(dimensions().height * 0.6)))
