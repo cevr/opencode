@@ -4,6 +4,7 @@
 import { Plugin } from "@opencode/plugin/tui"
 import type { TranscriptRowKind } from "@opencode/plugin/tui/context"
 import { createSignal } from "solid-js"
+import { ToolRow } from "./tools"
 import { AssistantText, ReasoningLine, UserBand } from "./transcript"
 import { type Detail } from "./view"
 
@@ -38,6 +39,10 @@ export default Plugin.define({
     context.ui.slot({
       replace: "session.part.text",
       render: (input) => <AssistantText context={context} {...input} />,
+    })
+    context.ui.slot({
+      replace: "session.part.tool",
+      render: (input) => <ToolRow context={context} {...input} detail={detail} />,
     })
     // Prime closes a turn with nothing: no agent, model or duration line.
     context.ui.slot({ replace: "session.message.assistant.footer", render: () => null })
