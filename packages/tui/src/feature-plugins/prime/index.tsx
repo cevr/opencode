@@ -4,7 +4,7 @@
 import { Plugin } from "@opencode/plugin/tui"
 import type { TranscriptRowKind } from "@opencode/plugin/tui/context"
 import { createSignal } from "solid-js"
-import { Splash, TopBar } from "./chrome"
+import { Dock, ModeHint, Splash, TopBar } from "./chrome"
 import { ToolRow } from "./tools"
 import { AssistantText, ReasoningLine, UserBand } from "./transcript"
 import { type Detail } from "./view"
@@ -26,6 +26,7 @@ export default Plugin.define({
 
     context.ui.layout({
       inset: 1,
+      composer: { chrome: "band", prefix: "> " },
       rowGap: (row) => rowGap(detail(), row),
     })
 
@@ -55,5 +56,13 @@ export default Plugin.define({
     })
     // Prime closes a turn with nothing: no agent, model or duration line.
     context.ui.slot({ replace: "session.message.assistant.footer", render: () => null })
+    context.ui.slot({
+      append: "session.composer.top",
+      render: () => <ModeHint context={context} detail={detail} />,
+    })
+    context.ui.slot({
+      replace: "prompt.footer",
+      render: (input) => <Dock context={context} sessionID={input.sessionID} />,
+    })
   },
 })
