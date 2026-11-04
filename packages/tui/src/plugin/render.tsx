@@ -181,7 +181,7 @@ export function PluginTool(props: ParentProps<{ readonly input: SlotMap["session
 export function PluginMarkdown(props: MarkdownProps) {
   const plugins = usePlugin()
   const theme = useTheme()
-  const { currentSyntax: syntax } = useThemes()
+  const { currentMarkdownSyntax: syntax } = useThemes()
   const config = useConfig()
   return (
     <markdown

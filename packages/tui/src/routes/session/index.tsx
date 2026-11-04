@@ -2219,7 +2219,7 @@ function SessionSkillMessage(props: { message: Extract<SessionMessageInfo, { typ
 function CompactionMessage(props: { message: Extract<SessionMessageInfo, { type: "compaction" }> }) {
   const ctx = use()
   const theme = useTheme()
-  const { currentSyntax: syntax } = useThemes()
+  const { currentMarkdownSyntax: syntax } = useThemes()
   const plugins = usePlugin()
   const status = () => props.message.status
   const cancelled = () => props.message.status === "failed" && props.message.error.type === "aborted"

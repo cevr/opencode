@@ -1,14 +1,19 @@
 import { SyntaxStyle, type NativeResourceOwner, type RGBA, type ThemeTokenStyle } from "@opentui/core"
 import type { ResolvedThemeTokens } from "./index.js"
 
-export function generateSyntax(theme: ResolvedThemeTokens, owner: NativeResourceOwner) {
+/**
+ * The syntax style for code and prompts. `text` styles unscoped text; markdown passes the theme's
+ * `markdown.text`, since OpenTUI paints paragraph text with the `default` and `spell` rules (tree-sitter
+ * tags inline prose `spell`), not its `fg`.
+ */
+export function generateSyntax(theme: ResolvedThemeTokens, owner: NativeResourceOwner, text: RGBA = theme.text.base) {
   const step = 200
   const syntax = theme.syntax
   const markdown = theme.markdown
   const feedback = theme.text.feedback
 
   const rules = [
-    rule(["default"], theme.text.base),
+    rule(["default"], text),
     rule(["prompt"], theme.hue.accent[step]),
     rule(["extmark.file"], feedback.warning.base, { bold: true }),
     rule(["extmark.agent"], theme.categorical[0][step], { bold: true }),
@@ -67,7 +72,7 @@ export function generateSyntax(theme: ResolvedThemeTokens, owner: NativeResource
     }),
     rule(["markup.link.label"], markdown.linkText, { underline: true }),
     rule(["label"], markdown.linkText),
-    rule(["spell", "nospell"], theme.text.base),
+    rule(["spell", "nospell"], text),
     rule(["markup.underline"], theme.text.base, { underline: true }),
     rule(["comment.error"], feedback.error.base, { italic: true, bold: true }),
     rule(["comment.warning"], feedback.warning.base, { italic: true, bold: true }),
