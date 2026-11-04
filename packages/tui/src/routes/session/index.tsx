@@ -1685,7 +1685,11 @@ function transcriptRowKind(
 ): TranscriptRowKind {
   if (row.type === "group") return "group"
   if (row.type === "assistant-footer") return "footer"
-  if (row.type === "message") return message(row.messageID)?.type === "user" ? "user" : "other"
+  if (row.type === "message") {
+    const type = message(row.messageID)?.type
+    if (type === "user") return "user"
+    return type === "system" || type === "synthetic" ? "notice" : "other"
+  }
   if (row.type !== "part") return "other"
   const item = message(row.ref.messageID)
   if (item?.type !== "assistant") return "other"
@@ -2193,21 +2197,23 @@ function SessionNoticeMessageV2(props: { message: SessionMessageInfo }) {
         </InlineToolRow>
       }
     >
-      <box
-        marginLeft={3}
-        onMouseOver={() => childID() && setHover(true)}
-        onMouseOut={() => setHover(false)}
-        onMouseUp={() => {
-          if (renderer.getSelection()?.getSelectedText()) return
-          const id = childID()
-          if (id) navigate({ type: "session", sessionID: id })
-        }}
-      >
-        <text wrapMode="none">
-          <span style={{ fg: color() }}>{heading()}</span>
-          <span style={{ fg: theme.text.muted }}>{suffix()}</span>
-        </text>
-      </box>
+      <Slot path="session.message.completion" input={{ sessionID: ctx.sessionID, messageID: props.message.id }}>
+        <box
+          marginLeft={3}
+          onMouseOver={() => childID() && setHover(true)}
+          onMouseOut={() => setHover(false)}
+          onMouseUp={() => {
+            if (renderer.getSelection()?.getSelectedText()) return
+            const id = childID()
+            if (id) navigate({ type: "session", sessionID: id })
+          }}
+        >
+          <text wrapMode="none">
+            <span style={{ fg: color() }}>{heading()}</span>
+            <span style={{ fg: theme.text.muted }}>{suffix()}</span>
+          </text>
+        </box>
+      </Slot>
     </Show>
   )
 }

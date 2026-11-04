@@ -55,7 +55,7 @@ const goal = {
   updatedAt: 0,
 }
 
-async function openSession(plugin: string) {
+async function openSession(plugin: string, history: ReadonlyArray<unknown> = messages) {
   const fixture = await copyPlugin(plugin)
   const setup = await createAppFixture({
     width: 100,
@@ -65,7 +65,7 @@ async function openSession(plugin: string) {
     fetch: (url) => {
       if (url.pathname === "/api/session") return json({ data: [session], cursor: {} })
       if (url.pathname === `/api/session/${session.id}`) return json({ data: session })
-      if (url.pathname === `/api/session/${session.id}/message`) return json({ data: messages, cursor: {} })
+      if (url.pathname === `/api/session/${session.id}/message`) return json({ data: history, cursor: {} })
       if (/^\/api\/session\/[^/]+\/(inbox|permission)$/.test(url.pathname)) return json({ data: [] })
       if (url.pathname === "/api/model")
         return json({
@@ -204,4 +204,36 @@ test("a plugin picks the bare rail composer", async () => {
   const color = (y: number, text: string) => spans[y]!.spans.find((span) => span.text.includes(text))!.fg
   const prose = spans.findIndex((line) => line.spans.some((span) => span.text.includes("is fixed")))
   expect(rgbToHex(color(rail, "┃"))).toBe(rgbToHex(color(prose, "is fixed")))
+})
+
+test("a plugin claims completion notices, and layout rules see notices as their own kind", async () => {
+  const notice = (id: string, created: number, metadata: Record<string, unknown>, description: string) => ({
+    type: "synthetic",
+    id,
+    text: "Notice",
+    description,
+    metadata,
+    time: { created },
+  })
+  // Newest first, as the server pages them.
+  const history = [
+    notice("msg_goal", 6, { source: "goal" }, "Goal updated"),
+    notice("msg_done_b", 5, { source: "subagent", state: "completed", agent: "worker", childID: "ses_b" }, "Fix b"),
+    notice("msg_done_a", 4, { source: "subagent", state: "completed", agent: "worker", childID: "ses_a" }, "Fix a"),
+    ...messages,
+  ]
+  await using app = await openSession("completion-notice", history)
+  await app.ready
+  const frame = await waitForHighlightedFrame(
+    app,
+    (frame) => frame.includes("Completion claimed: msg_done_b") && frame.includes("Goal updated"),
+  )
+  const lines = frame.split("\n")
+  const first = lines.findIndex((line) => line.includes("Completion claimed: msg_done_a"))
+  // Each completion is the plugin's; notices after notices stack with no blank row between them.
+  expect(first).toBeGreaterThan(lines.findIndex((line) => line.includes("The parser is fixed.")))
+  expect(lines[first + 1]).toContain("Completion claimed: msg_done_b")
+  // Other notices keep the host's own row.
+  expect(lines[first + 2]).toContain("Goal updated")
+  expect(frame).not.toContain("Worker finished")
 })

@@ -257,6 +257,8 @@ export interface SlotMap {
   readonly "session.message.user": SessionMessageInput
   /** The agent, model and duration line closing an assistant turn. */
   readonly "session.message.assistant.footer": SessionMessageInput
+  /** A background subagent's or shell's completion notice (`↳ Subagent finished · …`). */
+  readonly "session.message.completion": SessionMessageInput
   readonly "session.part.text": SessionPartInput
   readonly "session.part.reasoning": SessionPartInput
   /** One tool call; `tool` is the canonical tool name (shell, patch, subagent, read, ...). */
@@ -553,7 +555,8 @@ export interface Keymap {
 }
 
 /** The kind of one transcript row, as layout rules see it. */
-export type TranscriptRowKind = "user" | "text" | "reasoning" | "tool" | "group" | "footer" | "other"
+/** A "notice" is a system or synthetic message: a completion, an instruction load, a goal update. */
+export type TranscriptRowKind = "user" | "text" | "reasoning" | "tool" | "group" | "footer" | "notice" | "other"
 
 /**
  * Host layout knobs a plugin may set. Every field is optional; an unset field
