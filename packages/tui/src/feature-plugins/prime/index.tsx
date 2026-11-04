@@ -4,6 +4,7 @@
 import { Plugin } from "@opencode/plugin/tui"
 import type { TranscriptRowKind } from "@opencode/plugin/tui/context"
 import { createSignal } from "solid-js"
+import { Splash, TopBar } from "./chrome"
 import { ToolRow } from "./tools"
 import { AssistantText, ReasoningLine, UserBand } from "./transcript"
 import { type Detail } from "./view"
@@ -28,6 +29,14 @@ export default Plugin.define({
       rowGap: (row) => rowGap(detail(), row),
     })
 
+    context.ui.slot({
+      append: "session.header",
+      render: (input) => <TopBar context={context} sessionID={input.sessionID} />,
+    })
+    context.ui.slot({
+      append: "session.transcript.start",
+      render: (input) => <Splash context={context} sessionID={input.sessionID} />,
+    })
     context.ui.slot({
       replace: "session.message.user",
       render: (input) => <UserBand context={context} sessionID={input.sessionID} messageID={input.messageID} />,
