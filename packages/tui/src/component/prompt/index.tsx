@@ -1693,8 +1693,9 @@ export function Prompt(props: PromptProps) {
         <box
           width="100%"
           border={["left"]}
-          // A box border cannot be dropped once styled, so the band paints its
-          // bar in the band colour instead.
+          // Workaround: an OpenTUI box keeps its border once styled (setting
+          // `border` back to false leaves the bar drawn), so the band paints the
+          // bar in the band colour instead of removing it.
           borderColor={band() ? promptBg() : borderHighlight()}
           backgroundColor={band() ? promptBg() : undefined}
           customBorderChars={{
