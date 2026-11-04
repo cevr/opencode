@@ -9,6 +9,7 @@ import SidebarTodo from "../feature-plugins/sidebar/todo"
 import DiffViewer from "../feature-plugins/system/diff-viewer"
 import Notifications from "../feature-plugins/system/notifications"
 import Plugins from "../feature-plugins/system/plugins"
+import Prime from "../feature-plugins/prime"
 import Storybook from "../feature-plugins/system/storybook"
 import Stats from "../feature-plugins/system/stats"
 import Latex from "@opencode/latex/plugin"
@@ -16,7 +17,7 @@ import Merman from "@opencode/merman/plugin"
 
 // Builtins listed here start disabled; a tui config `plugins` entry naming
 // the id enables them.
-export const optIn: ReadonlySet<string> = new Set<string>()
+export const optIn: ReadonlySet<string> = new Set<string>([Prime.id])
 
 export const builtins = [
   HomeFooter,
@@ -36,4 +37,5 @@ export const builtins = [
   // normal launches and register it only for OPENCODE_STORY runs.
   ...(process.env.OPENCODE_STORY ? [Storybook] : []),
   DiffViewer,
+  Prime,
 ]
