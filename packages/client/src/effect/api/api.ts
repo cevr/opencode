@@ -2529,7 +2529,10 @@ export interface ExperimentalApi<E = never> {
   }
 }
 
-export type ShellListInput = { readonly location?: { readonly directory?: string | undefined } | undefined }
+export type ShellListInput = {
+  readonly location?: { readonly directory?: string | undefined } | undefined
+  readonly exited?: boolean | undefined
+}
 export type ShellListOutput = { readonly location: Location.PublicRef; readonly data: ReadonlyArray<Shell.Info> }
 export type ShellListOperation<E = never> = (input?: ShellListInput) => Effect.Effect<ShellListOutput, E>
 
@@ -2567,6 +2570,13 @@ export type ShellOutputOutput = {
 }
 export type ShellOutputOperation<E = never> = (input: ShellOutputInput) => Effect.Effect<ShellOutputOutput, E>
 
+export type ShellKillInput = {
+  readonly id: Shell.ID
+  readonly location?: { readonly directory?: string | undefined } | undefined
+}
+export type ShellKillOutput = { readonly location: Location.PublicRef; readonly data: Shell.Info }
+export type ShellKillOperation<E = never> = (input: ShellKillInput) => Effect.Effect<ShellKillOutput, E>
+
 export type ShellRemoveInput = {
   readonly id: Shell.ID
   readonly location?: { readonly directory?: string | undefined } | undefined
@@ -2579,6 +2589,7 @@ export interface ShellApi<E = never> {
   readonly create: ShellCreateOperation<E>
   readonly get: ShellGetOperation<E>
   readonly output: ShellOutputOperation<E>
+  readonly kill: ShellKillOperation<E>
   readonly remove: ShellRemoveOperation<E>
 }
 

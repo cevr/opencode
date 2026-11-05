@@ -1,22 +1,30 @@
 import { Shell } from "@opencode/schema/shell"
 import { Location } from "@opencode/schema/location"
-import { Schema } from "effect"
+import { Schema, SchemaGetter } from "effect"
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/http-api"
 import { ShellNotFoundError } from "../errors.js"
 import { LocationQuery, locationQueryOpenApi } from "./location.js"
 
+const BooleanFromString = Schema.Literals(["true", "false"]).pipe(
+  Schema.decodeTo(Schema.Boolean, {
+    decode: SchemaGetter.transform((value) => value === "true"),
+    encode: SchemaGetter.transform((value): "true" | "false" => (value ? "true" : "false")),
+  }),
+)
+
 export const ShellGroup = HttpApiGroup.make("server.shell")
   .add(
     HttpApiEndpoint.get("shell.list", "/api/shell", {
-      query: LocationQuery,
+      query: Schema.Struct({ ...LocationQuery.fields, exited: BooleanFromString.pipe(Schema.optional) }),
       success: Location.response(Schema.Array(Shell.Info)),
     })
       .annotateMerge(locationQueryOpenApi)
       .annotateMerge(
         OpenApi.annotations({
           identifier: "shell.list",
-          summary: "List running shell commands",
-          description: "List currently running shell commands for a location. Exited commands are not included.",
+          summary: "List shell commands",
+          description:
+            "List currently running shell commands for a location. With exited=true, also the recently exited commands still retained, oldest first.",
         }),
       ),
   )
@@ -65,6 +73,23 @@ export const ShellGroup = HttpApiGroup.make("server.shell")
           identifier: "shell.output",
           summary: "Read shell output",
           description: "Page through captured combined output by absolute byte cursor.",
+        }),
+      ),
+  )
+  .add(
+    HttpApiEndpoint.post("shell.kill", "/api/shell/:id/kill", {
+      params: { id: Shell.ID },
+      query: LocationQuery,
+      success: Location.response(Shell.Info),
+      error: ShellNotFoundError,
+    })
+      .annotateMerge(locationQueryOpenApi)
+      .annotateMerge(
+        OpenApi.annotations({
+          identifier: "shell.kill",
+          summary: "Kill shell command",
+          description:
+            "End one running shell command: SIGTERM to its process group, then SIGKILL to what is left after a grace period. Its record and output stay readable. Returns its terminal state.",
         }),
       ),
   )

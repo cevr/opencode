@@ -2204,11 +2204,24 @@ test("refreshes references after updates", async () => {
 test("keeps shell state scoped to location", async () => {
   const events = createEventStream()
   const other = "/tmp/opencode/other"
-  let removed: URL | undefined
+  let killed: URL | undefined
   const calls = createFetch((url, request) => {
-    if (url.pathname === "/api/shell/sh_other" && request.method === "DELETE") {
-      removed = url
-      return new Response(null, { status: 204 })
+    if (url.pathname === "/api/shell/sh_other/kill" && request.method === "POST") {
+      killed = url
+      return json({
+        location: { directory: other, project: { id: "proj_test", directory: other } },
+        data: {
+          id: "sh_other",
+          status: "killed",
+          command: "pnpm dev",
+          cwd: other,
+          shell: "/bin/sh",
+          file: "/tmp/opencode-shell",
+          signal: "SIGTERM",
+          metadata: { sessionID: "ses_shared" },
+          time: { started: 1, completed: 2 },
+        },
+      })
     }
     if (url.pathname !== "/api/shell") return
     const requestDirectory = url.searchParams.get("location[directory]")
@@ -2282,9 +2295,9 @@ test("keeps shell state scoped to location", async () => {
     await app.waitForFrame((frame) => frame.includes("pnpm dev"))
     app.mockInput.pressArrow("down")
     app.mockInput.pressKey("d", { ctrl: true })
-    await wait(() => removed !== undefined)
-    expect(removed?.searchParams.get("location[directory]")).toBe(other)
-    expect(removed?.searchParams.has("location[workspace]")).toBe(false)
+    await wait(() => killed !== undefined)
+    expect(killed?.searchParams.get("location[directory]")).toBe(other)
+    expect(killed?.searchParams.has("location[workspace]")).toBe(false)
 
     events.emit({
       id: "evt_shell_created",

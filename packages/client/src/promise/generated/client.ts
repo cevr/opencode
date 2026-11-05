@@ -279,6 +279,8 @@ import type {
   ShellGetOutput,
   ShellOutputInput,
   ShellOutputOutput,
+  ShellKillInput,
+  ShellKillOutput,
   ShellRemoveInput,
   ShellRemoveOutput,
   ReferenceListInput,
@@ -2375,7 +2377,7 @@ export function make(options: ClientOptions) {
           {
             method: "GET",
             path: `/api/shell`,
-            query: { location: input?.["location"] },
+            query: { location: input?.["location"], exited: input?.["exited"] },
             successStatus: 200,
             declaredStatuses: [400, 401, 404],
             empty: false,
@@ -2418,6 +2420,18 @@ export function make(options: ClientOptions) {
             method: "GET",
             path: `/api/shell/${encodeURIComponent(input.id)}/output`,
             query: { location: input["location"], cursor: input["cursor"], limit: input["limit"] },
+            successStatus: 200,
+            declaredStatuses: [400, 401, 404],
+            empty: false,
+          },
+          requestOptions,
+        ),
+      kill: (input: ShellKillInput, requestOptions?: RequestOptions) =>
+        request<ShellKillOutput>(
+          {
+            method: "POST",
+            path: `/api/shell/${encodeURIComponent(input.id)}/kill`,
+            query: { location: input["location"] },
             successStatus: 200,
             declaredStatuses: [400, 401, 404],
             empty: false,

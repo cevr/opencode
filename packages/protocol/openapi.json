@@ -14114,6 +14114,22 @@
             "required": false,
             "style": "deepObject",
             "explode": true
+          },
+          {
+            "name": "exited",
+            "in": "query",
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": ["true", "false"]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "required": false
           }
         ],
         "security": [],
@@ -14172,8 +14188,8 @@
             }
           }
         },
-        "description": "List currently running shell commands for a location. Exited commands are not included.",
-        "summary": "List running shell commands"
+        "description": "List currently running shell commands for a location. With exited=true, also the recently exited commands still retained, oldest first.",
+        "summary": "List shell commands"
       },
       "post": {
         "tags": ["shell"],
@@ -14629,6 +14645,114 @@
         },
         "description": "Page through captured combined output by absolute byte cursor.",
         "summary": "Read shell output"
+      }
+    },
+    "/api/shell/{id}/kill": {
+      "post": {
+        "tags": ["shell"],
+        "operationId": "shell.kill",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "schema": {
+              "$ref": "#/components/schemas/Shell.ID"
+            },
+            "required": true
+          },
+          {
+            "name": "location",
+            "in": "query",
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "directory": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "required": false,
+            "style": "deepObject",
+            "explode": true
+          }
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "location": {
+                      "$ref": "#/components/schemas/Location.PublicRef"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/Shell.Info"
+                    }
+                  },
+                  "required": ["location", "data"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "InvalidRequestError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvalidRequestErrorEncoded"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedErrorEncoded"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "ShellNotFoundError | LocationNotFoundError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ShellNotFoundErrorEncoded"
+                    },
+                    {
+                      "$ref": "#/components/schemas/LocationNotFoundErrorEncoded"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "description": "End one running shell command: SIGTERM to its process group, then SIGKILL to what is left after a grace period. Its record and output stay readable. Returns its terminal state.",
+        "summary": "Kill shell command"
       }
     },
     "/api/reference": {
@@ -17457,6 +17581,11 @@
                 "type": "boolean"
               },
               "subagent_depth": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "shell_background_after": {
                 "type": "integer",
                 "minimum": 0,
                 "maximum": 9007199254740991

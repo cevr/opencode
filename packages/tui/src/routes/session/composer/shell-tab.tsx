@@ -101,7 +101,8 @@ export function ShellTab(props: { sessionID: string }) {
         run() {
           const entry = selectedEntry()
           if (!entry) return
-          void client.api.shell.remove({
+          // Kill keeps the record and output, so the agent and the output dialog can still read them.
+          void client.api.shell.kill({
             id: entry.id,
             location: { directory: entry.location.directory },
           })

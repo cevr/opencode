@@ -167,7 +167,7 @@ test("nests a method under client.experimental exactly when its route is experim
     "voice.models",
     "voice.session",
   ])
-  expect(Object.keys(client.shell)).toEqual(["list", "create", "get", "output", "remove"])
+  expect(Object.keys(client.shell)).toEqual(["list", "create", "get", "output", "kill", "remove"])
   expect(Object.keys(client.project)).toEqual(["list", "update"])
   expect(Object.keys(client.worktree)).toEqual(["list", "create", "remove", "refresh"])
 })
@@ -650,17 +650,22 @@ test("shell list and remove use the public HTTP contract", async () => {
       if (request.method === "DELETE") return new Response(null, { status: 204 })
       return Response.json({
         location: { directory: "/tmp/project", project: { id: "proj_test", directory: "/tmp/project" } },
-        data: [shell],
+        data: request.method === "POST" ? { ...shell, status: "killed" } : [shell],
       })
     },
   })
 
   const result = await client.shell.list({ location: { directory: "/tmp/project" } })
+  await client.shell.list({ exited: true })
+  const killed = await client.shell.kill({ id: shell.id })
   await client.shell.remove({ id: shell.id })
 
   expect(result.data).toEqual([shell])
+  expect(killed.data.status).toBe("killed")
   expect(requests).toEqual([
     { method: "GET", url: "http://localhost:3000/api/shell?location%5Bdirectory%5D=%2Ftmp%2Fproject" },
+    { method: "GET", url: "http://localhost:3000/api/shell?exited=true" },
+    { method: "POST", url: "http://localhost:3000/api/shell/sh_test/kill" },
     { method: "DELETE", url: "http://localhost:3000/api/shell/sh_test" },
   ])
 })

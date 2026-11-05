@@ -2506,6 +2506,7 @@ export type ConfigEntry =
           schedules?: boolean
           artifacts?: boolean
           subagent_depth?: number
+          shell_background_after?: number
           location_idle_timeout?: string | false
           policies?: Array<{
             action:
@@ -4648,7 +4649,10 @@ export type ExperimentalArtifactsViewInput = {
 
 export type ExperimentalArtifactsViewOutput = globalThis.Uint8Array
 
-export type ShellListInput = { readonly location?: { readonly directory?: string | undefined } | undefined }
+export type ShellListInput = {
+  readonly location?: { readonly directory?: string | undefined } | undefined
+  readonly exited?: boolean | undefined
+}
 
 export type ShellListOutput = { location: LocationPublicRef; data: Array<ShellInfo1> }
 
@@ -4680,6 +4684,13 @@ export type ShellOutputOutput = {
   location: LocationPublicRef
   data: { output: string; cursor: number; size: number; truncated: boolean }
 }
+
+export type ShellKillInput = {
+  readonly id: string
+  readonly location?: { readonly directory?: string | undefined } | undefined
+}
+
+export type ShellKillOutput = { location: LocationPublicRef; data: ShellInfo1 }
 
 export type ShellRemoveInput = {
   readonly id: string

@@ -277,6 +277,8 @@ import type {
   ShellGetOutput,
   ShellOutputInput,
   ShellOutputOutput,
+  ShellKillInput,
+  ShellKillOutput,
   ShellRemoveInput,
   ShellRemoveOutput,
   ReferenceListInput,
@@ -1742,7 +1744,9 @@ const adaptGroupExperimental = (raw: RawClient["server.experimental"]) => ({
 
 const EndpointShellList = (raw: RawClient["server.shell"]) => (input?: ShellListInput) =>
   preserveEffect<ShellListOutput>()(
-    raw["shell.list"]({ query: { location: input?.["location"] } }).pipe(Effect.mapError(mapClientError)),
+    raw["shell.list"]({ query: { location: input?.["location"], exited: input?.["exited"] } }).pipe(
+      Effect.mapError(mapClientError),
+    ),
   )
 
 const EndpointShellCreate = (raw: RawClient["server.shell"]) => (input: ShellCreateInput) =>
@@ -1768,6 +1772,13 @@ const EndpointShellOutput = (raw: RawClient["server.shell"]) => (input: ShellOut
     }).pipe(Effect.mapError(mapClientError)),
   )
 
+const EndpointShellKill = (raw: RawClient["server.shell"]) => (input: ShellKillInput) =>
+  preserveEffect<ShellKillOutput>()(
+    raw["shell.kill"]({ params: { id: input["id"] }, query: { location: input["location"] } }).pipe(
+      Effect.mapError(mapClientError),
+    ),
+  )
+
 const EndpointShellRemove = (raw: RawClient["server.shell"]) => (input: ShellRemoveInput) =>
   preserveEffect<ShellRemoveOutput>()(
     raw["shell.remove"]({ params: { id: input["id"] }, query: { location: input["location"] } }).pipe(
@@ -1780,6 +1791,7 @@ const adaptGroupShell = (raw: RawClient["server.shell"]) => ({
   create: EndpointShellCreate(raw),
   get: EndpointShellGet(raw),
   output: EndpointShellOutput(raw),
+  kill: EndpointShellKill(raw),
   remove: EndpointShellRemove(raw),
 })
 
