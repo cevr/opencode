@@ -16,7 +16,7 @@ import {
 import path from "path"
 import { stat } from "fs/promises"
 import { fileURLToPath } from "url"
-import type { Layout, Page, ToolRender } from "@opencode/plugin/tui/context"
+import type { AutocompleteSource, Layout, Page, ToolRender } from "@opencode/plugin/tui/context"
 import { Host } from "@opencode/plugin/host"
 import { resolveSlots, type Claim } from "./structure"
 import { createStore, produce, reconcile as reconcileStore, unwrap } from "solid-js/store"
@@ -73,6 +73,8 @@ type Value = {
   readonly layout: () => Layout
   /** The renderer for one canonical tool name; the last-enabled active plugin that registered one wins. */
   readonly tool: (name: string) => { readonly plugin: string; readonly render: ToolRender } | undefined
+  /** Composer popups by trigger character; the last-enabled active plugin that claimed one wins. */
+  readonly autocomplete: () => ReadonlyMap<string, AutocompleteSource>
   readonly activate: (id: string) => Promise<boolean>
   readonly deactivate: (id: string) => Promise<boolean>
 }
@@ -89,6 +91,7 @@ type Registration = {
   markdown: Record<string, MarkdownCodeBlockRenderer>
   layout: Record<string, Layout>
   tools: Record<string, ToolRender>
+  autocomplete: Record<string, AutocompleteSource>
   cleanups: Dispose[]
 }
 
@@ -160,6 +163,7 @@ export function PluginProvider(props: ParentProps<{ packages: PackageSource; dir
     setStore("registrations", id, "markdown", reconcileStore({}))
     setStore("registrations", id, "layout", reconcileStore({}))
     setStore("registrations", id, "tools", reconcileStore({}))
+    setStore("registrations", id, "autocomplete", reconcileStore({}))
   }
   // Registration-store key order is enable order, so later items win.
   const layout = createMemo<Layout>(() =>
@@ -183,6 +187,14 @@ export function PluginProvider(props: ParentProps<{ packages: PackageSource; dir
     }
     return result
   })
+  const autocomplete = createMemo(() => {
+    const result = new Map<string, AutocompleteSource>()
+    for (const registration of Object.values(store.registrations)) {
+      if (!registration.active) continue
+      for (const [trigger, source] of Object.entries(registration.autocomplete)) result.set(trigger, source)
+    }
+    return result
+  })
 
   const activate = async (id: string) => {
     const item = store.registrations[id]
@@ -203,7 +215,7 @@ export function PluginProvider(props: ParentProps<{ packages: PackageSource; dir
         set: (
           kind: RegistryKind,
           name: string,
-          value: Page | RegisteredSlot | MarkdownCodeBlockRenderer | Layout | ToolRender,
+          value: Page | RegisteredSlot | MarkdownCodeBlockRenderer | Layout | ToolRender | AutocompleteSource,
         ) => setStore("registrations", id, kind, name, () => value),
         remove: (kind, name) =>
           setStore(
@@ -647,6 +659,7 @@ export function PluginProvider(props: ParentProps<{ packages: PackageSource; dir
         markdown,
         layout,
         tool: (name) => tools().get(name),
+        autocomplete,
         // Manual dialog toggles join the same chain as reconciles so a
         // toggle mid-reload cannot mix registrations across generations.
         activate: (id) => enqueue(() => activate(id)),
@@ -749,6 +762,7 @@ function toRegistration(item: Desired): Registration {
     markdown: {},
     layout: {},
     tools: {},
+    autocomplete: {},
     cleanups: [],
   }
 }

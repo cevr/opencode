@@ -30,6 +30,22 @@ export function mentionTriggerIndex(text: string, widthMethod: WidthMethod) {
   }
 }
 
+/**
+ * The editor offset of a plugin popup's trigger before the cursor: the trigger
+ * starts a word (the text's start or after whitespace), nothing after it is
+ * whitespace, and it sits outside an inline code span (an even count of
+ * backticks before it).
+ */
+export function wordTriggerIndex(text: string, trigger: string, widthMethod: WidthMethod) {
+  const index = text.lastIndexOf(trigger)
+  if (index === -1) return
+  const before = index === 0 ? undefined : text[index - 1]
+  if (before !== undefined && !/\s/.test(before)) return
+  if (/\s/.test(text.slice(index))) return
+  if ((text.slice(0, index).match(/`/g)?.length ?? 0) % 2 === 1) return
+  return measureEditText(text.slice(0, index), { widthMethod })
+}
+
 export function slashTriggerIndex(text: string, widthMethod: WidthMethod) {
   for (let index = text.lastIndexOf("/"); index >= 0; index = text.lastIndexOf("/", index - 1)) {
     const before = index === 0 ? undefined : text[index - 1]

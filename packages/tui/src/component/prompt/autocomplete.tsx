@@ -35,7 +35,9 @@ import { Locale } from "../../util/locale"
 import type { PromptInfo, PromptPartRef } from "../../prompt/history"
 import { useFrecency } from "../../prompt/frecency"
 import { Keymap, type KeymapCommand } from "../../context/keymap"
-import { mentionTriggerIndex, slashTriggerIndex } from "../../prompt/display"
+import { mentionTriggerIndex, slashTriggerIndex, wordTriggerIndex } from "../../prompt/display"
+import { usePlugin } from "../../plugin/context"
+import type { AutocompleteItem } from "@opencode/plugin/tui/context"
 import type { FileSystemEntry } from "@opencode/client"
 import { Skill } from "@opencode/schema/skill"
 import { stringWidth } from "../../util/string-width"
@@ -45,7 +47,7 @@ import { directoryAutocomplete, slashArgumentAutocomplete } from "../../prompt/d
 
 export type AutocompleteRef = {
   onInput: (value: string) => void
-  visible: false | "reference" | "command" | "directory"
+  visible: false | "reference" | "command" | "directory" | "plugin"
   completeQueueableCommand: () => boolean
 }
 
@@ -61,6 +63,8 @@ export type AutocompleteOption = {
   absolute?: string
   destructive?: { id: string; confirm: string; run: () => void }
   kind?: "skill" | "agent" | "reference"
+  /** A plugin row's own tag, drawn where `kind`'s label goes. */
+  label?: string
   queueable?: boolean
 }
 
@@ -101,10 +105,13 @@ export function Autocomplete(props: {
   const newDesigns = useNewDesigns()
   const paths = useTuiPaths()
   const location = useLocation()
+  const plugins = usePlugin()
   const [store, setStore] = createStore({
     index: 0,
     selected: 0,
     visible: false as AutocompleteRef["visible"],
+    /** The plugin trigger that opened the popup, while `visible` is "plugin". */
+    trigger: "",
   })
 
   const [positionTick, setPositionTick] = createSignal(0)
@@ -174,13 +181,13 @@ export function Autocomplete(props: {
       | { type: "file"; value: NonNullable<PromptInfo["files"]>[number]; path?: string }
       | { type: "agent"; value: NonNullable<PromptInfo["agents"]>[number] }
       | { type: "skill"; value: NonNullable<PromptInfo["skills"]>[number] },
+    prefix = "@",
   ) {
     if (part.type === "skill" && props.hasSkill(part.value.id)) return
     const input = props.input()
     const currentCursorOffset = input.cursorOffset
 
     const needsSpace = input.getTextRange(currentCursorOffset, currentCursorOffset + 1) !== " "
-    const prefix = "@"
     const append = prefix + text + (needsSpace ? " " : "")
 
     input.cursorOffset = store.index
@@ -340,7 +347,7 @@ export function Autocomplete(props: {
   const [files] = createResource(
     () => ({ query: search(), location: location.current, visible: store.visible }),
     async (input, info): Promise<AutocompleteResults> => {
-      if (!input.visible || input.visible === "command")
+      if (!input.visible || input.visible === "command" || input.visible === "plugin")
         return { options: [], failed: false, mode: input.visible, query: input.query, resolved: true }
       if (referenceMatch())
         return { options: [], failed: false, mode: input.visible, query: input.query, resolved: true }
@@ -457,6 +464,50 @@ export function Autocomplete(props: {
     ),
   )
 
+  // A plugin row inserts its trigger and value: as a prompt part when it names one, else as text.
+  function insertPluginItem(trigger: string, item: AutocompleteItem) {
+    if (item.part) {
+      insertPart(
+        item.value,
+        { type: "skill", value: { id: Skill.ID.make(item.part.id), mention: { start: 0, end: 0, text: "" } } },
+        trigger,
+      )
+      return
+    }
+    const input = props.input()
+    const cursorOffset = input.cursorOffset
+    input.cursorOffset = store.index
+    const start = input.logicalCursor
+    input.cursorOffset = cursorOffset
+    const end = input.logicalCursor
+    input.deleteRange(start.row, start.col, end.row, end.col)
+    input.insertText(trigger + item.value + " ")
+  }
+
+  function pluginOptions(trigger: string): AutocompleteOption[] {
+    const source = plugins.autocomplete().get(trigger)
+    if (!source) return []
+    return source.options().map((item) => ({
+      display: trigger + item.value,
+      description: item.description,
+      label: item.label,
+      onSelect: () => insertPluginItem(trigger, item),
+    }))
+  }
+
+  // Plugin rows fuzzy-match what follows the trigger, against their value alone.
+  function filterPluginOptions(trigger: string, query: string, items: AutocompleteOption[]) {
+    if (!query) return items
+    return fuzzysort
+      .go(query, items, {
+        keys: [(obj) => obj.display.slice(trigger.length)],
+        threshold: 0.5,
+        limit: 10,
+        scoreFn: (result) => (result[0]?.target.startsWith(query) ? result.score * 2 : result.score),
+      })
+      .map((result) => result.obj)
+  }
+
   const referenceAliases = createMemo(() =>
     references()
       .filter((reference) => !reference.hidden)
@@ -546,6 +597,10 @@ export function Autocomplete(props: {
       const supplemental = supplementalDirectoryOptions()
       const paths = new Set(supplemental.map((item) => item.absolute))
       return [...supplemental, ...fileSearch.options.filter((item) => !paths.has(item.absolute))]
+    }
+
+    if (store.visible === "plugin") {
+      return filterPluginOptions(store.trigger, searchValue, pluginOptions(store.trigger))
     }
 
     if (store.visible === "reference" && referenceMatchValue) {
@@ -776,6 +831,11 @@ export function Autocomplete(props: {
     setStore("visible", false)
   }
 
+  // A plugin popup closes while no row matches, so text no row names (`$5`) stays plain.
+  createEffect(() => {
+    if (store.visible === "plugin" && options().length === 0) hide()
+  })
+
   onMount(() => {
     const unsubscribeMention = editor.onMention((mention) => {
       insertFileMention(mention)
@@ -835,6 +895,22 @@ export function Autocomplete(props: {
 
         // Check for "@" trigger - find the nearest "@" before cursor with no whitespace between
         const idx = mentionTriggerIndex(beforeCursor, renderer.widthMethod)
+        // A plugin trigger nearer the cursor than any "@" opens its popup instead, when a row matches.
+        const plugin = Array.from(plugins.autocomplete().keys())
+          .flatMap((trigger) => {
+            const index = wordTriggerIndex(beforeCursor, trigger, renderer.widthMethod)
+            return index === undefined || (idx !== undefined && index < idx) ? [] : [{ trigger, index }]
+          })
+          .toSorted((a, b) => b.index - a.index)
+          .find(
+            ({ trigger, index }) =>
+              filterPluginOptions(trigger, input.getTextRange(index + 1, offset), pluginOptions(trigger)).length > 0,
+          )
+        if (plugin) {
+          // One write: the trigger must be set when the popup opens, or its rows read empty and it closes.
+          setStore({ visible: "plugin", index: plugin.index, trigger: plugin.trigger })
+          return
+        }
         if (idx !== undefined) {
           show("reference")
           setStore("index", idx)
@@ -924,7 +1000,7 @@ export function Autocomplete(props: {
             const destructive = () => option().destructive
             const label = () => {
               const kind = option().kind
-              return kind ? labels[kind] : undefined
+              return option().label ?? (kind ? labels[kind] : undefined)
             }
             const contentWidth = () => {
               const text = label()

@@ -11,6 +11,7 @@ import type {
   SlotPath,
   Toast,
   ToolRender,
+  AutocompleteSource,
 } from "@opencode/plugin/tui/context"
 import type { Placement, PlacementKind } from "./structure"
 import { infoStringToFiletype, type MarkdownCodeBlockRenderer } from "@opentui/core"
@@ -53,7 +54,7 @@ const placements = ["prepend", "append", "before", "after", "replace"] as const 
 // The provider's registration store, narrowed to what a plugin context needs:
 // route/slot registration lands there, but ordering and lifecycle stay owned
 // by the provider.
-export type RegistryKind = "routes" | "slots" | "markdown" | "layout" | "tools"
+export type RegistryKind = "routes" | "slots" | "markdown" | "layout" | "tools" | "autocomplete"
 
 export type Registry = {
   has(kind: RegistryKind, name: string): boolean
@@ -62,6 +63,7 @@ export type Registry = {
   set(kind: "markdown", name: string, render: MarkdownCodeBlockRenderer): void
   set(kind: "layout", name: string, layout: Layout): void
   set(kind: "tools", name: string, render: ToolRender): void
+  set(kind: "autocomplete", name: string, source: AutocompleteSource): void
   remove(kind: RegistryKind, name: string): void
   active(): boolean
 }
@@ -330,6 +332,15 @@ export function createPluginContext(input: {
         if (input.registry.has("tools", name)) throw new Error(`Tool renderer already registered: ${name}`)
         input.registry.set("tools", name, (toolInput) => provide(() => render(toolInput)))
         return registration("tools", name)
+      },
+      autocomplete(source) {
+        // The host owns `/` (commands) and `@` (files, agents, skills, references).
+        if ([...source.trigger].length !== 1 || /[\s/@]/.test(source.trigger))
+          throw new Error(`Autocomplete trigger must be one character other than "/" and "@": ${source.trigger}`)
+        if (input.registry.has("autocomplete", source.trigger))
+          throw new Error(`Autocomplete trigger already registered: ${source.trigger}`)
+        input.registry.set("autocomplete", source.trigger, source)
+        return registration("autocomplete", source.trigger)
       },
       Markdown: PluginMarkdown,
       Code: PluginCode,

@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test"
 import { measureEditText, TextareaRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
-import { mentionTriggerIndex, promptOffsetIndex, slashTriggerIndex } from "../../src/prompt/display"
+import { mentionTriggerIndex, promptOffsetIndex, slashTriggerIndex, wordTriggerIndex } from "../../src/prompt/display"
 
 // A real textarea checks the helpers against the offsets that the prompt editor shows.
 const setup = await createTestRenderer({ width: 40, height: 4 })
@@ -55,6 +55,26 @@ describe("prompt display", () => {
         (text) => (mentionTriggerIndex(text, widthMethod) ?? slashTriggerIndex(text, widthMethod)) !== undefined,
       ),
     ).toEqual([])
+  })
+
+  test("opens a plugin trigger only at a word start, outside an inline code span", () => {
+    const find = (text: string) => wordTriggerIndex(text, "$", widthMethod)
+    expect(["$", "$sk", "run $sk", "a\n$sk", "`code` $sk", "中文 $x"].map(find)).toEqual([
+      0,
+      0,
+      4,
+      2,
+      7,
+      measureEditText("中文 ", { widthMethod }),
+    ])
+    expect(["pay$5", "a$b", "`$sk", "see `x $sk", "$sk done", "$sk "].map(find)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ])
   })
 
   test.each(["wcwidth", "unicode"] as const)("maps an offset to the last grapheme boundary under %s", (method) => {

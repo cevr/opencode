@@ -617,6 +617,34 @@ export interface Layout {
 /** Renders one tool call in the transcript. */
 export type ToolRender = (input: SessionPartInput & { readonly tool: string }) => JSX.Element
 
+/** One row of a plugin's composer popup. */
+export interface AutocompleteItem {
+  /** What selecting inserts after the trigger, and what the typed filter matches. */
+  readonly value: string
+  readonly description?: string
+  /** A short tag drawn at the row's right edge. */
+  readonly label?: string
+  /**
+   * Attaches a prompt part, drawn in the composer like an `@` mention of it.
+   * Without one, selecting inserts the trigger and value as plain text.
+   */
+  readonly part?: { readonly type: "skill"; readonly id: string }
+}
+
+/**
+ * A composer popup opened by one character typed at the start of a word, with
+ * the same keys and look as the host's `/` and `@` popups. The host's own
+ * triggers (`/`, `@`) cannot be claimed. The popup filters the rows by what
+ * follows the trigger and closes while none matches, so a trigger followed by
+ * text no row names (`$5`) stays plain text.
+ */
+export interface AutocompleteSource {
+  /** One character other than `/` and `@`. */
+  readonly trigger: string
+  /** The rows, read when the popup opens and as the typed filter changes. Reactive. */
+  readonly options: () => readonly AutocompleteItem[]
+}
+
 /** Host markdown, styled with the current theme's syntax and every registered code-block renderer. */
 export type MarkdownProps = {
   readonly content: string
@@ -708,6 +736,12 @@ export interface UI {
    * that replaces session.part.tool still wins over it.
    */
   readonly tool: (name: string, render: ToolRender) => () => void
+  /**
+   * Adds a composer popup for one trigger character until the returned cleanup
+   * runs; see AutocompleteSource. When several active plugins claim one
+   * trigger, the last-enabled one wins.
+   */
+  readonly autocomplete: (source: AutocompleteSource) => () => void
   /** The host's markdown renderer, for text that should read like the transcript. */
   readonly Markdown: (props: MarkdownProps) => JSX.Element
   /** The host's code renderer, for source that should read like the transcript's. */
