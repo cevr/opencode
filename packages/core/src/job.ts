@@ -68,8 +68,15 @@ type Active = {
   recovery?: Recovery
 }
 
+type Notice = {
+  recovery: Recovery
+  delivered: Deferred.Deferred<void>
+}
+
 type State = {
   jobs: SynchronizedRef.SynchronizedRef<Map<string, Active>>
+  /** Backgrounded work whose completion notice its owner has not admitted yet, by notice ID. */
+  notices: Map<SessionMessage.ID, Notice>
   scope: Scope.Scope
 }
 
@@ -126,6 +133,11 @@ export type BlockInput = {
 
 export type BlockResult = { type: "finished"; info: Info } | { type: "backgrounded"; info: Info }
 
+export type Undelivered = {
+  notificationID: SessionMessage.ID
+  recovery: Recovery
+}
+
 export type BackgroundAllInput = {
   sessionID: SessionSchema.ID
   type?: string
@@ -142,6 +154,13 @@ export interface Interface {
   readonly cancelSession: (sessionID: SessionSchema.ID) => Effect.Effect<Info[]>
   readonly pendingBackground: Effect.Effect<readonly Background[]>
   readonly runningBackground: Effect.Effect<readonly Recovery[]>
+  /**
+   * Backgrounded work whose completion notice has not been admitted yet, running or not:
+   * each notice will still wake its owner Session.
+   */
+  readonly undelivered: Effect.Effect<readonly Undelivered[]>
+  /** Resolves once the notice is admitted or its Session is removed; at once for an unknown notice. */
+  readonly awaitDelivered: (notificationID: SessionMessage.ID) => Effect.Effect<void>
   readonly completeBackground: (notificationID: SessionMessage.ID) => Effect.Effect<void>
 }
 
@@ -205,6 +224,7 @@ export const make = Effect.gen(function* () {
   const db = (yield* Database.Service).db
   const state: State = {
     jobs: yield* SynchronizedRef.make(new Map()),
+    notices: new Map(),
     scope: yield* Scope.Scope,
   }
 
@@ -403,13 +423,16 @@ export const make = Effect.gen(function* () {
   })
 
   const markBackground = Effect.fnUntraced(function* (job: Active) {
+    const notificationID = job.recovery ? (job.info.notificationID ?? SessionMessage.ID.create()) : undefined
+    if (job.recovery && notificationID && !state.notices.has(notificationID))
+      state.notices.set(notificationID, { recovery: job.recovery, delivered: yield* Deferred.make<void>() })
     const next = {
       ...job,
       isBackgrounded: true,
       blockingSessions: new Map<SessionSchema.ID, number>(),
       info: {
         ...job.info,
-        ...(job.recovery ? { notificationID: job.info.notificationID ?? SessionMessage.ID.create() } : {}),
+        ...(notificationID ? { notificationID } : {}),
       },
     }
     yield* persistBackground(next)
@@ -498,6 +521,16 @@ export const make = Effect.gen(function* () {
       .where(or(eq(JobTable.session_id, sessionID), eq(JobTable.child_session_id, sessionID)))
       .run()
       .pipe(Effect.orDie)
+    // A removed Session admits no notice, so nothing may keep waiting on one.
+    yield* Effect.forEach(
+      [...state.notices].filter(
+        ([, notice]) =>
+          ownerSessionID(notice.recovery) === sessionID ||
+          (notice.recovery.kind === "subagent" && notice.recovery.childSessionID === sessionID),
+      ),
+      ([notificationID]) => deliver(notificationID),
+      { discard: true },
+    )
     yield* SynchronizedRef.update(state.jobs, (jobs) => {
       const next = new Map(jobs)
       for (const [id, job] of jobs) {
@@ -536,6 +569,24 @@ export const make = Effect.gen(function* () {
     Effect.withSpan("Job.runningBackground"),
   )
 
+  const undelivered: Interface["undelivered"] = Effect.sync(() =>
+    [...state.notices].map(([notificationID, notice]) => ({ notificationID, recovery: notice.recovery })),
+  ).pipe(Effect.withSpan("Job.undelivered"))
+
+  const awaitDelivered: Interface["awaitDelivered"] = (notificationID) =>
+    Effect.suspend(() => {
+      const notice = state.notices.get(notificationID)
+      return notice ? Deferred.await(notice.delivered) : Effect.void
+    })
+
+  const deliver = (notificationID: SessionMessage.ID) =>
+    Effect.suspend(() => {
+      const notice = state.notices.get(notificationID)
+      if (!notice) return Effect.void
+      state.notices.delete(notificationID)
+      return Deferred.succeed(notice.delivered, undefined)
+    })
+
   const completeBackground: Interface["completeBackground"] = Effect.fn("Job.completeBackground")((notificationID) =>
     SynchronizedRef.updateEffect(state.jobs, (jobs) =>
       Effect.gen(function* () {
@@ -546,7 +597,7 @@ export const make = Effect.gen(function* () {
         next.delete(entry[0])
         return next
       }),
-    ),
+    ).pipe(Effect.andThen(deliver(notificationID))),
   )
 
   return Service.of({
@@ -560,6 +611,8 @@ export const make = Effect.gen(function* () {
     cancelSession,
     pendingBackground,
     runningBackground,
+    undelivered,
+    awaitDelivered,
     completeBackground,
   })
 })

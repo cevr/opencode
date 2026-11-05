@@ -5,6 +5,7 @@ import { Node } from "@opencode/util/effect/app-node"
 import type { LayerNode } from "@opencode/util/effect/layer-node"
 import { Job } from "../job.js"
 import { Session } from "../session.js"
+import { SessionBackground } from "./background.js"
 import { SubagentCompletion } from "./subagent-completion.js"
 
 type Recovery = Extract<Job.Recovery, { kind: "subagent" }>
@@ -52,6 +53,8 @@ const make: Effect.Effect<Interface, never, Session.Service | Job.Service | Scop
           recovery,
           run: Effect.gen(function* () {
             yield* sessions.resume(recovery.childSessionID)
+            // Idle is not finished while the child's own background work will still wake it.
+            yield* SessionBackground.awaitQuiet(jobs, sessions.wait, recovery.childSessionID)
             const messages = yield* sessions.messages({ sessionID: recovery.childSessionID, order: "desc", limit: 20 })
             const assistant = messages.find(
               (message) =>

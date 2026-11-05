@@ -492,6 +492,51 @@ describe("Job", () => {
     }),
   )
 
+  it.live("keeps a background notice undelivered until its owner admits it or is removed", () =>
+    Effect.gen(function* () {
+      const jobs = yield* Job.Service
+      const sessionID = SessionSchema.ID.make("ses_notice_owner")
+      const removedID = SessionSchema.ID.make("ses_notice_removed")
+      const finished = yield* jobs.start({
+        id: "job_notice_finished",
+        type: "shell",
+        recovery: { kind: "shell", sessionID, shellID: "job_notice_finished", command: "bun test" },
+        run: Effect.succeed("done"),
+      })
+      const running = yield* jobs.start({
+        id: "job_notice_running",
+        type: "shell",
+        recovery: { kind: "shell", sessionID: removedID, shellID: "job_notice_running", command: "bun run dev" },
+        run: Effect.never,
+      })
+      const notice = (yield* jobs.background(finished.id))?.notificationID
+      yield* jobs.background(running.id)
+      if (notice === undefined) return yield* Effect.die("Expected a notice ID")
+      yield* jobs.wait({ id: finished.id })
+
+      // A settled job still owes its owner the notice that will wake it.
+      expect((yield* jobs.undelivered).map((item) => item.recovery)).toMatchObject([
+        { sessionID, shellID: "job_notice_finished" },
+        { sessionID: removedID, shellID: "job_notice_running" },
+      ])
+      const admitted = yield* jobs.awaitDelivered(notice).pipe(Effect.forkScoped({ startImmediately: true }))
+      expect(admitted.pollUnsafe()).toBeUndefined()
+      yield* jobs.completeBackground(notice)
+      yield* Fiber.join(admitted).pipe(Effect.timeout("1 second"))
+
+      const pendingRunning = (yield* jobs.undelivered)[0]
+      expect(pendingRunning?.recovery).toMatchObject({ sessionID: removedID })
+      if (pendingRunning === undefined) return
+      const released = yield* jobs
+        .awaitDelivered(pendingRunning.notificationID)
+        .pipe(Effect.forkScoped({ startImmediately: true }))
+      yield* jobs.cancelSession(removedID)
+      yield* Fiber.join(released).pipe(Effect.timeout("1 second"))
+      expect(yield* jobs.undelivered).toEqual([])
+      yield* jobs.awaitDelivered(SessionMessage.ID.create()).pipe(Effect.timeout("1 second"))
+    }),
+  )
+
   it.live("migrates legacy kv job.background/* markers into the job table", () =>
     Effect.gen(function* () {
       const db = (yield* Database.Service).db

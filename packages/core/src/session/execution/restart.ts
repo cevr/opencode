@@ -11,6 +11,7 @@ import { SessionSchema } from "../schema.js"
 import { SessionStore } from "../store.js"
 import { ImageNotice } from "../../image/notice.js"
 import { ShellResult } from "../../shell/result.js"
+import { SessionBackground } from "../background.js"
 import { SubagentCompletion } from "../subagent-completion.js"
 
 const CONTINUE_AFTER_SERVER_RESTART =
@@ -201,6 +202,7 @@ export const layer = (options?: Options) =>
           notificationID: background.notificationID,
           recovery,
           run: execution.resume(recovery.childSessionID).pipe(
+            Effect.andThen(SessionBackground.awaitQuiet(jobs, execution.awaitIdle, recovery.childSessionID)),
             Effect.andThen(store.context(recovery.childSessionID)),
             Effect.map((messages) => {
               const assistant = messages.findLast(
