@@ -258,7 +258,7 @@ export const make = Effect.fn("Session.make")(function* () {
   })
   const compact = Effect.fn("Session.compact")(function* (
     sessionID: SessionSchema.ID,
-    input: { id?: SessionMessage.ID; delivery?: SessionInbox.Delivery },
+    input: { id?: SessionMessage.ID; delivery?: SessionInbox.Delivery; reason?: SessionMessage.CompactionReason },
   ) {
     const session = yield* get(sessionID)
     if (session.revert) yield* SessionRevert.commit(bus, session)
@@ -268,6 +268,7 @@ export const make = Effect.fn("Session.make")(function* () {
         id: inputID,
         sessionID,
         delivery: input.delivery ?? "steer",
+        reason: input.reason,
       })
       .pipe(
         Effect.catchTag("SessionInbox.LifecycleConflict", () => new CompactionConflictError({ sessionID, inputID })),

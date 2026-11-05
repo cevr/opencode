@@ -60,8 +60,16 @@ export type Estimate = { readonly measured: number; readonly estimated: number }
 export type Trigger =
   /** `overflow`: the provider just rejected this context as too long. `estimate` is `estimatePrompt(context)`. */
   | { readonly reason: "auto" | "overflow"; readonly context: SessionContext.Loaded; readonly estimate?: Estimate }
-  /** `inputID` is the `/compact` inbox item, whose message shows the outcome. */
-  | { readonly reason: "manual"; readonly context: SessionContext.Loaded; readonly inputID: SessionMessage.ID }
+  /**
+   * `inputID` is the `/compact` inbox item, whose message shows the outcome. `recorded` is the reason that message
+   * carries: `manual` unless the requester (a plugin compacting on its own) asked for `auto`.
+   */
+  | {
+      readonly reason: "manual"
+      readonly context: SessionContext.Loaded
+      readonly inputID: SessionMessage.ID
+      readonly recorded?: SessionMessage.CompactionReason
+    }
 
 export type Outcome =
   /** Only `auto` skips: the context fits, or automatic compaction is off. */
@@ -893,7 +901,7 @@ export const layer = Layer.effect(
     ): Effect.fn.Return<Outcome> {
       const context = trigger.context
       const sessionID = context.session.id
-      const reason = trigger.reason === "manual" ? "manual" : "auto"
+      const reason = trigger.reason === "manual" ? (trigger.recorded ?? "manual") : "auto"
       const usage = spent.get(sessionID)
 
       if ("error" in outcome) {

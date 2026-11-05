@@ -227,6 +227,7 @@ export const make = Effect.fn("SessionInbox.make")(function* () {
     readonly id: SessionMessage.ID
     readonly sessionID: SessionSchema.ID
     readonly delivery: Delivery
+    readonly reason?: SessionMessage.CompactionReason
   }) {
     return yield* serialized(
       input.sessionID,
@@ -243,7 +244,11 @@ export const make = Effect.fn("SessionInbox.make")(function* () {
         return yield* admit({
           id: input.id,
           sessionID: input.sessionID,
-          item: { type: "compaction", payload: {}, delivery: input.delivery },
+          item: {
+            type: "compaction",
+            payload: input.reason ? { reason: input.reason } : {},
+            delivery: input.delivery,
+          },
         })
       }),
     )
@@ -486,9 +491,15 @@ export const nextPromotable = Effect.fn("SessionInbox.nextPromotable")(function*
   return queued ? promotion(queued) : undefined
 })
 
-/** What a boundary decides on: prompts are promoted by id, so only a move's payload is read. */
+/** What a boundary decides on: prompts are promoted by id, so only a compaction's or a move's payload is read. */
 export type Promotion =
-  | { readonly id: SessionMessage.ID; readonly type: "user" | "synthetic" | "compaction"; readonly delivery: Delivery }
+  | { readonly id: SessionMessage.ID; readonly type: "user" | "synthetic"; readonly delivery: Delivery }
+  | {
+      readonly id: SessionMessage.ID
+      readonly type: "compaction"
+      readonly delivery: Delivery
+      readonly payload: CompactionPayload
+    }
   | {
       readonly id: SessionMessage.ID
       readonly type: "move"
@@ -496,10 +507,12 @@ export type Promotion =
       readonly payload: MovePayload
     }
 
-const promotion = (row: typeof SessionInboxTable.$inferSelect): Promotion =>
-  row.type === "move"
-    ? { id: row.id, type: "move", delivery: row.delivery, payload: decodeMove(row.payload) }
-    : { id: row.id, type: row.type, delivery: row.delivery }
+const promotion = (row: typeof SessionInboxTable.$inferSelect): Promotion => {
+  if (row.type === "move") return { id: row.id, type: "move", delivery: row.delivery, payload: decodeMove(row.payload) }
+  if (row.type === "compaction")
+    return { id: row.id, type: "compaction", delivery: row.delivery, payload: decodeCompaction(row.payload) }
+  return { id: row.id, type: row.type, delivery: row.delivery }
+}
 
 /** Which pending rows count: "input" means any item in either delivery mode. */
 export type Scope = "input" | Delivery

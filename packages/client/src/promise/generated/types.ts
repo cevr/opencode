@@ -93,7 +93,7 @@ export type SessionInboxDelivery = "steer" | "queue"
 
 export type SessionInboxSyntheticPayload = { text: string; description?: string; metadata?: { [x: string]: JsonValue } }
 
-export type SessionInboxCompactionPayload = {}
+export type SessionInboxCompactionPayload = { reason?: "auto" | "manual" }
 
 export type ShellID = string
 
@@ -3425,6 +3425,7 @@ export type SessionCompactInput = {
   readonly sessionID: string
   readonly id?: string | undefined
   readonly delivery?: ("steer" | "queue") | undefined
+  readonly reason?: "auto" | "manual" | undefined
 }
 
 export type SessionCompactOutput = { data: SessionInboxCompaction }["data"]

@@ -2188,6 +2188,80 @@
         }
       }
     },
+    "/api/session/{sessionID}/recover": {
+      "post": {
+        "tags": ["session"],
+        "operationId": "session.recover",
+        "parameters": [
+          {
+            "name": "sessionID",
+            "in": "path",
+            "schema": {
+              "$ref": "#/components/schemas/Session.ID"
+            },
+            "required": true
+          }
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/components/schemas/Location.PublicRef"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "InvalidRequestError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvalidRequestErrorEncoded"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedErrorEncoded"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "SessionNotFoundError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionNotFoundErrorEncoded"
+                }
+              }
+            }
+          }
+        },
+        "description": "Move an idle session whose directory no longer exists to its most recent earlier directory that still exists. Returns the new location, or nothing when the session was left in place.",
+        "summary": "Recover session location"
+      }
+    },
     "/api/session/{sessionID}/prompt": {
       "post": {
         "tags": ["session"],
@@ -2890,6 +2964,17 @@
                     "anyOf": [
                       {
                         "$ref": "#/components/schemas/Session.Inbox.Delivery"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "reason": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "enum": ["auto", "manual"]
                       },
                       {
                         "type": "null"
@@ -22891,9 +22976,14 @@
         "additionalProperties": false
       },
       "Session.Inbox.CompactionPayload": {
-        "not": {
-          "type": "null"
-        }
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string",
+            "enum": ["auto", "manual"]
+          }
+        },
+        "additionalProperties": false
       },
       "Session.Inbox.Delivery": {
         "type": "string",

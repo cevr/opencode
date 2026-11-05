@@ -100,7 +100,10 @@ const layer = Layer.effect(
                   if (next?.type === "compaction")
                     yield* bus.publishAll([
                       [SessionEvent.InboxDelivered, { sessionID, inboxID: next.id }],
-                      [SessionEvent.Compaction.Started, { sessionID, reason: "manual", inputID: next.id }],
+                      [
+                        SessionEvent.Compaction.Started,
+                        { sessionID, reason: next.payload.reason ?? "manual", inputID: next.id },
+                      ],
                     ])
                   if (next?.type === "move")
                     yield* restore(
@@ -134,6 +137,7 @@ const layer = Layer.effect(
                     const history = yield* SessionHistory.preview(db, sessionID, selected.instructions, model.ref)
                     return yield* compaction.compact({
                       reason: "manual",
+                      recorded: pending.payload.reason,
                       inputID: pending.id,
                       context: {
                         session: selected.session,
@@ -148,7 +152,7 @@ const layer = Layer.effect(
                     Effect.catch((error) =>
                       bus.publish(SessionEvent.Compaction.Failed, {
                         sessionID,
-                        reason: "manual",
+                        reason: pending.payload.reason ?? "manual",
                         inputID: pending.id,
                         error: toSessionError(error),
                       }),
@@ -158,7 +162,7 @@ const layer = Layer.effect(
                 if (Exit.isFailure(compacted)) {
                   yield* bus.publish(SessionEvent.Compaction.Failed, {
                     sessionID,
-                    reason: "manual",
+                    reason: pending.payload.reason ?? "manual",
                     error: Cause.hasInterruptsOnly(compacted.cause)
                       ? { type: "aborted", message: "Compaction cancelled" }
                       : { type: "compaction.failed", message: Cause.pretty(compacted.cause) },
