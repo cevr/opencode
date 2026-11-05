@@ -1409,8 +1409,11 @@ differently:
 
 - `context` runs for the agent loop, including tool-driven continuations.
 - `compaction` runs for checkpoint summaries. `messages` is the transcript being summarized; OpenCode appends its
-  summary prompt after hooks run. Set `result` to record the compaction yourself and skip the model call; it takes the
-  same fields as a completed compaction message.
+  summary prompt after hooks run. Add guidance for the summary to `experimental.prompt`, which holds that prompt as
+  paragraphs; this is experimental and may change. The rest of the request matches the `context` request so the
+  summary reuses the conversation's prompt cache, and an edit to `system`, `tools`, or `messages` that the `context`
+  hook does not also make loses that cache. Set `result` to record the compaction yourself and skip the model call; it
+  takes the same fields as a completed compaction message.
 - `generate` runs for transient `ctx.session.generate` calls.
 - `title` runs for title generation. It has no `agent` or `tools`. Set `result` to supply the title yourself.
 
@@ -1420,6 +1423,10 @@ await ctx.session.hook("context", (event) => {
   delete event.tools.write
   event.options.temperature = 0.2
   event.options.maxTokens = 8_000
+})
+
+await ctx.session.hook("compaction", (event) => {
+  event.experimental.prompt.push("Keep every file path the session touched.")
 })
 
 await ctx.session.hook("compaction", async (event) => {
@@ -1588,7 +1595,7 @@ import type { SessionPrompt } from "@opencode/plugin/promise/session"
 interface SessionHooks {
   prompt: SessionPrompt
   context: SessionContextHook
-  compaction: SessionContextHook & { result?: SessionCompactionResult }
+  compaction: SessionContextHook & { result?: SessionCompactionResult; experimental: { prompt: string[] } }
   generate: SessionContextHook
   title: SessionRequestHook & { result?: string }
   "model.request": SessionModelRequestHook

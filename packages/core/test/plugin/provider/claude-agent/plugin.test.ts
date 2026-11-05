@@ -401,7 +401,10 @@ describe("ClaudeAgentPlugin session hooks", () => {
       ])
 
       // Compaction keeps OpenCode's summary budget.
-      const compaction = yield* hooks.trigger("session", "compaction", hookEvent(session.id))
+      const compaction = yield* hooks.trigger("session", "compaction", {
+        ...hookEvent(session.id),
+        experimental: { prompt: [] },
+      })
       expect(compaction.options.maxTokens).toBe(32_000)
     }),
   )

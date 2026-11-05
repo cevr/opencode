@@ -1267,7 +1267,10 @@ effect: (ctx) =>
 
 Modify assembled system instructions, messages, or tools immediately before model dispatch. `context` runs for the
 agent loop; `compaction`, `generate`, and `title` run for those auxiliary requests. `compaction` and `title` accept a
-`result` that skips the model call.
+`result` that skips the model call. `compaction` takes guidance for the summary in `experimental.prompt`, the summary
+prompt as paragraphs sent after the conversation; this is experimental and may change. Its other fields match the
+`context` request so the summary reuses the conversation's prompt cache, and an edit to `system`, `tools`, or
+`messages` that the `context` hook does not also make loses that cache.
 
 ```ts
 effect: (ctx) =>
@@ -1277,6 +1280,11 @@ effect: (ctx) =>
       Effect.sync(() => {
         event.system.push({ type: "text", text: "Keep the review focused on correctness." })
         delete event.tools.write
+      }),
+    )
+    yield* session.hook("compaction", (event) =>
+      Effect.sync(() => {
+        event.experimental.prompt.push("Keep every file path the session touched.")
       }),
     )
     yield* session.hook("compaction", (event) =>
