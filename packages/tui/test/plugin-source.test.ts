@@ -115,6 +115,41 @@ test("a missing package dependency reloads when it is installed", async () => {
   expect((await sources.read(entry.href)).module).toMatchObject({ default: "installed" })
 })
 
+test("real watchers reload edits in, and relinks of, a workspace package", async () => {
+  let changes = 0
+  const watcher = createSourceWatcher(() => {
+    changes++
+  })
+  using _watcher = { [Symbol.dispose]: watcher.dispose }
+  await using sources = await fixture(watcher.wait)
+  const changed = async (count: number) => {
+    const deadline = Date.now() + 3000
+    while (Date.now() < deadline && changes <= count) await Bun.sleep(10)
+    expect(changes).toBeGreaterThan(count)
+  }
+  const entry = new URL("plugin/tui.ts", sources.url)
+  const value = new URL("lib/value.ts", sources.url)
+  const link = fileURLToPath(new URL("plugin/node_modules/@ws/lib", sources.url))
+  await Bun.write(new URL("package.json", sources.url), '{"private":true,"workspaces":["plugin","lib"]}')
+  await Bun.write(new URL("plugin/package.json", sources.url), '{"name":"plugin","type":"module"}')
+  await Bun.write(new URL("lib/package.json", sources.url), '{"name":"@ws/lib","type":"module","exports":"./value.ts"}')
+  await Bun.write(value, 'export default "before"')
+  await Bun.write(entry, 'export { default } from "@ws/lib"')
+  await mkdir(path.dirname(link), { recursive: true })
+  await expect(sources.read(entry.href)).rejects.toThrow("@ws/lib")
+
+  let count = changes
+  await symlink("../../../lib", link, process.platform === "win32" ? "junction" : "dir")
+  await changed(count)
+  expect((await sources.read(entry.href)).module).toMatchObject({ default: "before" })
+
+  count = changes
+  await Bun.write(new URL(value.href + ".new"), 'export default "after"')
+  await rename(new URL(value.href + ".new"), value)
+  await changed(count)
+  expect((await sources.read(entry.href)).module).toMatchObject({ default: "after" })
+})
+
 test("shared runtime and ordinary package identities survive plugin generations", async () => {
   await using sources = await fixture()
   const entry = new URL("tui.ts", sources.url)
