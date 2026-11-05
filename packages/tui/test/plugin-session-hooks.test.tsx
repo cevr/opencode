@@ -293,3 +293,35 @@ test("a plugin sees the sidebar hidden when the user hides it on a wide terminal
     await fixture[Symbol.asyncDispose]()
   }
 })
+
+test("a plugin draws over the transcript's top row, follows the scroll and reveals a message", async () => {
+  // Forty prompts, far taller than the 30-row terminal.
+  const history = Array.from({ length: 40 }, (_, index) => ({
+    type: "user",
+    id: `message-${index}`,
+    text: `Prompt ${index}`,
+    time: { created: index },
+  })).toReversed()
+  await using app = await openSession("transcript-overlay", history)
+  await app.ready
+  await app.waitForFrame((frame) => frame.includes("Prompt 39") && frame.includes("Overlay away=false"))
+  const overlayIndex = () =>
+    app
+      .captureCharFrame()
+      .split("\n")
+      .findIndex((line) => line.includes("Overlay"))
+  const firstRow = (frame: string) => frame.split("\n").find((line) => line.includes("Overlay")) ?? ""
+  // The overlay is the transcript's first row, under the session header's one row at most.
+  expect(overlayIndex()).toBeLessThan(2)
+
+  for (const _ of Array.from({ length: 6 })) await app.mockMouse.scroll(10, 10, "up")
+  const away = await app.waitForFrame((frame) => frame.includes("Overlay away=true"))
+  // The top row names the prompt at or above it, with its row (0 or above the viewport).
+  const top = firstRow(away).match(/top=message-(\d+)@(-?\d+)/)
+  expect(top).not.toBeNull()
+  expect(Number(top?.[2])).toBeLessThanOrEqual(0)
+
+  await app.mockMouse.click(10, overlayIndex())
+  // message-5's first row is now the viewport's top row.
+  await app.waitForFrame((frame) => firstRow(frame).includes("top=message-5@0") && firstRow(frame).includes("target=0"))
+})

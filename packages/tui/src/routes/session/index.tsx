@@ -309,6 +309,8 @@ export function Session(props: {
   const sessionTabs = useSessionTabs()
   const [awayFromBottom, setAwayFromBottom] = createSignal(false)
   const [latestHovered, setLatestHovered] = createSignal(false)
+  // Each mounted message's first row relative to the viewport top, for the transcript overlay slot.
+  const [messageRows, setMessageRows] = createSignal<readonly { messageID: string; row: number }[]>([])
   let ensureAllRowsPending: (() => void)[] | undefined
   createEffect(() => {
     if (!awayFromBottom()) setLatestHovered(false)
@@ -530,12 +532,19 @@ export function Session(props: {
       if (!scroll || scroll.isDestroyed) return
       const away = preserveWindow || isAwayFromBottom()
       setAwayFromBottom(away)
+      measureMessageRows()
+      afterLayout(measureMessageRows)
       if (!away) {
         if (!renderer.getSelection()) setHiddenRows(undefined)
         scroll.stickyScroll = true
       }
       saveScrollAnchor()
     })
+  }
+  function measureMessageRows() {
+    setMessageRows(
+      anchors.messagePositions().map((anchor) => ({ messageID: anchor.id, row: anchor.y - scroll.viewport.y })),
+    )
   }
   function saveScrollAnchor(unmounting = false) {
     // Initial layout must not overwrite the saved position before synchronization restores it.
@@ -1573,6 +1582,17 @@ export function Session(props: {
                   {(height) => <box id={NAVIGATION_SLACK_ID} height={height()} flexShrink={0} />}
                 </Show>
               </scrollbox>
+              <box position="absolute" top={0} left={0} width="100%" flexDirection="column">
+                <Slot
+                  path="session.transcript.overlay"
+                  input={{
+                    sessionID: route.sessionID,
+                    away: awayFromBottom(),
+                    messages: messageRows(),
+                    reveal: jumpToMessage,
+                  }}
+                />
+              </box>
             </box>
             <box height={1} flexShrink={0} flexDirection="row" justifyContent="flex-end">
               <Show when={firstJump()}>

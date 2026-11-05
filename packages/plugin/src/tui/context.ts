@@ -213,6 +213,21 @@ export interface SessionPartInput extends SessionMessageInput {
   readonly partID: string
 }
 
+/** Where the reader is in a session's transcript, for the session.transcript.overlay slot. */
+export interface TranscriptOverlayInput {
+  readonly sessionID: string
+  /** True while the transcript is scrolled away from its newest row. */
+  readonly away: boolean
+  /**
+   * Each mounted message's first row, relative to the viewport's top row
+   * (negative: above it), in transcript order. Older rows the host has not
+   * mounted are absent. Measured after each scroll and layout settles.
+   */
+  readonly messages: readonly { readonly messageID: string; readonly row: number }[]
+  /** Scrolls the transcript so the message's first row is the viewport's top row, as far as the transcript allows. */
+  readonly reveal: (messageID: string) => void
+}
+
 export type PanelPresentation = "panel" | "fullscreen"
 
 /** Client-local state of the selected session panel. The host owns its layout and input scope. */
@@ -253,6 +268,12 @@ export interface SlotMap {
   readonly "session.transcript.start": { readonly sessionID: string }
   /** After the newest transcript row, while it is in view. Empty by default. */
   readonly "session.transcript.end": { readonly sessionID: string }
+  /**
+   * Drawn over the transcript's top rows, outside its scroll area, so it stays
+   * put as the transcript scrolls. Give it a background: the rows under it
+   * show through blank cells. Empty by default.
+   */
+  readonly "session.transcript.overlay": TranscriptOverlayInput
   /** A user prompt in the transcript. */
   readonly "session.message.user": SessionMessageInput
   /** The agent, model and duration line closing an assistant turn. */
