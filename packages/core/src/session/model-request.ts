@@ -87,6 +87,11 @@ export interface Input {
   readonly inputTokens?: { readonly measured: number; readonly estimated: number }
 }
 
+export interface CompactionInput extends Input {
+  /** The summary instructions as paragraphs, none by default. The `compaction` hook may add to them. */
+  readonly prompt?: ReadonlyArray<string>
+}
+
 /** The default output limit: the catalog limit, fitted to the room the prompt leaves in the context window. */
 export const outputLimit = (limit: Model.Info["limit"], inputTokens?: Input["inputTokens"], headroom = 0) => {
   const requested = Math.min(limit.output > 0 ? limit.output : OUTPUT_TOKEN_FALLBACK, OUTPUT_TOKEN_MAX)
@@ -226,7 +231,7 @@ type Definitions = PluginHooks.Domains["session"]["context"]["tools"]
 /** Builds the model request for each session flow. Each entry runs its own plugin hook. */
 export interface Interface {
   readonly primary: (input: Input) => Effect.Effect<Prepared<SessionContext>>
-  readonly compaction: (input: Input) => Effect.Effect<Prepared<SessionCompaction>>
+  readonly compaction: (input: CompactionInput) => Effect.Effect<Prepared<SessionCompaction>>
   readonly generate: (input: Input) => Effect.Effect<Prepared<SessionGenerate>>
   readonly title: (input: Input) => Effect.Effect<Prepared<SessionTitle>>
 }
@@ -419,13 +424,20 @@ export const layer = Layer.effect(
       }
     })
 
-    const agentHook =
-      (name: "context" | "compaction" | "generate", agent: Agent.ID) => (draft: SessionRequest, tools: Definitions) =>
-        hooks.trigger("session", name, { ...draft, agent, tools })
+    const agentHook = (name: "context" | "generate", agent: Agent.ID) => (draft: SessionRequest, tools: Definitions) =>
+      hooks.trigger("session", name, { ...draft, agent, tools })
 
     return Service.of({
       primary: (input) => prepare("primary", input, agentHook("context", input.agent)),
-      compaction: (input) => prepare("compaction", input, agentHook("compaction", input.agent)),
+      compaction: (input) =>
+        prepare("compaction", input, (draft, tools) =>
+          hooks.trigger("session", "compaction", {
+            ...draft,
+            agent: input.agent,
+            tools,
+            experimental: { prompt: [...(input.prompt ?? [])] },
+          }),
+        ),
       generate: (input) => prepare("generate", input, agentHook("generate", input.agent)),
       title: (input) => prepare("title", input, (draft) => hooks.trigger("session", "title", draft)),
     })
