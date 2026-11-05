@@ -602,6 +602,53 @@ test("automatic rename refreshes the displayed title before settling, even witho
   }
 })
 
+test("labels a compaction a plugin requested as automatic", async () => {
+  await using state = await tmpdir()
+  const session = {
+    id: "ses_auto_compaction",
+    title: "Compaction fixture",
+    projectID: "project",
+    location: { directory },
+    agent: "build",
+    model: { providerID: "fixture", id: "model" },
+    cost: 0,
+    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+    time: { created: 1, updated: 2 },
+  }
+  await using setup = await createAppFixture({
+    width: 100,
+    height: 30,
+    state: state.path,
+    config: { animations: false, tabs: { mode: "off" }, session: { sidebar: "hide" } },
+    args: { sessionID: session.id },
+    fetch: (url) => {
+      if (url.pathname === `/api/session/${session.id}`) return json({ data: session })
+      if (url.pathname === `/api/session/${session.id}/message`)
+        return json({
+          data: [
+            {
+              id: "msg_compaction",
+              type: "compaction",
+              time: { created: 1 },
+              status: "completed",
+              reason: "auto",
+              summary: "SUMMARY_TEXT",
+            },
+          ],
+          cursor: {},
+        })
+      if (
+        url.pathname === `/api/session/${session.id}/inbox` ||
+        url.pathname === `/api/session/${session.id}/permission`
+      )
+        return json({ data: [] })
+      return undefined
+    },
+  })
+  const frame = await waitForHighlightedFrame(setup, (frame) => frame.includes("SUMMARY_TEXT"))
+  expect(frame).toContain("Automatic compaction")
+})
+
 test.each([80, 120])("completes custom Markdown and ordinary fences in a session at width %s", async (width) => {
   await using state = await tmpdir()
   const session = {

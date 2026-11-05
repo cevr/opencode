@@ -728,6 +728,26 @@ const recordedEventTypes = (id: Session.ID) =>
       )
   })
 
+/** The `reason` of each recorded compaction event, as `type:reason`. */
+const recordedCompactionReasons = (id: Session.ID) =>
+  Effect.gen(function* () {
+    const { db } = yield* Database.Service
+    return yield* db
+      .select({ type: EventTable.type, data: EventTable.data })
+      .from(EventTable)
+      .where(eq(EventTable.aggregate_id, id))
+      .orderBy(asc(EventTable.seq))
+      .all()
+      .pipe(
+        Effect.orDie,
+        Effect.map((rows) =>
+          rows
+            .filter((row) => row.type.startsWith("session.compaction."))
+            .map((row) => `${row.type}:${String(row.data.reason)}`),
+        ),
+      )
+  })
+
 const recordedStepSettlementEvents = (id: Session.ID, assistantMessageID: SessionMessage.ID) =>
   Effect.gen(function* () {
     const { db } = yield* Database.Service
@@ -2668,6 +2688,63 @@ describe("SessionRunnerLLM", () => {
       status: "completed",
       summary: "## Objective\n- Manual summary",
     })
+  })
+
+  scenario("records the reason a compaction request carries", function* (s) {
+    s.currentModel = unknownContextModel
+    yield* s.llm.push(TestLLM.text("Earlier answer", "text-reason-history"))
+    yield* s.runPrompt("Earlier question")
+
+    yield* s.llm.push(TestLLM.text("## Objective\n- Plugin summary", "text-reason-summary"))
+    const compaction = yield* s.session.compact({ sessionID, reason: "auto" })
+    yield* s.resume
+
+    expect((yield* s.messages).find((message) => message.id === compaction.id)).toMatchObject({
+      type: "compaction",
+      status: "completed",
+      reason: "auto",
+    })
+    expect(yield* recordedCompactionReasons(sessionID)).toEqual([
+      "session.compaction.started.1:auto",
+      "session.compaction.ended.1:auto",
+    ])
+  })
+
+  scenario("records a compaction request without a reason as manual", function* (s) {
+    s.currentModel = unknownContextModel
+    yield* s.llm.push(TestLLM.text("Earlier answer", "text-no-reason-history"))
+    yield* s.runPrompt("Earlier question")
+
+    yield* s.llm.push(TestLLM.text("## Objective\n- User summary", "text-no-reason-summary"))
+    const compaction = yield* s.session.compact({ sessionID })
+    yield* s.resume
+
+    expect((yield* s.messages).find((message) => message.id === compaction.id)).toMatchObject({
+      type: "compaction",
+      status: "completed",
+      reason: "manual",
+    })
+    expect(yield* recordedCompactionReasons(sessionID)).toEqual([
+      "session.compaction.started.1:manual",
+      "session.compaction.ended.1:manual",
+    ])
+  })
+
+  scenario("records the requested reason when a compaction fails", function* (s) {
+    const compaction = yield* s.session.compact({ sessionID, reason: "auto" })
+
+    yield* s.resume
+
+    expect((yield* s.messages).find((message) => message.id === compaction.id)).toMatchObject({
+      type: "compaction",
+      status: "failed",
+      reason: "auto",
+      error: { type: "compaction.unavailable" },
+    })
+    expect(yield* recordedCompactionReasons(sessionID)).toEqual([
+      "session.compaction.started.1:auto",
+      "session.compaction.failed.1:auto",
+    ])
   })
 
   scenario("runs manual compaction at the next step boundary before queued prompts", function* (s) {

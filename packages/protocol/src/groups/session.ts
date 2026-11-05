@@ -457,6 +457,8 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
         payload: Schema.Struct({
           id: SessionMessage.ID.pipe(Schema.optional),
           delivery: SessionInbox.Delivery.pipe(Schema.optional),
+          /** Recorded on the compaction message. Defaults to `manual`; a plugin compacting on its own sends `auto`. */
+          reason: SessionMessage.CompactionReason.pipe(Schema.optional),
         }),
         success: Schema.Struct({ data: SessionInbox.Compaction }),
         error: [ConflictError, SessionNotFoundError],

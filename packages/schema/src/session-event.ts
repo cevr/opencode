@@ -590,7 +590,7 @@ export namespace Compaction {
     ...options,
     schema: {
       ...Base,
-      reason: Schema.Literals(["auto", "manual"]),
+      reason: SessionMessage.CompactionReason,
       inputID: SessionMessage.ID.pipe(optional),
     },
   })

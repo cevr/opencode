@@ -1309,7 +1309,7 @@ function seedInbox(
           id: SessionMessage.ID.create(),
           session_id: sessionID,
           type: entry.type,
-          payload: entry.type === "user" ? { text: "queued prompt" } : {},
+          payload: entry.type === "user" ? { text: "queued prompt" } : SessionInbox.CompactionPayload.make({}),
           delivery: entry.delivery,
           enqueued_seq: index + 1,
         }
