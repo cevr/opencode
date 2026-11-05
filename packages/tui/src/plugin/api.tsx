@@ -250,6 +250,9 @@ export function createPluginContext(input: {
           return { name: current.name, sessionID: current.sessionID }
         },
       },
+      sidebar: {
+        visible: (sessionID) => host.panel?.sidebarVisible(sessionID) ?? false,
+      },
       tabs: {
         enabled: host.sessionTabs.enabled,
         list: () =>

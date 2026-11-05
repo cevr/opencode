@@ -69,3 +69,16 @@ test("releasing a plugin contribution only closes its own selected panel", () =>
     dispose()
   })
 })
+
+test("sidebar visibility is tracked per session and cleared by its frame", () => {
+  createRoot((dispose) => {
+    const panels = createPanelState()
+    expect(panels.sidebarVisible("session")).toBe(false)
+    panels.setSidebarVisible("session", true)
+    expect(panels.sidebarVisible("session")).toBe(true)
+    expect(panels.sidebarVisible("other")).toBe(false)
+    panels.setSidebarVisible("session", false)
+    expect(panels.sidebarVisible("session")).toBe(false)
+    dispose()
+  })
+})

@@ -115,6 +115,11 @@ export function SessionFrame(props: { sessionID: string; verticalTabsWidth: numb
     if (selectedTerminal()) return "terminal"
     if (sidebarVisible()) return "sidebar"
   })
+  createEffect(() => {
+    const sessionID = props.sessionID
+    panels.setSidebarVisible(sessionID, rightPane() === "sidebar")
+    onCleanup(() => panels.setSidebarVisible(sessionID, false))
+  })
   const toggleSidebar = () => {
     batch(() => {
       const visible = rightPane() === "sidebar"

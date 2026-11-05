@@ -635,6 +635,14 @@ export interface UI {
     /** This plugin's active panel, if any. Reactive when read in a Solid computation. */
     current(): { readonly name: string; readonly sessionID: string } | undefined
   }
+  readonly sidebar: {
+    /**
+     * Whether the session's frame shows the sidebar in its right pane now: false
+     * while it is hidden, too narrow for auto, or replaced by a panel or terminal.
+     * Reactive when read in a Solid computation.
+     */
+    visible(sessionID: string): boolean
+  }
   readonly tabs: {
     /** Returns whether session tabs are enabled for this TUI. */
     enabled(): boolean

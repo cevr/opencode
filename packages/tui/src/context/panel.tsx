@@ -1,5 +1,6 @@
 import type { PanelPresentation } from "@opencode/plugin/tui/context"
 import { batch, createContext, createMemo, createSignal, useContext, type ParentProps } from "solid-js"
+import { createStore } from "solid-js/store"
 import { SESSION_PANEL_SPLIT_MIN_WIDTH } from "../ui/layout"
 
 export type PanelTarget = {
@@ -14,6 +15,8 @@ export function createPanelState() {
   const [width, setWidth] = createSignal(0)
   const canSplit = () => width() >= SESSION_PANEL_SPLIT_MIN_WIDTH
   const presentation = createMemo(() => (canSplit() ? requested() : "fullscreen"))
+  // Which mounted session frames show the sidebar in their right pane, written by each frame.
+  const [sidebars, setSidebars] = createStore<Record<string, true | undefined>>({})
   return {
     current,
     width,
@@ -34,6 +37,10 @@ export function createPanelState() {
     release(plugin: string) {
       if (current()?.plugin !== plugin) return
       setCurrent()
+    },
+    sidebarVisible: (sessionID: string) => sidebars[sessionID] === true,
+    setSidebarVisible(sessionID: string, visible: boolean) {
+      setSidebars(sessionID, visible ? true : undefined)
     },
     toggleFullscreen() {
       if (!canSplit()) return

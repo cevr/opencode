@@ -237,3 +237,59 @@ test("a plugin claims completion notices, and layout rules see notices as their 
   expect(lines[first + 2]).toContain("Goal updated")
   expect(frame).not.toContain("Worker finished")
 })
+
+test("a plugin follows whether the session's sidebar is visible", async () => {
+  const fixture = await copyPlugin("sidebar-visible")
+  try {
+    await using app = await createAppFixture({
+      // Past the 120 columns at which the auto sidebar opens.
+      width: 160,
+      height: 30,
+      config: { animations: false, tabs: { enabled: false }, plugins: [fixture.directory] },
+      args: { sessionID: session.id },
+      fetch: (url) => {
+        if (url.pathname === "/api/session") return json({ data: [session], cursor: {} })
+        if (url.pathname === `/api/session/${session.id}`) return json({ data: session })
+        if (url.pathname === `/api/session/${session.id}/message`) return json({ data: messages, cursor: {} })
+        if (/^\/api\/session\/[^/]+\/(inbox|permission)$/.test(url.pathname)) return json({ data: [] })
+        return undefined
+      },
+    })
+    await app.ready
+    await app.waitForFrame((frame) => frame.includes("Sidebar probe: shown"))
+    app.resize(100, 30)
+    await app.waitForFrame((frame) => frame.includes("Sidebar probe: hidden"))
+    app.resize(160, 30)
+    await app.waitForFrame((frame) => frame.includes("Sidebar probe: shown"))
+  } finally {
+    await fixture[Symbol.asyncDispose]()
+  }
+})
+
+test("a plugin sees the sidebar hidden when the user hides it on a wide terminal", async () => {
+  const fixture = await copyPlugin("sidebar-visible")
+  try {
+    await using app = await createAppFixture({
+      width: 160,
+      height: 30,
+      config: {
+        animations: false,
+        tabs: { enabled: false },
+        plugins: [fixture.directory],
+        session: { sidebar: "hide" },
+      },
+      args: { sessionID: session.id },
+      fetch: (url) => {
+        if (url.pathname === "/api/session") return json({ data: [session], cursor: {} })
+        if (url.pathname === `/api/session/${session.id}`) return json({ data: session })
+        if (url.pathname === `/api/session/${session.id}/message`) return json({ data: messages, cursor: {} })
+        if (/^\/api\/session\/[^/]+\/(inbox|permission)$/.test(url.pathname)) return json({ data: [] })
+        return undefined
+      },
+    })
+    await app.ready
+    await app.waitForFrame((frame) => frame.includes("Sidebar probe: hidden"))
+  } finally {
+    await fixture[Symbol.asyncDispose]()
+  }
+})
