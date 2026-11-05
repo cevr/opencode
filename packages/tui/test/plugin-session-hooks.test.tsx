@@ -325,3 +325,27 @@ test("a plugin draws over the transcript's top row, follows the scroll and revea
   // message-5's first row is now the viewport's top row.
   await app.waitForFrame((frame) => firstRow(frame).includes("top=message-5@0") && firstRow(frame).includes("target=0"))
 })
+
+test("a plugin claims compactions in place of the host's rule and summary", async () => {
+  const usage = { input: 170_000, output: 6_000, reasoning: 0, cache: { read: 1_000, write: 0 } }
+  // Newest first, as the server pages them.
+  const history = [
+    {
+      type: "compaction",
+      id: "msg_compacted",
+      status: "completed",
+      reason: "auto",
+      summary: "The summary the plugin hides",
+      tokens: usage,
+      time: { created: 5 },
+    },
+    ...messages,
+  ]
+  await using app = await openSession("compaction-row", history)
+  await app.ready
+  const frame = await app.waitForFrame((frame) => frame.includes("Compaction claimed: msg_compacted completed"))
+  // The rest of the transcript keeps the host's rows.
+  expect(frame).toContain("$ bun test parser")
+  expect(frame).not.toContain("Automatic compaction")
+  expect(frame).not.toContain("The summary the plugin hides")
+})

@@ -2017,7 +2017,9 @@ function SessionMessageView(props: { message: SessionMessageInfo }) {
         </Show>
       </Match>
       <Match when={props.message.type === "compaction"}>
-        <CompactionMessage message={props.message as Extract<SessionMessageInfo, { type: "compaction" }>} />
+        <Slot path="session.message.compaction" input={{ sessionID: ctx.sessionID, messageID: props.message.id }}>
+          <CompactionMessage message={props.message as Extract<SessionMessageInfo, { type: "compaction" }>} />
+        </Slot>
       </Match>
       <Match when={props.message.type === "idle" ? props.message.error : undefined}>
         {(error) => <ExecutionError error={error()} />}

@@ -280,6 +280,8 @@ export interface SlotMap {
   readonly "session.message.assistant.footer": SessionMessageInput
   /** A background subagent's or shell's completion notice (`↳ Subagent finished · …`). */
   readonly "session.message.completion": SessionMessageInput
+  /** A compaction: its rule, label and usage, then its summary or its error. */
+  readonly "session.message.compaction": SessionMessageInput
   readonly "session.part.text": SessionPartInput
   readonly "session.part.reasoning": SessionPartInput
   /** One tool call; `tool` is the canonical tool name (shell, patch, subagent, read, ...). */
