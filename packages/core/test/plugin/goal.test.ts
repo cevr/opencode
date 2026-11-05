@@ -479,6 +479,47 @@ describe("goal plugin", () => {
       expect(yield* goal(session.id)).toBeUndefined()
     }),
   )
+
+  it.live("reads the goal with status, and cancel and stop clear it as clear does", () =>
+    Effect.gen(function* () {
+      const session = yield* project()
+      const sessions = yield* Session.Service
+      const paused: Goal.State = {
+        id: "goal-1",
+        objective: "Ship the parser",
+        status: "paused",
+        reason: "Paused by the user",
+        rounds: 3,
+        maxRounds: 50,
+        boot: "earlier",
+        updatedAt: 1,
+      }
+      const message = (text: string) =>
+        sessions.command({ sessionID: session.id, command: "goal", text }).pipe(
+          Effect.flip,
+          Effect.map((error) => (error instanceof Error ? error.message : String(error))),
+        )
+
+      expect(yield* message("status")).toContain("/goal <objective> | status | pause | resume | clear (or cancel, stop)")
+      yield* setGoal(session.id, paused)
+      // `status` reads the goal; it is not an objective.
+      expect(yield* message("status")).toBe(
+        [
+          "Goal paused: Ship the parser",
+          "Paused by the user",
+          "3 rounds of 50",
+          "/goal resume · /goal clear (cancel, stop)",
+        ].join("\n"),
+      )
+      expect(yield* goal(session.id)).toEqual(paused)
+
+      yield* sessions.command({ sessionID: session.id, command: "goal", text: "cancel" })
+      expect(yield* goal(session.id)).toBeUndefined()
+      yield* setGoal(session.id, paused)
+      yield* sessions.command({ sessionID: session.id, command: "goal", text: "Stop" })
+      expect(yield* goal(session.id)).toBeUndefined()
+    }),
+  )
 })
 
 const REVIEW_MARKER = "You are now the reviewer for the session's goal"

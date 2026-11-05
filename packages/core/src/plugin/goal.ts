@@ -35,7 +35,9 @@ const Verdict = Schema.Struct({
 type Verdict = typeof Verdict.Type
 const decodeVerdict = Schema.decodeUnknownOption(Schema.fromJsonString(Verdict))
 
-const USAGE = "Usage: /goal <objective> | pause | resume | clear"
+const USAGE = "Usage: /goal <objective> | status | pause | resume | clear (or cancel, stop)"
+// `/goal cancel` and `/goal stop` clear the goal too, as gent's /goal does.
+const CLEAR = new Set(["clear", "cancel", "stop"])
 
 export const Plugin = define({
   id: "opencode.goal",
@@ -343,13 +345,13 @@ export const Plugin = define({
     yield* ctx.command.transform((editor) => {
       editor.add({
         name: "goal",
-        description: "keep working until an objective is met [pause|resume|clear]",
+        description: "keep working until an objective is met [status|pause|resume|clear|cancel]",
         execute: (input) =>
           Effect.gen(function* () {
             const text = unquote(input.prompt.text.trim())
             const control = text.toLowerCase()
             const goal = yield* read(input.sessionID)
-            if (text === "") return yield* Effect.fail(new Error(goal ? `${describe(goal)}\n${USAGE}` : USAGE))
+            if (text === "" || control === "status") return yield* Effect.fail(new Error(goal ? describe(goal) : USAGE))
 
             if (control === "pause") {
               if (goal?.status !== "active") return yield* Effect.fail(new Error("No active goal to pause."))
@@ -380,7 +382,7 @@ export const Plugin = define({
                 metadata: { source: "goal", goalID: resumed.id },
               })
             }
-            if (control === "clear") {
+            if (CLEAR.has(control)) {
               if (!goal) return yield* Effect.fail(new Error("No goal is set."))
               return yield* write(input.sessionID, undefined)
             }
@@ -457,9 +459,14 @@ function sameReason(previous: string | undefined, next: string) {
   return previous !== undefined && normalize(previous) === normalize(next)
 }
 
+// The goal, why it last changed, its rounds, and the commands that move it on.
 function describe(goal: State) {
   const status = goal.status === "active" ? "Goal active" : goal.status === "paused" ? "Goal paused" : "Goal achieved"
-  return [`${status}: ${goal.objective}`, goal.reason].filter(Boolean).join("\n")
+  const next = goal.status === "active" ? "/goal pause" : goal.status === "paused" ? "/goal resume" : "/goal <objective>"
+  const rounds = `${goal.rounds} ${goal.rounds === 1 ? "round" : "rounds"} of ${goal.maxRounds}`
+  return [`${status}: ${goal.objective}`, goal.reason, rounds, `${next} · /goal clear (cancel, stop)`]
+    .filter(Boolean)
+    .join("\n")
 }
 
 // Reviewers sometimes wrap the JSON in a code fence or add a sentence around it.
