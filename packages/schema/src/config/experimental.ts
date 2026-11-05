@@ -43,6 +43,10 @@ export class Info extends Schema.Class<Info>("ConfigExperimental.Info")({
   subagent_depth: NonNegativeInt.pipe(optional).annotate({
     description: "Maximum subagent nesting depth. Defaults to 1.",
   }),
+  shell_background_after: NonNegativeInt.pipe(optional).annotate({
+    description:
+      "Milliseconds a foreground shell command may run before it moves to the background and the call returns with its shell ID. The command keeps running and notifies the session when it ends. A call's own timeout overrides it; 0 never moves a command. Defaults to 120000.",
+  }),
   location_idle_timeout: Schema.Union([Schema.DurationFromString, Schema.Literal(false)])
     .pipe(optional)
     .annotate({

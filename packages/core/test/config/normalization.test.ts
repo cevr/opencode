@@ -86,6 +86,16 @@ describe("ConfigNormalize", () => {
     ])
   })
 
+  test("keeps the shell background limit and rejects a negative one", () => {
+    const kept = normalized({ experimental: { shell_background_after: 30_000 } })
+    expect(kept.diagnostics).toEqual([])
+    expect(Schema.decodeUnknownSync(Info)(kept.encoded).experimental?.shell_background_after).toBe(30_000)
+    const zero = normalized({ experimental: { shell_background_after: 0 } })
+    expect(Schema.decodeUnknownSync(Info)(zero.encoded).experimental?.shell_background_after).toBe(0)
+    const negative = normalized({ experimental: { shell_background_after: -1 } })
+    expect(negative.diagnostics.map((item) => item.path)).toEqual([["experimental", "shell_background_after"]])
+  })
+
   test("rejects every non-object root with one root diagnostic", () => {
     for (const input of [null, [], "config", true, 1]) {
       expect(ConfigNormalize.normalize(input)).toEqual({

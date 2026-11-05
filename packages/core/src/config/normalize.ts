@@ -531,6 +531,15 @@ function normalizeExperimental(
         )
         if (value !== undefined) result.subagent_depth = value
       }
+      if (own(experimental, "shell_background_after")) {
+        const value = decodeEncoded(
+          ConfigExperimental.Info.fields.shell_background_after,
+          experimental.shell_background_after,
+          ["experimental", "shell_background_after"],
+          diagnostics,
+        )
+        if (value !== undefined) result.shell_background_after = value
+      }
       if (own(experimental, "location_idle_timeout")) {
         const value = decodeEncoded(
           ConfigExperimental.Info.fields.location_idle_timeout,

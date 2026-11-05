@@ -148,7 +148,9 @@ export interface Interface {
   readonly start: (input: StartInput) => Effect.Effect<Info>
   readonly wait: (input: WaitInput) => Effect.Effect<WaitResult>
   readonly block: (input: BlockInput) => Effect.Effect<BlockResult | undefined>
-  readonly background: (id: string) => Effect.Effect<Info | undefined>
+  // With `running`, a job that already settled stays foreground even when recoverable, so a timer
+  // racing the job's own completion never turns a finished result into a background notice.
+  readonly background: (id: string, options?: { readonly running?: boolean }) => Effect.Effect<Info | undefined>
   readonly backgroundAll: (input: BackgroundAllInput) => Effect.Effect<Info[]>
   readonly cancel: (id: string) => Effect.Effect<Info | undefined>
   readonly cancelSession: (sessionID: SessionSchema.ID) => Effect.Effect<Info[]>
@@ -439,13 +441,13 @@ export const make = Effect.gen(function* () {
     return next
   })
 
-  const background: Interface["background"] = Effect.fn("Job.background")(function* (id) {
+  const background: Interface["background"] = Effect.fn("Job.background")(function* (id, options) {
     const result = yield* SynchronizedRef.modifyEffect(
       state.jobs,
       Effect.fnUntraced(function* (jobs): Effect.fn.Return<readonly [BackgroundResult, Map<string, Active>]> {
         const job = jobs.get(id)
         // Recoverable work may finish before the caller backgrounds it.
-        if (!job || (job.info.status !== "running" && !job.recovery)) return [{}, jobs]
+        if (!job || (job.info.status !== "running" && (!job.recovery || options?.running))) return [{}, jobs]
         if (job.isBackgrounded) return [{ info: snapshot(job) }, jobs]
         const next = yield* markBackground(job)
         return [{ info: snapshot(next), backgrounded: job.backgrounded }, new Map(jobs).set(id, next)]

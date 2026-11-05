@@ -385,6 +385,28 @@ describe("Job", () => {
     }),
   )
 
+  it.live("leaves settled recoverable work in the foreground when only running work may move", () =>
+    Effect.gen(function* () {
+      const jobs = yield* Job.Service
+      const job = yield* jobs.start({
+        id: "shell_settled_before_limit",
+        type: "shell",
+        recovery: {
+          kind: "shell",
+          sessionID: SessionSchema.ID.make("ses_settled_before_limit"),
+          shellID: "shell_settled_before_limit",
+          command: "true",
+        },
+        run: Effect.succeed("done"),
+      })
+      expect((yield* jobs.wait({ id: job.id })).info?.status).toBe("completed")
+
+      // A time limit that fires as the work settles must not turn its result into a background notice.
+      expect(yield* jobs.background(job.id, { running: true })).toBeUndefined()
+      expect(yield* jobs.pendingBackground).toEqual([])
+    }),
+  )
+
   it.live("recovers a background marker after its process-local registry closes", () =>
     Effect.gen(function* () {
       const scope = yield* Scope.make()

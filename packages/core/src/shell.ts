@@ -29,9 +29,18 @@ export class NotFoundError extends Schema.TaggedError<NotFoundError>()("Shell.No
 
 // Keep recent exited processes observable in memory, including their file-backed output.
 // The process-local cap complements the time-based sweep, which also cleans files left by restarts.
+// Background shells (`metadata.background`) keep their own, larger allowance, so a run of quick
+// foreground commands never evicts the background work an agent may still read.
 const EXITED_LIMIT = 25
+export const BACKGROUND_EXITED_LIMIT = 100
 export const RETENTION = Duration.days(7)
 export const DIRECTORY = "shell"
+// Output is kept in at most two files of about this size each: `<id>.out` holds the newest bytes,
+// `<id>.out.1` the segment before it. A command that writes more loses its oldest output, so one
+// shell never holds more than about twice this on disk.
+export const OUTPUT_SEGMENT_BYTES = 8 * 1024 * 1024
+// How long a kill waits after SIGTERM before it sends SIGKILL to the process group.
+export const KILL_GRACE = Duration.seconds(3)
 
 type Info = Shell.Info
 type CreateInput = Shell.CreateInput & {
@@ -44,15 +53,20 @@ type Active = {
   file: string
   size: number
   newlines: number
+  // The absolute byte offset `file` starts at, and, once output rotated, where `file.1` starts.
+  base: number
+  previous?: number
   // Resolves with the terminal Info once the command exits, times out, or is killed. A wait
   // started after termination resolves immediately from the already-completed deferred.
   done: Deferred.Deferred<Info, NotFoundError>
   timeoutFiber?: Fiber.Fiber<void>
   timeout?: (duration: number) => Effect.Effect<void>
+  // Ends the command; the fiber it returns settles once the whole process group is gone.
+  kill?: Effect.Effect<Fiber.Fiber<void> | undefined>
 }
 
 type Ended = {
-  status: "exited" | "timeout"
+  status: "exited" | "timeout" | "killed"
   exit?: number
   signal?: string
   completed: number
@@ -71,8 +85,8 @@ export interface Interface {
     input: CreateInput,
     before?: (input: ShellCreateBefore) => Effect.Effect<void, E, R>,
   ) => Effect.Effect<Shell.Info, E | AppProcess.AppProcessError, R>
-  // Currently running commands only; exited shells are retained for get/output but excluded here.
-  readonly list: () => Effect.Effect<Shell.Info[]>
+  // Currently running commands; with `exited`, also the retained exited ones, oldest first.
+  readonly list: (options?: { readonly exited?: boolean }) => Effect.Effect<Shell.Info[]>
   readonly get: (id: Shell.ID) => Effect.Effect<Shell.Info, NotFoundError>
   // Resolves once the command reaches a terminal status, returning its final Info. Fails with
   // NotFoundError if the command is unknown or is removed before it terminates.
@@ -82,6 +96,12 @@ export interface Interface {
   // Replaces the running command's timeout from now; zero clears it. Ignored once the command has
   // ended or timed out, even while its process is still being killed or its output captured.
   readonly timeout: (id: Shell.ID, duration: number) => Effect.Effect<Shell.Info, NotFoundError>
+  // Moves a running command to the background: clears its timeout and tags it `metadata.background`,
+  // which keeps it under the background retention allowance once it exits.
+  readonly background: (id: Shell.ID) => Effect.Effect<Shell.Info, NotFoundError>
+  // Ends a running command: SIGTERM to its process group, SIGKILL after KILL_GRACE to whatever of the
+  // group is left. Its record and output stay; resolves with its terminal Info (status "killed").
+  readonly kill: (id: Shell.ID) => Effect.Effect<Shell.Info, NotFoundError>
   readonly output: (id: Shell.ID, input?: Shell.OutputInput) => Effect.Effect<Shell.Output, NotFoundError>
   readonly remove: (id: Shell.ID) => Effect.Effect<void, NotFoundError>
 }
@@ -102,7 +122,7 @@ export const cleanup = Effect.fn("Shell.cleanup")(function* () {
       fs.readDirectoryEntries(path.join(directory, project.name)).pipe(
         Effect.map((entries) =>
           entries.flatMap((entry) =>
-            entry.type === "file" && /^sh_[0-9a-f]{12}.*\.out$/.test(entry.name)
+            entry.type === "file" && /^sh_[0-9a-f]{12}.*\.out(\.1)?$/.test(entry.name)
               ? [path.join(directory, project.name, entry.name)]
               : [],
           ),
@@ -113,6 +133,21 @@ export const cleanup = Effect.fn("Shell.cleanup")(function* () {
   )
   yield* FileRetention.cleanup(fs, files.flat(), RETENTION)
 })
+
+const groupAlive = (pid: number) => {
+  try {
+    process.kill(-pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+const signalGroup = (pid: number, signal: NodeJS.Signals) => {
+  try {
+    process.kill(-pid, signal)
+  } catch {}
+}
 
 const cleanupLayer = Layer.effectDiscard(
   cleanup().pipe(Effect.repeat(Schedule.spaced(Duration.hours(1))), Effect.forkScoped),
@@ -142,7 +177,7 @@ const layer = () =>
       const exitOrder: Shell.ID[] = []
 
       const outputDir = path.join(global.data, DIRECTORY, location.project.id)
-      const { mkdir, unlink } = yield* Effect.promise(() => import("fs/promises"))
+      const { mkdir, unlink, rename } = yield* Effect.promise(() => import("fs/promises"))
       const { createWriteStream, createReadStream } = yield* Effect.promise(() => import("fs"))
       yield* Effect.promise(() => mkdir(outputDir, { recursive: true }))
 
@@ -173,7 +208,9 @@ const layer = () =>
         if (command.timeoutFiber) yield* Fiber.interrupt(command.timeoutFiber)
         // Unblock any wait still pending when the command is removed before it terminated.
         yield* Deferred.fail(command.done, new NotFoundError({ id }))
-        yield* Effect.promise(() => unlink(command.file).catch(() => {}))
+        yield* Effect.promise(() =>
+          Promise.all([unlink(command.file).catch(() => {}), unlink(`${command.file}.1`).catch(() => {})]),
+        )
         // Every shell reports exactly one exit; removing a running one ends it as killed.
         if (command.info.status === "running") yield* bus.publish(Shell.Event.Exited, { id, status: "killed" })
         yield* bus.publish(Shell.Event.Deleted, { id })
@@ -184,9 +221,9 @@ const layer = () =>
         yield* removeCommand(id)
       })
 
-      const list = Effect.fn("Shell.list")(function* () {
+      const list = Effect.fn("Shell.list")(function* (options?: { readonly exited?: boolean }) {
         return Array.from(commands.values())
-          .filter((command) => command.info.status === "running")
+          .filter((command) => options?.exited === true || command.info.status === "running")
           .map((command) => command.info)
       })
 
@@ -205,33 +242,62 @@ const layer = () =>
         return command.info
       })
 
+      const backgroundCommand = Effect.fn("Shell.background")(function* (id: Shell.ID) {
+        const command = yield* require(id)
+        if (command.info.status !== "running") return command.info
+        if (command.timeout) yield* command.timeout(0)
+        command.info = produce(command.info, (draft) => {
+          draft.metadata = { ...draft.metadata, background: true }
+        })
+        return command.info
+      })
+
+      const kill = Effect.fn("Shell.kill")(function* (id: Shell.ID) {
+        const command = yield* require(id)
+        const sweep = command.info.status === "running" && command.kill ? yield* command.kill : undefined
+        const info = yield* Deferred.await(command.done)
+        if (sweep) yield* Fiber.join(sweep)
+        return info
+      })
+
+      // Reads `length` bytes of one segment file from its own offset `start`.
+      const readFile = (file: string, start: number, length: number) =>
+        Effect.promise(
+          () =>
+            new Promise<Buffer>((resolve) => {
+              if (length <= 0) return resolve(Buffer.alloc(0))
+              const chunks: Buffer[] = []
+              const stream = createReadStream(file, { start, end: start + length - 1 })
+              stream.on("data", (chunk: string | Buffer) => chunks.push(Buffer.from(chunk)))
+              stream.on("end", () => resolve(Buffer.concat(chunks)))
+              stream.on("error", () => resolve(Buffer.concat(chunks)))
+            }),
+        )
+
       const output = Effect.fnUntraced(function* (id: Shell.ID, input?: Shell.OutputInput) {
         const command = yield* require(id)
         const cursor = input?.cursor ?? 0
         const limit = input?.limit ?? 65536
         if (cursor >= command.size) return { output: "", cursor: command.size, size: command.size, truncated: false }
-        const start = Math.max(0, cursor)
+        // Bytes before the oldest kept segment were dropped by rotation; a read from there starts at the oldest kept.
+        const earliest = command.previous ?? command.base
+        const start = Math.max(earliest, cursor)
         const length = Math.min(limit, command.size - start)
-        const buffer = Buffer.alloc(length)
-        const bytesRead = yield* Effect.promise(
-          () =>
-            new Promise<number>((resolve) => {
-              const stream = createReadStream(command.file, { start, end: start + length - 1 })
-              let offset = 0
-              stream.on("data", (chunk: string | Buffer) => {
-                const bytes = Buffer.from(chunk)
-                bytes.copy(buffer, offset)
-                offset += bytes.length
-              })
-              stream.on("end", () => resolve(offset))
-              stream.on("error", () => resolve(0))
-            }),
-        )
+        const base = command.base
+        const older =
+          command.previous !== undefined && start < base
+            ? yield* readFile(`${command.file}.1`, start - command.previous, Math.min(length, base - start))
+            : Buffer.alloc(0)
+        const newer =
+          start + length > base
+            ? yield* readFile(command.file, Math.max(0, start - base), start + length - Math.max(start, base))
+            : Buffer.alloc(0)
+        const bytes = Buffer.concat([older, newer])
         return {
-          output: buffer.subarray(0, bytesRead).toString("utf8"),
-          cursor: start + bytesRead,
+          output: bytes.toString("utf8"),
+          cursor: start + bytes.length,
           size: command.size,
-          truncated: false,
+          truncated: cursor < earliest,
         }
       })
 
@@ -251,11 +317,15 @@ const layer = () =>
           if (page.output.endsWith("\n")) lines.pop()
           const truncated = latest.size > maxBytes || lines.length > maxLines
           const text = lines.length > maxLines ? lines.slice(-maxLines).join("\n") : page.output
-          const total = (yield* require(info.id)).newlines + (page.output.endsWith("\n") ? 0 : 1)
+          const command = yield* require(info.id)
+          const total = command.newlines + (page.output.endsWith("\n") ? 0 : 1)
           const shown = Math.min(lines.length, maxLines)
-          const notice = truncated
-            ? `\n\n[showing lines ${total - shown + 1}-${total} of ${total}; full output saved to ${info.file}]`
-            : ""
+          const kept = command.previous ?? command.base
+          const notice = !truncated
+            ? ""
+            : kept > 0
+              ? `\n\n[showing lines ${total - shown + 1}-${total} of ${total}; the newest output is saved to ${info.file}, the first ${kept} bytes were dropped]`
+              : `\n\n[showing lines ${total - shown + 1}-${total} of ${total}; full output saved to ${info.file}]`
           return { output: `${text || "(no output)"}${notice}`, truncated }
         }).pipe(Effect.catchTag("Shell.NotFoundError", () => Effect.succeed(undefined)))
         return { info, capture }
@@ -326,15 +396,28 @@ const layer = () =>
                 file,
                 size: 0,
                 newlines: 0,
+                base: 0,
                 done: Deferred.makeUnsafe<Info, NotFoundError>(),
               }
               commands.set(id, command)
 
-              const stream = createWriteStream(file)
+              let stream = createWriteStream(file)
               const outputDone = Latch.makeUnsafe()
               const pump = handle.all.pipe(
                 Stream.runForEach((chunk: Uint8Array) =>
-                  Effect.sync(() => {
+                  Effect.gen(function* () {
+                    // Rotate: the full segment becomes `<id>.out.1` (replacing the one before it) and a fresh
+                    // `<id>.out` starts at the current absolute offset.
+                    if (command.size > command.base && command.size - command.base + chunk.length > OUTPUT_SEGMENT_BYTES) {
+                      const old = stream
+                      yield* Effect.promise(async () => {
+                        await new Promise<void>((resolve) => old.end(() => resolve()))
+                        await rename(file, `${file}.1`).catch(() => {})
+                      })
+                      command.previous = command.base
+                      command.base = command.size
+                      stream = createWriteStream(file)
+                    }
                     stream.write(chunk)
                     command.size += chunk.length
                     // Count while streaming so truncation notices never rescan the output file.
@@ -392,6 +475,22 @@ const layer = () =>
 
               yield* command.timeout(invocation.timeout)
 
+              command.kill = Effect.gen(function* () {
+                if (!(yield* end({ status: "killed", signal: "SIGTERM" }))) return undefined
+                // Detached like the timeout kill, so an interrupted caller never cancels it halfway.
+                return runFork(
+                  Effect.gen(function* () {
+                    yield* handle.kill({ forceKillAfter: KILL_GRACE }).pipe(Effect.catch(() => Effect.void))
+                    // The spawner waits on the group leader only; a child that ignores SIGTERM outlives it
+                    // and keeps the output pipe open. Sweep the group once more after the grace.
+                    const pid = handle.pid
+                    if (process.platform === "win32" || !pid || !groupAlive(pid)) return
+                    yield* Effect.sleep(KILL_GRACE)
+                    if (groupAlive(pid)) signalGroup(pid, "SIGKILL")
+                  }),
+                )
+              }).pipe(Effect.uninterruptible)
+
               // The process exits even after a timeout kill, so this fiber always publishes the outcome.
               runFork(
                 Effect.gen(function* () {
@@ -426,10 +525,12 @@ const layer = () =>
                     status: outcome.status,
                   })
                   exitOrder.push(id)
-                  while (exitOrder.length > EXITED_LIMIT) {
-                    const oldest = exitOrder[0]
-                    if (!oldest) break
-                    yield* removeCommand(oldest)
+                  // Evict per class: quick foreground commands never push out background work.
+                  const isBackground = (shellID: Shell.ID) => commands.get(shellID)?.info.metadata.background === true
+                  for (const background of [false, true]) {
+                    const cap = background ? BACKGROUND_EXITED_LIMIT : EXITED_LIMIT
+                    const members = exitOrder.filter((shellID) => isBackground(shellID) === background)
+                    for (const oldest of members.slice(0, Math.max(0, members.length - cap))) yield* removeCommand(oldest)
                   }
                   // Keep exited history data-only.
                   const timeoutFiber = command.timeoutFiber
@@ -452,7 +553,18 @@ const layer = () =>
         return command.info
       })
 
-      return Service.of({ create, list, get, wait, result, timeout, output, remove })
+      return Service.of({
+        create,
+        list,
+        get,
+        wait,
+        result,
+        timeout,
+        background: backgroundCommand,
+        kill,
+        output,
+        remove,
+      })
     }),
   )
 
