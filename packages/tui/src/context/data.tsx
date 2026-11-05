@@ -99,7 +99,18 @@ function createGoals(input: {
     return next
   }
   const set = (sessionID: string, goal: Goal.State | null | undefined) =>
-    setGoals(sessionID, goal ? { objective: goal.objective, status: goal.status, reason: goal.reason } : null)
+    setGoals(
+      sessionID,
+      goal
+        ? {
+            objective: goal.objective,
+            status: goal.status,
+            reason: goal.reason,
+            rounds: goal.rounds,
+            updatedAt: goal.updatedAt,
+          }
+        : null,
+    )
   const load = (sessionID: string) => {
     const current = turn(sessionID)
     // A server without the goal plugin answers with an error, and the session shows no goal.

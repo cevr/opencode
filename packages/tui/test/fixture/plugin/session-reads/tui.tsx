@@ -21,7 +21,7 @@ export default Plugin.define({
               usage {usage()?.tokens ?? "none"} of {usage()?.limit ?? "none"} ({usage()?.percent ?? "none"}%)
             </text>
             <text>
-              goal {goal()?.objective ?? "none"} [{goal()?.status ?? "none"}]
+              goal {goal()?.objective ?? "none"} [{goal()?.status ?? "none"}] {goal()?.rounds ?? 0}↻
             </text>
           </box>
         )

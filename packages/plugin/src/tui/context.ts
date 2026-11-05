@@ -80,6 +80,10 @@ export interface SessionGoal {
   readonly status: "active" | "paused" | "complete"
   /** Why the goal last changed. */
   readonly reason?: string
+  /** Continuations sent since the goal was set or last resumed. */
+  readonly rounds: number
+  /** When the goal last changed, in epoch ms. */
+  readonly updatedAt: number
 }
 
 export interface Data {

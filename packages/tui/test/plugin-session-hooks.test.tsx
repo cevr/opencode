@@ -93,7 +93,7 @@ test("a plugin reads a session's context usage, goal and parts, and renders host
     app,
     (frame) =>
       frame.includes("usage 2000 of 8000 (25%)") &&
-      frame.includes("goal Ship the parser [active]") &&
+      frame.includes("goal Ship the parser [active] 1↻") &&
       frame.includes("Read text:0: The parser is fixed.") &&
       frame.includes("Probe fence rendered"),
   )
@@ -106,9 +106,9 @@ test("a plugin reads a session's context usage, goal and parts, and renders host
     created: 4,
     type: "rpc.opencode.goal.changed",
     location: { directory },
-    data: { sessionID: session.id, goal: { ...goal, status: "paused" } },
+    data: { sessionID: session.id, goal: { ...goal, status: "paused", rounds: 2 } },
   })
-  await app.waitForFrame((frame) => frame.includes("goal Ship the parser [paused]"))
+  await app.waitForFrame((frame) => frame.includes("goal Ship the parser [paused] 2↻"))
   app.events.emit({
     id: "evt_goal_cleared",
     created: 5,
