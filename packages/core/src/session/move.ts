@@ -4,7 +4,8 @@ import type { Session } from "@opencode/schema/session"
 import { makeGlobalNode } from "@opencode/util/effect/app-node"
 import { FSUtil } from "@opencode/util/fs-util"
 import { Global } from "@opencode/util/global"
-import { Cause, Context, Effect, Layer, Schema } from "effect"
+import { and, desc, eq, sql } from "drizzle-orm"
+import { Cause, Context, Effect, Layer, Option, Schema } from "effect"
 import path from "path"
 import { Bus } from "../bus.js"
 import { Database } from "../database/database.js"
@@ -20,6 +21,7 @@ import { SessionInbox } from "./inbox.js"
 import { SessionMessage } from "./message.js"
 import { SessionProjector } from "./projector.js"
 import { SessionRunner } from "./runner/index.js"
+import { SessionMessageTable } from "./sql.js"
 import { SessionStore } from "./store.js"
 
 export class DestinationNotFoundError extends Schema.TaggedError<DestinationNotFoundError>()(
@@ -47,7 +49,19 @@ export interface Interface {
     void,
     NotFoundError | DestinationNotFoundError | DestinationNotDirectoryError | DestinationUnavailableError
   >
+  /**
+   * Returns a session whose directory no longer exists to the most recent earlier location that still does.
+   * Leaves running sessions and sessions with no surviving earlier location in place and returns undefined.
+   */
+  readonly recover: (
+    sessionID: Session.ID,
+  ) => Effect.Effect<
+    Location.Ref | undefined,
+    NotFoundError | DestinationNotFoundError | DestinationNotDirectoryError | DestinationUnavailableError
+  >
 }
+
+const decodeLocation = Schema.decodeUnknownOption(Schema.fromJsonString(Location.Ref))
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SessionMove") {}
 
@@ -115,46 +129,76 @@ const layer = Layer.effect(
       )
     })
 
+    const move: Interface["move"] = Effect.fn("SessionMove.move")(function* (input) {
+      const session = yield* get(input.sessionID)
+      const destination = yield* resolveDestination(session, input)
+      // Probe outside the inbox lock so cancellation remains available during initialization.
+      const unavailable = yield* sourceUnavailable(session)
+      const item = SessionInbox.Item.make({
+        type: "move",
+        payload: destination,
+        delivery: input.delivery ?? "steer",
+      })
+      yield* SessionInbox.serialized(
+        input.sessionID,
+        Effect.gen(function* () {
+          const latest = yield* get(input.sessionID)
+          // Only recover the placement we probed; active runners retain their step-boundary handoff.
+          if (
+            unavailable &&
+            latest.location.directory === session.location.directory &&
+            latest.location.workspaceID === session.location.workspaceID &&
+            !(yield* execution.isActive(input.sessionID))
+          ) {
+            const cancellations = (yield* SessionInbox.moveIDs(database.db, input.sessionID)).map(
+              (item) => [SessionEvent.InboxCancelled, { sessionID: input.sessionID, inboxID: item.id }] as const,
+            )
+            const moved = [SessionEvent.Moved, { sessionID: input.sessionID, ...destination }] as const
+            const first = cancellations[0]
+            if (!first) return yield* bus.publish(...moved).pipe(Effect.asVoid)
+            return yield* bus.publishAll([first, ...cancellations.slice(1), moved])
+          }
+          yield* admission
+            .admit({
+              id: SessionMessage.ID.create(),
+              sessionID: input.sessionID,
+              item,
+            })
+            .pipe(Effect.orDie)
+        }),
+      )
+      yield* execution.wake(input.sessionID)
+    })
+
     return Service.of({
-      move: Effect.fn("SessionMove.move")(function* (input) {
-        const session = yield* get(input.sessionID)
-        const destination = yield* resolveDestination(session, input)
-        // Probe outside the inbox lock so cancellation remains available during initialization.
-        const unavailable = yield* sourceUnavailable(session)
-        const item = SessionInbox.Item.make({
-          type: "move",
-          payload: destination,
-          delivery: input.delivery ?? "steer",
-        })
-        yield* SessionInbox.serialized(
-          input.sessionID,
-          Effect.gen(function* () {
-            const latest = yield* get(input.sessionID)
-            // Only recover the placement we probed; active runners retain their step-boundary handoff.
-            if (
-              unavailable &&
-              latest.location.directory === session.location.directory &&
-              latest.location.workspaceID === session.location.workspaceID &&
-              !(yield* execution.isActive(input.sessionID))
-            ) {
-              const cancellations = (yield* SessionInbox.moveIDs(database.db, input.sessionID)).map(
-                (item) => [SessionEvent.InboxCancelled, { sessionID: input.sessionID, inboxID: item.id }] as const,
-              )
-              const moved = [SessionEvent.Moved, { sessionID: input.sessionID, ...destination }] as const
-              const first = cancellations[0]
-              if (!first) return yield* bus.publish(...moved).pipe(Effect.asVoid)
-              return yield* bus.publishAll([first, ...cancellations.slice(1), moved])
-            }
-            yield* admission
-              .admit({
-                id: SessionMessage.ID.create(),
-                sessionID: input.sessionID,
-                item,
-              })
-              .pipe(Effect.orDie)
-          }),
+      move,
+      recover: Effect.fn("SessionMove.recover")(function* (sessionID) {
+        const session = yield* get(sessionID)
+        if (yield* fs.isDir(session.location.directory)) return undefined
+        if (yield* execution.isActive(sessionID)) return undefined
+        // Every applied move appends a location-switched message naming the location it left, so the
+        // messages hold the whole history: the oldest one's previous location is where the session was created.
+        // Durable event rows are not used: they are kept only when the server enables `events.persist`.
+        const switches = yield* database.db
+          .select({
+            location: sql<string>`json_extract(${SessionMessageTable.data}, '$.location')`,
+            previous: sql<string | null>`json_extract(${SessionMessageTable.data}, '$.previous.location')`,
+          })
+          .from(SessionMessageTable)
+          .where(and(eq(SessionMessageTable.session_id, sessionID), eq(SessionMessageTable.type, "location-switched")))
+          .orderBy(desc(SessionMessageTable.seq))
+          .all()
+          .pipe(Effect.orDie)
+        const fallback = yield* Effect.findFirst(
+          switches
+            .flatMap((row) => (row.previous ? [row.location, row.previous] : [row.location]))
+            .flatMap((location) => Option.toArray(decodeLocation(location)))
+            .filter((location) => location.directory !== session.location.directory),
+          (location) => fs.isDir(location.directory),
         )
-        yield* execution.wake(input.sessionID)
+        if (Option.isNone(fallback)) return undefined
+        yield* move({ sessionID, directory: fallback.value.directory, workspaceID: fallback.value.workspaceID })
+        return fallback.value
       }),
     })
   }),

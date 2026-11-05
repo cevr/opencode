@@ -43,6 +43,8 @@ import type {
   SessionUpdateOutput,
   SessionMoveInput,
   SessionMoveOutput,
+  SessionRecoverInput,
+  SessionRecoverOutput,
   SessionPromptInput,
   SessionPromptOutput,
   SessionCommandInput,
@@ -525,6 +527,14 @@ const EndpointSessionMove = (raw: RawClient["server.session"]) => (input: Sessio
     }).pipe(Effect.mapError(mapClientError)),
   )
 
+const EndpointSessionRecover = (raw: RawClient["server.session"]) => (input: SessionRecoverInput) =>
+  preserveEffect<SessionRecoverOutput>()(
+    raw["session.recover"]({ params: { sessionID: input["sessionID"] } }).pipe(
+      Effect.mapError(mapClientError),
+      Effect.map((value) => value.data),
+    ),
+  )
+
 const EndpointSessionPrompt = (raw: RawClient["server.session"]) => (input: SessionPromptInput) =>
   preserveEffect<SessionPromptOutput>()(
     raw["session.prompt"]({
@@ -757,6 +767,7 @@ const adaptGroupSession = (raw: RawClient["server.session"]) => ({
   switchModel: EndpointSessionSwitchModel(raw),
   update: EndpointSessionUpdate(raw),
   move: EndpointSessionMove(raw),
+  recover: EndpointSessionRecover(raw),
   prompt: EndpointSessionPrompt(raw),
   command: EndpointSessionCommand(raw),
   synthetic: EndpointSessionSynthetic(raw),

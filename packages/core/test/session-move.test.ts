@@ -192,7 +192,12 @@ describe("Session.move", () => {
           Global.node.replace(tempGlobalLayer),
           Project.node.replace(globalProjectNode),
           SessionExecution.node.replace(SessionExecution.noopLayer),
-          SessionMove.node.replace(Layer.succeed(SessionMove.Service, { move: () => Effect.fail(rejection) })),
+          SessionMove.node.replace(
+            Layer.succeed(SessionMove.Service, {
+              move: () => Effect.fail(rejection),
+              recover: () => Effect.succeed(undefined),
+            }),
+          ),
           offlineModels,
         ]),
       )
@@ -576,6 +581,112 @@ describe("Session.move", () => {
             location: { directory: destination },
             subpath: undefined,
           })
+        }),
+      ),
+    ),
+  )
+})
+
+describe("Session.recover", () => {
+  const history = (tmp: string, names: string[]) =>
+    Effect.gen(function* () {
+      const session = yield* Session.Service
+      const bus = yield* Bus.Service
+      const [first, ...rest] = names.map((name) => AbsolutePath.make(path.join(tmp, name)))
+      const created = yield* session.create({ location: Location.Ref.make({ directory: first! }) })
+      yield* Effect.forEach(rest, (directory) =>
+        bus.publish(SessionEvent.Moved, {
+          sessionID: created.id,
+          location: Location.Ref.make({ directory }),
+          projectID: created.projectID,
+        }),
+      )
+      return created
+    })
+
+  it.effect("returns to the newest earlier location that still exists", () =>
+    tmpdirScoped().pipe(
+      Effect.flatMap((tmp) =>
+        Effect.gen(function* () {
+          const session = yield* Session.Service
+          yield* Effect.promise(() => Promise.all(["a", "b"].map((name) => mkdir(path.join(tmp.path, name)))))
+          const created = yield* history(tmp.path, ["a", "b", "a", "gone"])
+          const b = AbsolutePath.make(path.join(tmp.path, "b"))
+
+          // "a" is newer than "b" in the history, so it wins.
+          expect(yield* session.recover(created.id)).toEqual(
+            Location.Ref.make({ directory: AbsolutePath.make(path.join(tmp.path, "a")) }),
+          )
+          expect((yield* session.get(created.id)).location.directory).toBe(AbsolutePath.make(path.join(tmp.path, "a")))
+          expect(yield* session.inbox(created.id)).toEqual([])
+
+          yield* Effect.promise(() => rm(path.join(tmp.path, "a"), { recursive: true }))
+          expect(yield* session.recover(created.id)).toEqual(Location.Ref.make({ directory: b }))
+          expect((yield* session.get(created.id)).location.directory).toBe(b)
+        }),
+      ),
+    ),
+  )
+
+  it.effect("skips earlier locations that are also missing and falls back to the creation location", () =>
+    tmpdirScoped().pipe(
+      Effect.flatMap((tmp) =>
+        Effect.gen(function* () {
+          const session = yield* Session.Service
+          const origin = AbsolutePath.make(path.join(tmp.path, "origin"))
+          yield* Effect.promise(() => mkdir(origin))
+          const created = yield* history(tmp.path, ["origin", "removed-a", "removed-b", "gone"])
+
+          expect(yield* session.recover(created.id)).toEqual(Location.Ref.make({ directory: origin }))
+          expect((yield* session.get(created.id)).location.directory).toBe(origin)
+        }),
+      ),
+    ),
+  )
+
+  it.effect("leaves the session in place when no earlier location exists or the current one still does", () =>
+    tmpdirScoped().pipe(
+      Effect.flatMap((tmp) =>
+        Effect.gen(function* () {
+          const session = yield* Session.Service
+          const gone = AbsolutePath.make(path.join(tmp.path, "gone"))
+          const lonely = yield* history(tmp.path, ["removed", "gone"])
+
+          expect(yield* session.recover(lonely.id)).toBeUndefined()
+          expect((yield* session.get(lonely.id)).location.directory).toBe(gone)
+
+          yield* Effect.promise(() => Promise.all(["a", "b"].map((name) => mkdir(path.join(tmp.path, name)))))
+          const present = yield* history(tmp.path, ["a", "b"])
+          expect(yield* session.recover(present.id)).toBeUndefined()
+          expect((yield* session.get(present.id)).location.directory).toBe(AbsolutePath.make(path.join(tmp.path, "b")))
+          expect(yield* session.recover(Session.ID.create()).pipe(Effect.flip)).toBeInstanceOf(Session.NotFoundError)
+        }),
+      ),
+    ),
+  )
+
+  itWithActiveExecution.live("does not move a running session", () =>
+    tmpdirScoped().pipe(
+      Effect.flatMap((tmp) =>
+        Effect.gen(function* () {
+          const session = yield* Session.Service
+          const execution = yield* SessionExecution.Service
+          const source = AbsolutePath.make(path.join(tmp.path, "source"))
+          const current = AbsolutePath.make(path.join(tmp.path, "current"))
+          yield* Effect.promise(() => Promise.all([mkdir(source), mkdir(current)]))
+          const created = yield* history(tmp.path, ["source", "current"])
+
+          // Hold real execution open in the current directory, then remove it.
+          yield* execution.wake(created.id)
+          expect(yield* execution.isActive(created.id)).toBe(true)
+          yield* Effect.promise(() => rm(current, { recursive: true }))
+
+          expect(yield* session.recover(created.id)).toBeUndefined()
+          expect((yield* session.get(created.id)).location.directory).toBe(current)
+          expect(yield* session.inbox(created.id)).toEqual([])
+
+          yield* execution.interrupt(created.id)
+          yield* execution.awaitIdle(created.id)
         }),
       ),
     ),

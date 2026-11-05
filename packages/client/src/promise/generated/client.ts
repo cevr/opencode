@@ -37,6 +37,8 @@ import type {
   SessionUpdateOutput,
   SessionMoveInput,
   SessionMoveOutput,
+  SessionRecoverInput,
+  SessionRecoverOutput,
   SessionPromptInput,
   SessionPromptOutput,
   SessionCommandInput,
@@ -739,6 +741,17 @@ export function make(options: ClientOptions) {
           },
           requestOptions,
         ),
+      recover: (input: SessionRecoverInput, requestOptions?: RequestOptions) =>
+        request<{ readonly data: SessionRecoverOutput }>(
+          {
+            method: "POST",
+            path: `/api/session/${encodeURIComponent(input.sessionID)}/recover`,
+            successStatus: 200,
+            declaredStatuses: [400, 401, 404],
+            empty: false,
+          },
+          requestOptions,
+        ).then((value) => value.data),
       prompt: (input: SessionPromptInput, requestOptions?: RequestOptions) =>
         request<{ readonly data: SessionPromptOutput }>(
           {

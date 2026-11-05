@@ -207,6 +207,7 @@ export interface Interface {
     permissions: Permission.Ruleset
   }) => Effect.Effect<void, NotFoundError>
   readonly move: SessionMove.Interface["move"]
+  readonly recover: SessionMove.Interface["recover"]
   readonly prompt: (
     input: Parameters<Session.Handle["prompt"]>[0] & { sessionID: SessionSchema.ID },
   ) => ReturnType<Session.Handle["prompt"]>
@@ -503,6 +504,7 @@ const layer = Layer.effect(
       setMetadata: (input) => sessions.forSession(input.sessionID).setMetadata(input),
       setPermissions: (input) => sessions.forSession(input.sessionID).setPermissions(input),
       move: moves.move,
+      recover: moves.recover,
       compact: (input) => sessions.forSession(input.sessionID).compact(input),
       wait: (sessionID) => sessions.forSession(sessionID).wait(),
       active: execution.active,

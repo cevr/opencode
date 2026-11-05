@@ -3335,6 +3335,10 @@ export type SessionMoveInput = {
 
 export type SessionMoveOutput = void
 
+export type SessionRecoverInput = { readonly sessionID: string }
+
+export type SessionRecoverOutput = { data?: LocationPublicRef | undefined }["data"]
+
 export type SessionPromptInput = {
   readonly sessionID: string
   readonly id?: string | null | undefined

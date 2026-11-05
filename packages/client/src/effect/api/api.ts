@@ -207,6 +207,10 @@ export type SessionMoveInput = {
 export type SessionMoveOutput = void
 export type SessionMoveOperation<E = never> = (input: SessionMoveInput) => Effect.Effect<SessionMoveOutput, E>
 
+export type SessionRecoverInput = { readonly sessionID: Session.ID }
+export type SessionRecoverOutput = Location.PublicRef | undefined
+export type SessionRecoverOperation<E = never> = (input: SessionRecoverInput) => Effect.Effect<SessionRecoverOutput, E>
+
 export type SessionPromptInput = {
   readonly sessionID: Session.ID
   readonly id?: SessionMessage.ID | undefined
@@ -410,6 +414,7 @@ export interface SessionApi<E = never> {
   readonly switchModel: SessionSwitchModelOperation<E>
   readonly update: SessionUpdateOperation<E>
   readonly move: SessionMoveOperation<E>
+  readonly recover: SessionRecoverOperation<E>
   readonly prompt: SessionPromptOperation<E>
   readonly command: SessionCommandOperation<E>
   readonly synthetic: SessionSyntheticOperation<E>
