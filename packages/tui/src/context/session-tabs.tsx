@@ -16,6 +16,7 @@ import { newSessionLocation } from "../config/new-session-location"
 import { createSessionRetention } from "@opencode/client/solid"
 import { createProgramStatus, type PendingSession } from "./program-status"
 import { anchorKey, type AnchorTarget } from "../routes/session/anchors"
+import { sessionActivity } from "../util/session"
 import {
   closeSessionTab,
   cycleSessionTab,
@@ -30,6 +31,9 @@ import {
   type SessionTab,
   type SessionTabHistory,
 } from "./session-tabs-model"
+
+// Past a finished subagent's notice and the plugins' lingering rows, well before its family's memory adds up.
+const SUBAGENT_IDLE_RETENTION_MS = 5 * 60_000
 
 type TabsState = {
   tabs: SessionTab[]
@@ -137,12 +141,21 @@ export const { use: useSessionTabs, provider: SessionTabsProvider } = createSimp
       unread: {},
     })
     const current = () => (route.data.type === "session" ? root(route.data.sessionID) : undefined)
+    const activity = createMemo(() =>
+      sessionActivity(
+        data.session.list(),
+        data.session.status,
+        (sessionID) => data.shell.listBySession(sessionID).filter((shell) => shell.status === "running").length,
+      ),
+    )
     createSessionRetention({
       session: data.session,
       current: () =>
         route.data.type === "session" && route.data.sessionID !== "dummy" ? route.data.sessionID : undefined,
       keep: () => (enabled() ? state().tabs.map((tab) => tab.sessionID) : []),
       limit: 3,
+      // A long-lived family gains a transcript per subagent; drop those of subagents that finished a while ago.
+      idle: { after: SUBAGENT_IDLE_RETENTION_MS, working: (sessionID) => activity()(sessionID) !== undefined },
     })
     const newTab = createMemo((open = false) => {
       if (route.data.type === "home") return true

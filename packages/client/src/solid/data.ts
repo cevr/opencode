@@ -1929,6 +1929,10 @@ export function createData(config: CreateDataInput) {
         invalidate(sessionID: string) {
           sync.invalidate(`session.message:${sessionID}`)
         },
+        /** Drop one session's loaded transcript, keeping its metadata; the next sync reloads its newest page. */
+        evict(sessionID: string) {
+          evictSession(sessionID)
+        },
       },
       permission: {
         list(sessionID: string) {

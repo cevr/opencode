@@ -5,7 +5,14 @@ import { createGlobalEmitter } from "@solid-primitives/event-bus"
 import { createRoot, createSignal } from "solid-js"
 import { createApi, createFetch, directory, json } from "../fixture/tui-client"
 
-function setup(options: { keep?: string[]; current?: string; limit?: number } = {}) {
+function setup(
+  options: {
+    keep?: string[]
+    current?: string
+    limit?: number
+    idle?: { after: number; working?: (sessionID: string) => boolean; now?: () => number }
+  } = {},
+) {
   return createRoot((dispose) => {
     const events = createGlobalEmitter<{
       [Type in OpenCodeEvent["type"]]: Extract<OpenCodeEvent, { type: Type }>
@@ -36,6 +43,7 @@ function setup(options: { keep?: string[]; current?: string; limit?: number } = 
       current,
       keep,
       limit: options.limit ?? 3,
+      idle: options.idle,
     })
     return {
       dispose,
@@ -44,7 +52,7 @@ function setup(options: { keep?: string[]; current?: string; limit?: number } = 
       evictions,
       setCurrent,
       setKeep,
-      remember(id: string, parentID?: string, updated = 0) {
+      remember(id: string, parentID?: string, updated = 0, idle?: number) {
         data.session.remember({
           id,
           parentID,
@@ -52,7 +60,7 @@ function setup(options: { keep?: string[]; current?: string; limit?: number } = 
           location: { directory },
           cost: 0,
           tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
-          time: { created: 0, updated },
+          time: { created: 0, updated, ...(idle === undefined ? {} : { idle }) },
         })
       },
       async view(id: string) {
@@ -228,6 +236,69 @@ test("re-evicts an already excluded family when background turn events repopulat
     scope.remember("background", undefined, 10)
     expect(scope.cached("background")).toBe(false)
     expect(scope.evictions).toEqual(["background", "background"])
+  } finally {
+    scope.dispose()
+  }
+})
+
+test("a viewed family drops the transcripts of subagents idle past the window and reloads one when opened", async () => {
+  const working = new Set(["waiting"])
+  const scope = setup({
+    current: "viewed",
+    idle: { after: 100, now: () => 1_000, working: (id) => working.has(id) },
+  })
+  try {
+    const parents = {
+      between: "root",
+      viewed: "between",
+      done: "root",
+      recent: "root",
+      waiting: "root",
+      running: "root",
+    }
+    scope.remember("root")
+    for (const [id, parent] of Object.entries(parents)) scope.remember(id, parent)
+    for (const id of ["root", "fresh", ...Object.keys(parents)]) await scope.data.session.message.sync(id)
+    scope.data.session.setStatus("running", "running")
+    scope.remember("root", undefined, 0, 0)
+    scope.remember("viewed", "between", 0, 0)
+    scope.remember("between", "root", 0, 0)
+    scope.remember("done", "root", 0, 0)
+    scope.remember("recent", "root", 0, 950)
+    scope.remember("waiting", "root", 0, 0)
+    scope.remember("running", "root", 0, 0)
+    scope.remember("fresh", "root")
+
+    expect(scope.cached("done")).toBe(false)
+    expect(scope.data.session.get("done")?.id).toBe("done")
+    expect(
+      ["root", "recent", "waiting", "running", "between", "viewed", "fresh"].filter((id) => !scope.cached(id)),
+    ).toEqual([])
+
+    await scope.view("done")
+    expect(scope.cached("done")).toBe(true)
+    await scope.view("viewed")
+    expect(scope.cached("done")).toBe(false)
+
+    working.delete("waiting")
+    scope.data.session.setStatus("running", "idle")
+    expect(["waiting", "running"].some(scope.cached)).toBe(false)
+    // `between` dropped its transcript while `done` was on screen; the root never does.
+    expect(["root", "recent", "between", "viewed"].filter(scope.cached)).toEqual(["root", "recent", "viewed"])
+  } finally {
+    scope.dispose()
+  }
+})
+
+test("a subagent's transcript drops once its idle window passes", async () => {
+  const scope = setup({ current: "root", idle: { after: 30 } })
+  try {
+    await scope.data.session.message.sync("child")
+    scope.remember("root")
+    scope.remember("child", "root", 0, Date.now())
+    expect(scope.cached("child")).toBe(true)
+    await Bun.sleep(80)
+    expect(scope.cached("child")).toBe(false)
   } finally {
     scope.dispose()
   }
