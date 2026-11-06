@@ -960,12 +960,7 @@ describe("ChatGPTPlugin", () => {
           }
           const events = [
             yield* hooks.trigger("session", "context", { ...draft, agent: Agent.ID.make("build"), tools: {} }),
-            yield* hooks.trigger("session", "compaction", {
-              ...draft,
-              agent: Agent.ID.make("build"),
-              tools: {},
-              experimental: { prompt: [] },
-            }),
+            yield* hooks.trigger("session", "compaction", { ...draft, agent: Agent.ID.make("build"), tools: {} }),
           ]
           return events.map((event) => event.options.maxTokens)
         })

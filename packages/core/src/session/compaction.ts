@@ -448,9 +448,6 @@ export const layer = Layer.effect(
      *
      *   [system][S1 + "E9 E10"][E11 … E18][E19][prompt]    plus one nudge if the reply skips the template
      *
-     * The `compaction` hook adds its guidance to [prompt]. An addition to [system] would sit before every message,
-     * so the provider would match none of the conversation it cached and reread all of it at full price.
-     *
      * Later requests open with the checkpoint as one user message:
      *
      *   <conversation-checkpoint>
@@ -479,24 +476,21 @@ export const layer = Layer.effect(
       const prompt = buildPrompt(previous !== undefined, previous?.summary.includes(LEGACY_HEADING) ?? false)
       const headings = SUMMARY_TEMPLATE.split("\n").filter((line) => line.startsWith("##"))
       const filled = (text: string) => text.split("\n").some((line) => headings.includes(line.trim()))
-      const prepared = yield* prepare(context, messages, budget, [prompt])
-      const instructions = prepared.event.experimental.prompt.join("\n\n")
+      const prepared = yield* prepare(context, messages, budget)
       // Size the unchanged request with the number that decided to compact: the last response's count plus an
       // estimate of what came after it. Characters overstate a conversation whose old reasoning the provider drops.
       // A hook can still make this request larger than that count; the provider then rejects it and it is resent as
       // text. An overflow already proved the count low, so it keeps the character estimate.
       const measured = trigger.reason === "overflow" ? undefined : measuredPrompt({ ...context, messages })
 
-      // The summary instructions, with whatever the hook added to them, go after the conversation so the request
-      // keeps the conversation's prefix. They are appended here rather than given to hooks as a message, because the
-      // history fallback drops messages after the kept tail. A reply that ignores the template gets one reminder
-      // before it counts as a failure.
+      // Hooks saw the request without the summary prompt, so it is appended here. A reply that ignores the
+      // template gets one reminder before it counts as a failure.
       const send = (request: LLMRequest, size?: Estimate) =>
         Effect.gen(function* () {
           const prompted = fitOutput(
-            LLMRequest.update(request, { messages: [...request.messages, Message.user(instructions)] }),
+            LLMRequest.update(request, { messages: [...request.messages, Message.user(prompt)] }),
             context.model.limit,
-            size && { ...size, estimated: size.estimated + Token.estimate(instructions) },
+            size && { ...size, estimated: size.estimated + Token.estimate(prompt) },
           )
           const reply = yield* stream(context, prompted, prepared.options, background)
           if (filled(reply.text)) return reply
@@ -504,7 +498,7 @@ export const layer = Layer.effect(
           const nudged = fitOutput(
             LLMRequest.update(prompted, { messages: [...prompted.messages, Message.user(NUDGE)] }),
             context.model.limit,
-            size && { ...size, estimated: size.estimated + Token.estimate(instructions) + Token.estimate(NUDGE) },
+            size && { ...size, estimated: size.estimated + Token.estimate(prompt) + Token.estimate(NUDGE) },
           )
           const retry = yield* stream(context, nudged, prepared.options, background)
           if (filled(retry.text)) return retry
@@ -518,7 +512,7 @@ export const layer = Layer.effect(
           })
         })
 
-      const overhead = Token.estimate(instructions) + Token.estimate(NUDGE)
+      const overhead = Token.estimate(prompt) + Token.estimate(NUDGE)
       // Automatic compaction starts past the ceiling, so the whole conversation is sent unchanged while the window can
       // still fit the summary. Below that, the history before the tail is sent instead, as before: unchanged when it fits,
       // which still reuses the cache for that shorter prefix, and as text otherwise. Dropping exchanges to make room
@@ -562,7 +556,7 @@ export const layer = Layer.effect(
       if (!context.messages.some(SessionRecentText.messageToText)) return yield* Effect.fail(NOTHING_TO_COMPACT)
       const unsupported = (message: string) =>
         Effect.fail<Failure>({ error: { type: "provider.unsupported-operation", message } })
-      const prepared = yield* prepare(context, context.messages, budget, [], "session")
+      const prepared = yield* prepare(context, context.messages, budget, "session")
 
       const toResult = (window: ReadonlyArray<Message>, usage: Usage | undefined) =>
         spend(context.session.id, usage && SessionUsage.record(usage, context.model.cost)).pipe(
@@ -850,7 +844,6 @@ export const layer = Layer.effect(
       context: SessionContext.Loaded,
       messages: ReadonlyArray<SessionMessage.Info>,
       budget: number,
-      prompt: ReadonlyArray<string>,
       webSocket?: "session",
     ) => {
       const base = transcript(context, messages)
@@ -861,7 +854,6 @@ export const layer = Layer.effect(
         tools: context.tools,
         system: base.system,
         messages: base.messages,
-        prompt,
         webSocket,
         inputTokens: { measured: budget, estimated: 0 },
       })

@@ -387,7 +387,7 @@ describe("OptimizePlugin", () => {
       ])
 
       const unknown = context("unknown-gpt-5")
-      yield* hooks.trigger("session", "compaction", { ...unknown, experimental: { prompt: [] } })
+      yield* hooks.trigger("session", "compaction", unknown)
       expect(listCalls).toBe(2)
       expect(unknown.system.map((part) => part.text)).toEqual([
         SessionSystemPrompt.render(PROMPT_GPT, Object.keys(unknown.tools)),

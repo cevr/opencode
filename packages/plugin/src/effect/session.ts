@@ -50,16 +50,6 @@ export interface SessionCompactionResult {
 export interface SessionCompaction extends SessionContext {
   /** Set to use this compaction and skip the model request. */
   result?: SessionCompactionResult
-  experimental: {
-    /**
-     * The summary instructions, as paragraphs sent in one user message after the conversation. Add guidance for the
-     * summary here. The rest of this request matches the `context` request so the summary reuses the conversation's
-     * prompt cache; an edit to `system`, `tools` or `messages` that the `context` hook does not also make breaks that
-     * match, and the provider rereads the whole conversation at full price. Empty and unused when the provider
-     * compacts natively. Experimental.
-     */
-    prompt: Array<string>
-  }
 }
 
 export interface SessionGenerate extends SessionContext {}
