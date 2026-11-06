@@ -181,7 +181,7 @@ it.live("A Promise runtime tool calls other tools through the hooks, and a refus
           })
         })
       },
-    }).effect(yield* PluginHost.make(plugins))
+    }).effect(yield* PluginHost.make(plugins, "test"))
 
     const snapshot = yield* tools.snapshot()
     expect(snapshot.definitions.map((tool) => tool.name)).toEqual(["kernel"])

@@ -74,6 +74,8 @@ export const awaitQuiet = Effect.fnUntraced(function* <E>(
     // Admission rings the owner's doorbell before it is acknowledged, so the woken turn is already active.
     yield* awaitIdle(sessionID)
   }
+})
+
 /** Active and unconsumed background jobs matching the requested Session, kind, status, and descendant scope. */
 export const list = Effect.fn("SessionBackground.list")(function* (
   jobs: Pick<Job.Interface, "backgroundJobs">,
