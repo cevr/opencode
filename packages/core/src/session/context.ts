@@ -1,6 +1,5 @@
 export * as SessionContext from "./context.js"
 
-import { SessionAgentCache } from "./agent-cache.js"
 import { Model } from "../model.js"
 import { Permission } from "../permission.js"
 import { Context, Effect, Layer } from "effect"
@@ -167,7 +166,7 @@ const layer = Layer.effect(
     })
 
     const load = Effect.fn("SessionContext.load")(function* (selection: Selection) {
-      const model = SessionAgentCache.apply(yield* resolveModel(selection.session), selection.agent.info)
+      const model = yield* resolveModel(selection.session)
       const history = yield* SessionHistory.entriesForRunner(
         db,
         selection.session.id,
