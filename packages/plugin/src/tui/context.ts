@@ -160,16 +160,6 @@ type PromptFooterInput = {
   readonly sessionID?: string
   readonly mode: "normal" | "shell"
   readonly showDetails: boolean
-  /**
-   * What Escape does now, for a footer that replaces the default hint: `cancel` the prompt just sent (with
-   * `seconds` of grace left), `interrupt` the run, or `pull` a pending prompt back. Absent when Escape does nothing.
-   */
-  readonly escape?: {
-    readonly action: "cancel" | "interrupt" | "pull"
-    /** The default hint's words after `esc`, such as `cancel and edit · 4s`. */
-    readonly label: string
-    readonly seconds?: number
-  }
 }
 
 /** One message of a session transcript. */

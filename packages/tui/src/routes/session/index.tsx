@@ -86,7 +86,6 @@ import stripAnsi from "strip-ansi"
 import { usePromptRef } from "../../context/prompt"
 import { usePromptRestore } from "../../prompt/restore"
 import { appendToSessionPrompt } from "../../component/prompt/draft-stash"
-import { escapeIntent, escapeLabel, graceMs, lastSent, type EscapeIntent } from "../../prompt/escape"
 import type { ProjectedPrompt } from "../../prompt/codec"
 import { deduplicateVisibleImages } from "../../prompt/attachment"
 import { useEpilogue } from "../../context/epilogue"
@@ -793,96 +792,6 @@ export function Session(props: {
       if (!(await requestPending("cancel", inboxID, failureLabel))) return
       return { composer: appendToSessionPrompt(sessionID, restored, renderer.widthMethod) }
     })
-  // Stops the run, then stages a revert to before `message` (rolling back its file edits) once the run has settled.
-  // Resolves with the prompt to put back and, if the revert failed, why.
-  const takeBack = async (message: SessionMessageUser) => {
-    const restored = await restorePrompt(message)
-    await client.api.session.interrupt({ sessionID })
-    await client.api.experimental.session.wait({ sessionID })
-    // Revert restores files, not what a shell command did outside them.
-    const index = messages().findIndex((item) => item.id === message.id)
-    const ranShell = messages()
-      .slice(index + 1)
-      .some(
-        (item) =>
-          item.type === "assistant" &&
-          item.content.some((part) => part.type === "tool" && canonicalToolName(part.name) === "shell"),
-      )
-    const failure = await client.api.session.revert.stage({ sessionID, messageID: message.id }).then(
-      () => undefined,
-      (error: unknown) => ({ error }),
-    )
-    return { restored, ranShell, failure }
-  }
-
-  // Escape on a busy session while the composer is empty (prompt/escape.ts decides what it means).
-  const latestUserID = createMemo(() => messagesBeforeRevert().findLast((message) => message.type === "user")?.id)
-  const readEscape = (draft: boolean) =>
-    escapeIntent({
-      busy: data.session.status(sessionID) === "running",
-      draft,
-      // A subagent view has no composer to take a pending prompt back into.
-      pending: session()?.parentID ? [] : pendingUsers(),
-      latestUserID: latestUserID(),
-      sent: lastSent(sessionID),
-      now: Date.now(),
-      grace: graceMs(config.escape_cancel_grace),
-    })
-  // Re-read on each whole second of a cancel window so the hint counts down and then turns into `esc interrupt`.
-  const [escapeTick, setEscapeTick] = createSignal(0)
-  const escape = createMemo(() => {
-    escapeTick()
-    return readEscape(false)
-  })
-  createEffect(() => {
-    const intent = escape()
-    if (intent.type !== "cancel") return
-    const timer = setTimeout(() => setEscapeTick((tick) => tick + 1), (intent.left % 1000 || 1000) + 5)
-    onCleanup(() => clearTimeout(timer))
-  })
-  let escaping = false
-  // Acts on one Escape; false when it means nothing to the session. A press while the last one is still settling is
-  // swallowed so it cannot cancel twice.
-  const runEscape = (intent: EscapeIntent) => {
-    if (intent.type === "none") return false
-    if (escaping) return true
-    const pending = intent.type === "pull" ? pendingUsers().find((item) => item.id === intent.inboxID) : undefined
-    const message =
-      intent.type === "cancel"
-        ? messages().find((item): item is SessionMessageUser => item.id === intent.messageID && item.type === "user")
-        : undefined
-    const work = (() => {
-      if (pending)
-        return undoPending(pending.id, pending.payload).then((undone) => {
-          if (!sessionDisposed) undone?.composer?.focus()
-        })
-      if (message)
-        return takeBack(message).then(({ restored, ranShell, failure }) => {
-          appendToSessionPrompt(sessionID, restored, renderer.widthMethod)
-          if (failure)
-            toast.show({
-              message: `Cancelled, but couldn't revert: ${errorMessage(failure.error)}`,
-              variant: "warning",
-              duration: 5000,
-            })
-          else if (ranShell)
-            toast.show({
-              message: "Cancelled; shell commands it ran are not undone",
-              variant: "warning",
-              duration: 5000,
-            })
-        })
-      if (intent.type === "interrupt") return client.api.session.interrupt({ sessionID, resume: true })
-    })()
-    if (!work) return false
-    escaping = true
-    void work
-      .catch((error) => toast.show({ message: errorMessage(error), variant: "error", duration: 5000 }))
-      .finally(() => {
-        escaping = false
-      })
-    return true
-  }
   const openQueuedPrompts = () =>
     dialog.replace(() => (
       <DialogSelect
@@ -1230,10 +1139,13 @@ export function Session(props: {
         }
         const undo = pendingDeliveries().has(message.id)
           ? undoPending(message.id, message)
-          : takeBack(message).then(({ restored, failure }) => {
-              if (failure) throw failure.error
+          : (async () => {
+              const restored = await restorePrompt(message)
+              await client.api.session.interrupt({ sessionID })
+              await client.api.experimental.session.wait({ sessionID })
+              await client.api.session.revert.stage({ sessionID, messageID: message.id })
               appendToSessionPrompt(sessionID, restored, renderer.widthMethod)
-            })
+            })()
         void undo.catch((error) => toast.show({ message: errorMessage(error), variant: "error", duration: 5000 }))
         dialog.clear()
       },
@@ -1482,21 +1394,6 @@ export function Session(props: {
       },
     },
     {
-      // Escape: cancel the prompt just sent, interrupt the run, or take back a queued prompt. The subagent view's
-      // panel handles its own Escape (see Composer's onEscape).
-      title: "Interrupt session",
-      id: "session.interrupt",
-      group: "Session",
-      palette: undefined,
-      enabled: !disabled() && !session()?.parentID && escape().type !== "none",
-      run: () => {
-        const current = prompt()
-        if (!current?.focused || current.mode === "shell") return
-        const draft = current.current.text !== "" || (current.current.files?.length ?? 0) > 0
-        runEscape(readEscape(draft))
-      },
-    },
-    {
       title: "Background blocking tools",
       id: "session.background",
       group: "Session",
@@ -1728,9 +1625,6 @@ export function Session(props: {
                 sessionID={route.sessionID}
                 open={composer.open || (!!session()?.parentID && forms().length === 0)}
                 defaultTab={composer.tab ?? (session()?.parentID ? "subagents" : undefined)}
-                // In a subagent view the panel stands in for the composer, so Escape interrupts the subagent first.
-                onEscape={session()?.parentID ? () => runEscape(readEscape(false)) : undefined}
-                escapeHint={session()?.parentID ? escapeLabel(escape()) : undefined}
                 onClose={() => {
                   const parent = session()?.parentID
                   if (parent) {
@@ -1778,7 +1672,6 @@ export function Session(props: {
                   <Prompt
                     visible={true}
                     ref={bind}
-                    escape={escape}
                     muted={props.promptMuted}
                     onSubmit={() => {
                       toBottom()
