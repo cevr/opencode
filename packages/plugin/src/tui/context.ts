@@ -610,6 +610,37 @@ export interface AutocompleteSource {
   readonly options: () => readonly AutocompleteItem[]
 }
 
+/** A key hint in the composer panel's footer: `label shortcut`. */
+export interface ComposerTabHint {
+  readonly label: string
+  readonly shortcut: string
+}
+
+/** What a plugin's composer tab draws for. */
+export interface ComposerTabInput {
+  /** The session whose panel shows the tab. */
+  readonly sessionID: string
+  /** Closes the panel, as Escape does. */
+  readonly close: () => void
+}
+
+/**
+ * A tab of the session's composer panel (the Subagents panel, opened by ↓ on
+ * an empty prompt), after the host's own tabs. Its content mounts only while
+ * the tab is the active one in an open panel, so a keymap layer it creates
+ * with `mode: "composer"` acts only then and goes when it unmounts. The panel
+ * keeps ←/→ (tabs) and Escape (close) for itself.
+ */
+export interface ComposerTab {
+  /** Unique among the panel's tabs; the host's are `subagents`, `shell` and `terminals`. */
+  readonly id: string
+  /** The tab's name in the panel's tab row. */
+  readonly title: string
+  /** The footer's key hints while the tab is active. Reactive. */
+  readonly hints?: () => readonly ComposerTabHint[]
+  readonly render: (input: ComposerTabInput) => JSX.Element
+}
+
 /** Host markdown, styled with the current theme's syntax and every registered code-block renderer. */
 export type MarkdownProps = {
   readonly content: string
@@ -700,6 +731,11 @@ export interface UI {
    * trigger, the last-enabled one wins.
    */
   readonly autocomplete: (source: AutocompleteSource) => () => void
+  /**
+   * Adds a tab to the session's composer panel until the returned cleanup
+   * runs; see ComposerTab. Tabs follow the host's, in enable order.
+   */
+  readonly composerTab: (tab: ComposerTab) => () => void
   /** The host's markdown renderer, for text that should read like the transcript. */
   readonly Markdown: (props: MarkdownProps) => JSX.Element
   /** The host's code renderer, for source that should read like the transcript's. */

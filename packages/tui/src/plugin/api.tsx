@@ -11,6 +11,7 @@ import type {
   SlotPath,
   Toast,
   AutocompleteSource,
+  ComposerTab,
 } from "@opencode/plugin/tui/context"
 import type { Placement, PlacementKind } from "./structure"
 import { infoStringToFiletype, type MarkdownCodeBlockRenderer } from "@opentui/core"
@@ -50,10 +51,13 @@ export type RegisteredSlot = {
 
 const placements = ["prepend", "append", "before", "after", "replace"] as const satisfies readonly PlacementKind[]
 
+/** The composer panel's own tabs, which a plugin's tab cannot share an id with. */
+export const HOST_COMPOSER_TABS: readonly string[] = ["subagents", "shell", "terminals"]
+
 // The provider's registration store, narrowed to what a plugin context needs:
 // route/slot registration lands there, but ordering and lifecycle stay owned
 // by the provider.
-export type RegistryKind = "routes" | "slots" | "markdown" | "layout" | "autocomplete"
+export type RegistryKind = "routes" | "slots" | "markdown" | "layout" | "autocomplete" | "composer"
 
 export type Registry = {
   has(kind: RegistryKind, name: string): boolean
@@ -62,6 +66,7 @@ export type Registry = {
   set(kind: "markdown", name: string, render: MarkdownCodeBlockRenderer): void
   set(kind: "layout", name: string, layout: Layout): void
   set(kind: "autocomplete", name: string, source: AutocompleteSource): void
+  set(kind: "composer", name: string, tab: ComposerTab): void
   remove(kind: RegistryKind, name: string): void
   active(): boolean
 }
@@ -334,6 +339,17 @@ export function createPluginContext(input: {
           throw new Error(`Autocomplete trigger already registered: ${source.trigger}`)
         input.registry.set("autocomplete", source.trigger, source)
         return registration("autocomplete", source.trigger)
+      },
+      composerTab(tab) {
+        if (!/^[\w.-]+$/.test(tab.id))
+          throw new Error(`Composer tab id must be letters, digits, ".", "_" or "-": ${tab.id}`)
+        if (HOST_COMPOSER_TABS.includes(tab.id)) throw new Error(`Composer tab id is the host's own: ${tab.id}`)
+        if (input.registry.has("composer", tab.id)) throw new Error(`Composer tab already registered: ${tab.id}`)
+        input.registry.set("composer", tab.id, {
+          ...tab,
+          render: (tabInput) => provide(() => tab.render(tabInput)),
+        })
+        return registration("composer", tab.id)
       },
       Markdown: PluginMarkdown,
       Code: PluginCode,
