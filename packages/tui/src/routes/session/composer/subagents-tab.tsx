@@ -12,13 +12,13 @@ import { Locale } from "../../../util/locale"
 import { Keymap } from "../../../context/keymap"
 import { useComposerTab } from "./context"
 import { withTimestampedFallback } from "@opencode/util/session-title-fallback"
-import { sessionFamily } from "../../../util/session"
+import { sessionActivity, sessionFamily, type SessionActivity } from "../../../util/session"
 
 interface SubagentEntry {
   sessionID: string
   agent: string
   title: string
-  status: string
+  activity: SessionActivity | undefined
   current: boolean
   prefix: string
 }
@@ -42,7 +42,11 @@ export function SubagentsTab(props: { sessionID: string }) {
     const current = session()
     if (!current) return []
 
-    const result = sessionFamily<SessionInfo>(data.session.list(), current.id).map(
+    const sessions = data.session.list()
+    const activity = sessionActivity(sessions, data.session.status, (sessionID) =>
+      data.shell.listBySession(sessionID).filter((shell) => shell.status === "running").length,
+    )
+    const result = sessionFamily<SessionInfo>(sessions, current.id).map(
       ({ session, prefix }): SubagentEntry => {
         const title = withTimestampedFallback(session)
         const agentMatch = title.match(/@(\w+) subagent/)
@@ -54,14 +58,15 @@ export function SubagentsTab(props: { sessionID: string }) {
               ? Locale.titlecase(agentMatch[1])
               : "Subagent",
           title: agentMatch ? title.replace(agentMatch[0], "").trim() || title : title,
-          status: data.session.status(session.id),
+          activity: activity(session.id),
           current: session.id === route.sessionID,
           prefix,
         }
       },
     )
 
-    return result.filter((entry) => (filter.active ? entry.status === "running" : entry.status !== "running"))
+    // Active: its turn runs, or it waits on a shell or subagent of its own that still runs.
+    return result.filter((entry) => (entry.activity !== undefined) === filter.active)
   })
 
   let selectedSessionID = ""
@@ -122,7 +127,7 @@ export function SubagentsTab(props: { sessionID: string }) {
       hints: () => {
         const entry = selectedEntry()
         return [
-          ...(entry?.status === "running"
+          ...(entry?.activity === "running"
             ? [{ label: "interrupt", shortcut: shortcuts.get("composer.subagent.interrupt") ?? "" }]
             : []),
           {
@@ -188,7 +193,7 @@ export function SubagentsTab(props: { sessionID: string }) {
         group: "Composer",
         run() {
           const entry = selectedEntry()
-          if (!entry || entry.status !== "running") return
+          if (!entry || entry.activity !== "running") return
           void client.api.session.interrupt({ sessionID: entry.sessionID })
         },
       },
@@ -206,7 +211,8 @@ export function SubagentsTab(props: { sessionID: string }) {
             {(entry, index) => {
               const active = createMemo(() => index() === store.selected)
               const status = createMemo(() => {
-                if (entry.status === "running") return "Running"
+                if (entry.activity === "running") return "Running"
+                if (entry.activity === "waiting") return "Waiting"
                 return ""
               })
               return (

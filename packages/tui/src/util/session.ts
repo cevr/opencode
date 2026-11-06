@@ -43,6 +43,39 @@ export function sessionFamily<T extends SessionNode>(sessions: readonly T[], ses
   return walk(root(current).id, [])
 }
 
+export type SessionActivity = "running" | "waiting"
+
+/**
+ * How each session works now, from live state only: `running` while its turn runs, `waiting` while
+ * it is idle yet a shell it started still runs or a session under it works. Undefined for one that
+ * does not. A background call whose completion notice never arrives keeps nothing working.
+ */
+export function sessionActivity<T extends SessionNode>(
+  sessions: readonly T[],
+  status: (sessionID: string) => "idle" | "running",
+  runningShells: (sessionID: string) => number,
+) {
+  const children = new Map<string, string[]>()
+  sessions.forEach((session) => {
+    if (session.parentID) children.set(session.parentID, [...(children.get(session.parentID) ?? []), session.id])
+  })
+  const known = new Map<string, SessionActivity | undefined>()
+  function of(sessionID: string, path: ReadonlySet<string>): SessionActivity | undefined {
+    if (known.has(sessionID)) return known.get(sessionID)
+    if (path.has(sessionID)) return undefined
+    const inner = new Set([...path, sessionID])
+    const activity: SessionActivity | undefined =
+      status(sessionID) === "running"
+        ? "running"
+        : runningShells(sessionID) > 0 || (children.get(sessionID) ?? []).some((child) => of(child, inner) !== undefined)
+          ? "waiting"
+          : undefined
+    known.set(sessionID, activity)
+    return activity
+  }
+  return (sessionID: string) => of(sessionID, new Set())
+}
+
 export function contextUsage(
   messages: ReadonlyArray<SessionMessageInfo>,
   models: ReadonlyArray<ModelInfo> | undefined,
