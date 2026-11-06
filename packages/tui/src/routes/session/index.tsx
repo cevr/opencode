@@ -103,7 +103,7 @@ import { collapseShellOutput, collapseToolOutput } from "../../util/collapse-too
 import { Keymap, type KeymapCommand } from "../../context/keymap"
 import { usePathFormatter } from "../../context/path-format"
 import { useLocation } from "../../context/location"
-import { PluginTool, Slot } from "../../plugin/render"
+import { Slot } from "../../plugin/render"
 import { usePlugin } from "../../plugin/context"
 import type { TranscriptRowKind } from "@opencode/plugin/tui/context"
 import {
@@ -2187,9 +2187,7 @@ function SessionPartView(props: {
           </Match>
           <Match when={item().type === "tool"}>
             <Slot path="session.part.tool" input={toolInput()}>
-              <PluginTool input={toolInput()}>
-                <ToolPart part={item() as SessionMessageAssistantTool} images={props.images} />
-              </PluginTool>
+              <ToolPart part={item() as SessionMessageAssistantTool} images={props.images} />
             </Slot>
           </Match>
         </Switch>

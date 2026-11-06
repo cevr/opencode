@@ -1670,22 +1670,12 @@ export function Prompt(props: PromptProps) {
   const maxHeight = createMemo(() => Math.max(6, Math.floor(dimensions().height / 3)))
 
   const plugins = usePlugin()
-  // "band" chrome: no accent bar or metadata row; the editor sits on a
-  // raised band with a blank row above and below and an optional prefix.
-  const band = createMemo(() => {
-    const composer = plugins.layout().composer
-    return composer?.chrome === "band" ? { prefix: composer.prefix } : undefined
-  })
   // "rail" chrome: a bare left rail in the text colour (the warning colour in
   // shell mode), no fill, padding or metadata row.
   const rail = createMemo(() => plugins.layout().composer?.chrome === "rail")
-  const bare = () => band() !== undefined || rail()
+  const bare = rail
   const promptBg = createMemo(() =>
-    rail()
-      ? RGBA.fromInts(0, 0, 0, 0)
-      : band()
-        ? theme.background.raised.base
-        : theme.decrease(theme.background.raised.base),
+    rail() ? RGBA.fromInts(0, 0, 0, 0) : theme.decrease(theme.background.raised.base),
   )
   const railColor = () => (store.mode === "shell" ? theme.text.feedback.warning.base : theme.text.base)
 
@@ -1695,21 +1685,16 @@ export function Prompt(props: PromptProps) {
         <box
           width="100%"
           border={["left"]}
-          // Workaround: an OpenTUI box keeps its border once styled (setting
-          // `border` back to false leaves the bar drawn), so the band paints the
-          // bar in the band colour instead of removing it.
-          borderColor={band() ? promptBg() : rail() ? railColor() : borderHighlight()}
-          backgroundColor={band() ? promptBg() : undefined}
+          borderColor={rail() ? railColor() : borderHighlight()}
           customBorderChars={{
             ...SplitBorder.customBorderChars,
             bottomLeft: "╹",
           }}
         >
           <box
-            paddingLeft={band() ? 0 : rail() ? 1 : dimensions().width < 44 ? 1 : 2}
+            paddingLeft={rail() ? 1 : dimensions().width < 44 ? 1 : 2}
             paddingRight={dimensions().width < 44 ? 1 : 2}
             paddingTop={rail() ? 0 : 1}
-            paddingBottom={band() ? 1 : 0}
             flexShrink={0}
             backgroundColor={promptBg()}
             flexGrow={1}
@@ -1784,7 +1769,6 @@ export function Prompt(props: PromptProps) {
               </box>
             </Show>
             <box flexDirection="row" width="100%">
-              <Show when={band()?.prefix}>{(prefix) => <text fg={theme.text.base}>{prefix()}</text>}</Show>
               <textarea
                 flexGrow={1}
                 flexShrink={1}

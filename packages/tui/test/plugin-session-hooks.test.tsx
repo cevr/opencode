@@ -119,10 +119,10 @@ test("a plugin reads a session's context usage, goal and parts, and renders host
   await app.waitForFrame((frame) => frame.includes("goal none [none]"))
 })
 
-test("a plugin renders one tool by canonical name and sets transcript defaults", async () => {
+test("a plugin sets transcript defaults", async () => {
   await using app = await openSession("tool-renderer")
   await app.ready
-  // `bash` is the shell tool's canonical name; grouping "none" keeps the call its own row.
+  // grouping "none" keeps the call its own row.
   // thinking "show" expands reasoning the host hides by default.
   await waitForHighlightedFrame(
     app,
@@ -186,8 +186,6 @@ test("a plugin claims the transcript's header, first and last rows, user prompt 
   expect(lines[footer - 1]).toContain("anything")
   const user = lines.findIndex((line) => line.includes("User band"))
   expect(lines[user - 1]?.trim()).toBe("")
-  // The band composer puts its prefix before the editor. Its bar is still drawn, in the band's colour.
-  expect(lines.some((line) => line.startsWith(" ┃> "))).toBe(true)
 })
 
 test("a plugin picks the bare rail composer", async () => {

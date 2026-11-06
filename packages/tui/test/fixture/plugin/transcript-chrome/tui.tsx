@@ -2,14 +2,13 @@ import { Plugin } from "@opencode/plugin/tui"
 
 // Claims the transcript's chrome: a header, a first row, the user prompt, the
 // turn footer and a last row drawing host code, with tight rows, a one-cell
-// inset and a band composer.
+// inset.
 export default Plugin.define({
   id: "fixture.transcript-chrome",
   setup(context) {
     context.ui.layout({
       inset: 1,
       rowGap: (row) => (row.kind === "footer" ? 0 : 1),
-      composer: { chrome: "band", prefix: "> " },
     })
     context.ui.slot({ append: "session.header", render: () => <text>Header claimed</text> })
     context.ui.slot({ append: "session.transcript.start", render: () => <text>Transcript start claimed</text> })

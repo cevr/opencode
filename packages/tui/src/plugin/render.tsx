@@ -160,23 +160,6 @@ export function Slot<Path extends SlotPath>(props: SlotProps<Path>) {
   )
 }
 
-// The renderer a plugin registered for one tool through ui.tool, contained
-// like a slot contribution; the host's own row when none did.
-export function PluginTool(props: ParentProps<{ readonly input: SlotMap["session.part.tool"] }>) {
-  const plugins = usePlugin()
-  const claim = createMemo(() => plugins.tool(props.input.tool))
-  return (
-    // Keyed so a hot reload or a new owner recreates the boundary.
-    <Show keyed when={claim()} fallback={props.children}>
-      {(item) => (
-        <PluginBoundary id={item.plugin} where={`tool ${props.input.tool}`}>
-          {createComponent(item.render, mergeProps(() => props.input))}
-        </PluginBoundary>
-      )}
-    </Show>
-  )
-}
-
 // ui.Markdown: the transcript's markdown, with the current syntax style,
 // every registered code-block renderer and the user's markdown mode.
 export function PluginMarkdown(props: MarkdownProps) {

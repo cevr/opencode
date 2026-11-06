@@ -607,14 +607,12 @@ export interface Layout {
   readonly inset?: number
   /**
    * The composer's chrome. "bar" is the host default: a left accent bar and a
-   * metadata row. "band" is a full-width band on raised.base with a blank row
-   * above and below the editor and the given prefix before it. "rail" is a bare
+   * metadata row. "rail" is a bare
    * left rail in the text colour (the warning colour in shell mode) with no
    * fill, padding or metadata row.
    */
   readonly composer?:
     | { readonly chrome: "bar" }
-    | { readonly chrome: "band"; readonly prefix?: string }
     | { readonly chrome: "rail" }
   /**
    * Transcript defaults for users who have not chosen. The user's `session`
@@ -627,9 +625,6 @@ export interface Layout {
     readonly thinking?: "show" | "hide"
   }
 }
-
-/** Renders one tool call in the transcript. */
-export type ToolRender = (input: SessionPartInput & { readonly tool: string }) => JSX.Element
 
 /** One row of a plugin's composer popup. */
 export interface AutocompleteItem {
@@ -743,13 +738,6 @@ export interface UI {
   readonly slot: (claim: SlotClaim) => () => void
   /** Sets host layout knobs until the returned cleanup runs; see Layout. */
   readonly layout: (layout: Layout) => () => void
-  /**
-   * Renders every call of one tool, by its canonical name (shell, patch,
-   * subagent, read, ...), until the returned cleanup runs. When several
-   * active plugins render one tool, the last-enabled one wins. A slot claim
-   * that replaces session.part.tool still wins over it.
-   */
-  readonly tool: (name: string, render: ToolRender) => () => void
   /**
    * Adds a composer popup for one trigger character until the returned cleanup
    * runs; see AutocompleteSource. When several active plugins claim one
