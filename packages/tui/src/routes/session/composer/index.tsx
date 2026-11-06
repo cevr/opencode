@@ -8,7 +8,7 @@ import { SubagentsTab } from "./subagents-tab"
 import { ShellTab } from "./shell-tab"
 import { TerminalsTab } from "./terminals-tab"
 import { PluginTab } from "./plugin-tab"
-import { usePlugin } from "../../../plugin/context"
+import type { ComposerTab as PluginComposerTab } from "@opencode/plugin/tui/context"
 import { ComposerContext, type ComposerTab } from "./context"
 
 export type ComposerProps = {
@@ -18,11 +18,12 @@ export type ComposerProps = {
   onClose?: () => void
   terminals?: boolean
   visibleTerminalID?: string
+  /** Plugin tabs (`ui.composerTab`), after the host's; the mount site reads them from the plugin registry. */
+  pluginTabs?: readonly PluginComposerTab[]
 }
 
 export function Composer(props: ComposerProps) {
   const theme = useTheme()
-  const plugins = usePlugin()
 
   const [store, setStore] = createStore({
     tabs: {} as Record<string, ComposerTab>,
@@ -132,7 +133,7 @@ export function Composer(props: ComposerProps) {
             <Show when={props.terminals}>
               <TerminalsTab sessionID={props.sessionID} visibleTerminalID={props.visibleTerminalID} />
             </Show>
-            <For each={plugins.composerTabs()}>{(tab) => <PluginTab tab={tab} sessionID={props.sessionID} />}</For>
+            <For each={props.pluginTabs ?? []}>{(tab) => <PluginTab tab={tab} sessionID={props.sessionID} />}</For>
             <box flexDirection="row" gap={2} paddingLeft={1} flexShrink={0}>
               <For each={footerHints()}>
                 {(hint) => (
