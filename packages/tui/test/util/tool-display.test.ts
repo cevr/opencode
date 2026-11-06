@@ -3,6 +3,7 @@ import {
   canonicalToolName,
   finiteNumber,
   primitiveInputSummary,
+  shellActionSummary,
   toolDisplayMetadata,
   webSearchProviderLabel,
 } from "../../src/util/tool-display"
@@ -17,6 +18,20 @@ test("normalizes shared tool primitives", () => {
   expect([finiteNumber(-1.5), finiteNumber(Number.NaN), finiteNumber("1")]).toEqual([-1.5, undefined, undefined])
   expect(primitiveInputSummary({ command: "pwd", count: 2, nested: {} })).toBe("[command=pwd, count=2]")
   expect(primitiveInputSummary({ path: "src/a.ts", line: 2 }, ["path"])).toBe("[line=2]")
+})
+
+test("names a shell call that acts on a handle by its action, and an older transcript's flag form the same", () => {
+  expect(shellActionSummary({ command: "pwd" })).toBeUndefined()
+  expect(shellActionSummary({ action: "run", command: "pwd" })).toBeUndefined()
+  expect(shellActionSummary({ action: "check", id: "sh_1" })).toBe("Checked sh_1")
+  expect(shellActionSummary({ action: "wait", id: "sh_1", ms: 500 })).toBe("Waited on sh_1")
+  expect(shellActionSummary({ action: "kill", id: "sh_1" })).toBe("Killed sh_1")
+  expect(shellActionSummary({ action: "list" })).toBe("Listed shells")
+  // The flag forms before actions.
+  expect(shellActionSummary({ id: "sh_1" })).toBe("Checked sh_1")
+  expect(shellActionSummary({ id: "sh_1", wait: 500 })).toBe("Waited on sh_1")
+  expect(shellActionSummary({ id: "sh_1", kill: true })).toBe("Killed sh_1")
+  expect(shellActionSummary({ list: true })).toBe("Listed shells")
 })
 
 describe("webSearchProviderLabel", () => {

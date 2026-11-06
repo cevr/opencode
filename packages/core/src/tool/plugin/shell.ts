@@ -56,48 +56,70 @@ const description = (shell?: string) =>
     `One still running after its timeout (default ${minutes(DEFAULT_BACKGROUND_AFTER_MS)}) moves to the background: the call returns its running handle with the output so far, and the command keeps running.`,
     "background: true returns the handle at once.",
     "You are notified when a background command ends.",
-    "Act on a handle with this same tool and its id instead of a command: { id } checks it (its state and the output since your last look), { id, wait: ms } waits up to ms for it to end, { id, kill: true } stops it.",
-    "{ list: true } lists this session's shells.",
+    'Act on a handle with this same tool, its action and its id: { action: "check", id } shows its state and the output since your last look, { action: "wait", id, ms } waits up to ms for it to end, { action: "kill", id } stops it.',
+    '{ action: "list" } lists this session\'s shells.',
   ].join(" ")
 
-export const Input = Schema.Struct({
-  command: Schema.optionalKey(Schema.String).annotate({
-    description: "Shell command string to execute. Give either command or id.",
+export const Action = Schema.Literals(["run", "check", "wait", "kill", "list"])
+export type Action = typeof Action.Type
+
+// The fields each action takes; `action` itself goes with all of them.
+const FIELDS = {
+  run: ["command", "workdir", "timeout", "description", "background"],
+  check: ["id", "offset", "lines"],
+  wait: ["id", "ms", "offset", "lines"],
+  kill: ["id"],
+  list: [],
+} as const satisfies Record<Action, ReadonlyArray<string>>
+
+// The flags that picked a form before `action` did, and the action form that took each one's place.
+const FLAGS: ReadonlyArray<readonly [field: string, form: (id: string) => string]> = [
+  ["kill", (id) => `{ action: "kill", id: ${id} }`],
+  ["list", () => `{ action: "list" }`],
+  ["wait", (id) => `{ action: "wait", id: ${id}, ms }`],
+]
+
+// One flat object with an `action` enum, never a root anyOf/oneOf: Anthropic and OpenAI reject a tool input
+// schema whose root is a union. Which fields go with which action is checked by `mode`. Its rest stays open so
+// a field no action takes (an old `kill: true`) reaches `mode`, which names the action form to use, instead of
+// being dropped on the way in.
+export const Input = Schema.StructWithRest(
+  Schema.Struct({
+    action: Schema.optionalKey(Action).annotate({
+      description: `What to do: "run" a command (the default when command is given), "check" a shell (its state and the output since your last look), "wait" for it to end, "kill" it (SIGTERM to its process group, SIGKILL after ${Duration.toSeconds(Shell.KILL_GRACE)} s, then its final handle; no end notice follows), or "list" this session's shells, running and recently ended, one line each.`,
+    }),
+    command: Schema.optionalKey(Schema.String).annotate({
+      description: "Run: the shell command string to execute.",
+    }),
+    workdir: Schema.optionalKey(Schema.String).annotate({
+      description:
+        "Run: working directory to execute it in. Defaults to the current working directory. When possible, avoid changing directories in the command and set the working directory here instead.",
+    }),
+    timeout: Schema.optionalKey(NonNegativeInt).annotate({
+      description: `Run: milliseconds. For a foreground command, how long it may run before it moves to the background and the call returns its handle (it is never killed); 0 waits until it ends. Defaults to ${DEFAULT_BACKGROUND_AFTER_MS}. For a background command, a deadline after which it is killed; none by default.`,
+    }),
+    description: Schema.optionalKey(Schema.String).annotate({
+      description: "Run: a few words on what the command does, shown when the session's shells are listed.",
+    }),
+    background: Schema.optionalKey(Schema.Boolean).annotate({
+      description:
+        "Run: run it in the background and return its handle immediately (useful for dev servers and long-running builds). You do not need '&' at the end of the command. You will be notified when it ends. DO NOT poll for completion.",
+    }),
+    id: Schema.optionalKey(Schema.String).annotate({
+      description: "Check, wait, kill: the shell ID (sh_…) an earlier shell call returned.",
+    }),
+    ms: Schema.optionalKey(NonNegativeInt).annotate({
+      description: `Wait: milliseconds to wait for the command to end before returning its handle. Defaults to ${DEFAULT_BACKGROUND_AFTER_MS}.`,
+    }),
+    offset: Schema.optionalKey(NonNegativeInt).annotate({
+      description: `Check, wait: return the output from this byte offset (a handle's \`next\`), up to ${READ_LIMIT / 1024} KiB.`,
+    }),
+    lines: Schema.optionalKey(NonNegativeInt).annotate({
+      description: "Check, wait: return the output's last this many lines.",
+    }),
   }),
-  workdir: Schema.optionalKey(Schema.String).annotate({
-    description:
-      "With command: working directory to execute it in. Defaults to the current working directory. When possible, avoid changing directories in the command and set the working directory here instead.",
-  }),
-  timeout: Schema.optionalKey(NonNegativeInt).annotate({
-    description: `With command: milliseconds. For a foreground command, how long it may run before it moves to the background and the call returns its handle (it is never killed); 0 waits until it ends. Defaults to ${DEFAULT_BACKGROUND_AFTER_MS}. For a background command, a deadline after which it is killed; none by default.`,
-  }),
-  description: Schema.optionalKey(Schema.String).annotate({
-    description: "With command: a few words on what the command does, shown when the session's shells are listed.",
-  }),
-  background: Schema.optionalKey(Schema.Boolean).annotate({
-    description:
-      "With command: run it in the background and return its handle immediately (useful for dev servers and long-running builds). You do not need '&' at the end of the command. You will be notified when it ends. DO NOT poll for completion.",
-  }),
-  id: Schema.optionalKey(Schema.String).annotate({
-    description:
-      "A shell ID (sh_…) an earlier shell call returned: act on that command instead of running one. Alone, it returns the handle's state and the output since your last look.",
-  }),
-  wait: Schema.optionalKey(NonNegativeInt).annotate({
-    description: "With id: milliseconds to wait for the command to end before returning its handle.",
-  }),
-  kill: Schema.optionalKey(Schema.Boolean).annotate({
-    description: `With id: stop the command (SIGTERM to its process group, SIGKILL after ${Duration.toSeconds(Shell.KILL_GRACE)} s) and return its final handle. No end notice follows.`,
-  }),
-  offset: Schema.optionalKey(NonNegativeInt).annotate({
-    description: `With id: return the output from this byte offset (a handle's \`next\`), up to ${READ_LIMIT / 1024} KiB.`,
-  }),
-  lines: Schema.optionalKey(NonNegativeInt).annotate({
-    description: "With id: return the output's last this many lines.",
-  }),
-  list: Schema.optionalKey(Schema.Boolean).annotate({
-    description: "List this session's shells, running and recently ended, one line each.",
-  }),
-})
+  [Schema.Record(Schema.String, Schema.Unknown)],
+)
 type Input = typeof Input.Type
 
 const Backgrounded = Schema.Literals(["start", "limit", "user"])
@@ -198,33 +220,39 @@ const handleMetadata = (handle: Handle) => {
 // What the agent is told once its command runs in the background.
 const guidance = (id: string, file: string) =>
   [
-    `It keeps running, and you will be notified when it ends. shell({ id: "${id}" }) checks it, shell({ id: "${id}", wait: <ms> }) waits for it to end, shell({ id: "${id}", kill: true }) stops it. Output is streaming to: ${file}`,
+    `It keeps running, and you will be notified when it ends. shell({ action: "check", id: "${id}" }) checks it, shell({ action: "wait", id: "${id}", ms: <ms> }) waits for it to end, shell({ action: "kill", id: "${id}" }) stops it. Output is streaming to: ${file}`,
     NO_POLLING,
   ].join("\n\n")
 
-// Which of the tool's three forms a call is, or why it is none of them.
-type Mode = { readonly type: "run"; readonly command: string } | { readonly type: "act"; readonly id: string } | { readonly type: "list" }
+// Which action a call is, with what it acts on, or why it is none.
+type Mode =
+  | { readonly type: "run"; readonly command: string }
+  | { readonly type: "check" | "wait" | "kill"; readonly id: string }
+  | { readonly type: "list" }
+const names = (fields: ReadonlyArray<string>) => fields.join(", ")
 export const mode = (input: Input): Mode | string => {
-  const present = (keys: ReadonlyArray<keyof Input>) => keys.filter((key) => input[key] !== undefined)
-  const forms = [input.command !== undefined, input.id !== undefined, input.list === true].filter(Boolean).length
-  if (forms === 0) return "Give command to run a command, id to act on one of this session's shells, or list: true to list them."
-  if (input.command !== undefined && input.id !== undefined)
-    return "Give either command (to run a command) or id (to act on a shell you started), not both."
-  if (forms > 1) return "list: true takes no command or id."
-  if (input.list === true) {
-    const extra = present(["workdir", "timeout", "description", "background", "wait", "kill", "offset", "lines"])
-    return extra.length ? `list: true takes no other fields (got ${extra.join(", ")}).` : { type: "list" }
-  }
-  if (input.id !== undefined) {
-    const extra = present(["workdir", "timeout", "description", "background"])
-    if (extra.length) return `${extra.join(", ")} only go with command; with id, give wait, kill, offset or lines.`
-    if (input.kill === true && input.wait !== undefined) return "Give kill or wait, not both."
-    if (input.offset !== undefined && input.lines !== undefined) return "Give offset or lines, not both."
-    return { type: "act", id: input.id }
-  }
-  const extra = present(["wait", "kill", "offset", "lines"])
-  if (extra.length) return `${extra.join(", ")} only go with id, the shell ID of a command already started.`
-  return { type: "run", command: input.command ?? "" }
+  const given = Object.keys(input).filter((key) => key !== "action" && input[key] !== undefined)
+  const id = typeof input.id === "string" ? JSON.stringify(input.id) : '"sh_…"'
+  const flag = FLAGS.find(([field]) => given.includes(field))
+  if (flag) return `The shell tool has no ${flag[0]} field; use ${flag[1](id)}.`
+  const known = new Set(Object.values(FIELDS).flat())
+  const unknown = given.filter((key) => !known.has(key as never))
+  if (unknown.length) return `The shell tool has no field ${names(unknown)}; it takes action and the fields of that action.`
+  const action = input.action ?? (input.command !== undefined ? "run" : undefined)
+  if (action === undefined)
+    return input.id !== undefined
+      ? `Give the action to take on ${input.id}: { action: "check", id: ${id} }, { action: "wait", id: ${id}, ms } or { action: "kill", id: ${id} }.`
+      : 'Give command to run a command, { action: "check" | "wait" | "kill", id } to act on one of this session\'s shells, or { action: "list" } to list them.'
+  const takes: ReadonlyArray<string> = FIELDS[action]
+  const extra = given.filter((key) => !takes.includes(key))
+  if (extra.length)
+    return `action "${action}" takes ${takes.length ? names(takes) : "no other fields"}, not ${names(extra)}.`
+  if (action === "list") return { type: "list" }
+  if (action === "run")
+    return input.command === undefined ? 'action "run" needs command.' : { type: "run", command: input.command }
+  if (input.id === undefined) return `action "${action}" needs id, the shell ID (sh_…) a shell call returned.`
+  if (input.offset !== undefined && input.lines !== undefined) return "Give offset or lines, not both."
+  return { type: action, id: input.id }
 }
 
 // A foreground command's end, as the job that ran it settled it.
@@ -563,7 +591,7 @@ export const Plugin = {
     })
 
     // Checks, waits on or kills one of the session's shells by its ID.
-    const act = Effect.fnUntraced(function* (input: Input, id: string, context: Tool.Context) {
+    const act = Effect.fnUntraced(function* (input: Input, action: "check" | "wait" | "kill", id: string, context: Tool.Context) {
       const found = yield* own(id, context)
       const how = {
         ...(input.offset !== undefined ? { offset: input.offset } : {}),
@@ -571,22 +599,23 @@ export const Plugin = {
         cap: { lines: READ_LINES, bytes: READ_LIMIT },
       }
       const notes: string[] = []
-      if (input.kill === true) {
+      if (action === "kill") {
         if (found.status === "running") answered.add(found.id)
         else notes.push("it had already ended")
         yield* shell.kill(found.id)
-      } else if (input.wait !== undefined && found.status === "running") {
+      } else if (action === "wait" && found.status === "running") {
+        const ms = input.ms ?? DEFAULT_BACKGROUND_AFTER_MS
         // Claimed while it waits, so an end it sees sends no notice too.
         answered.add(found.id)
         const ended = yield* shell
           .wait(found.id)
           .pipe(
-            Effect.timeoutOption(Duration.millis(input.wait)),
+            Effect.timeoutOption(Duration.millis(ms)),
             Effect.catchTag("Shell.NotFoundError", () => Effect.succeed(Option.none())),
           )
         if (Option.isNone(ended)) {
           answered.delete(found.id)
-          notes.push(`still running after waiting ${seconds(input.wait)}`)
+          notes.push(`still running after waiting ${seconds(ms)}`)
         }
       }
       const seen = yield* look(found.id, how)
@@ -640,8 +669,8 @@ export const Plugin = {
                   metadata: { count: listed.shells.length },
                 })),
               )
-            if (form.type === "act")
-              return act(input, form.id, context).pipe(
+            if (form.type !== "run")
+              return act(input, form.type, form.id, context).pipe(
                 Effect.map(({ handle, content }) => ({ output: handle, content, metadata: handleMetadata(handle) })),
                 Effect.mapError(
                   (error) => new ToolFailure({ message: `Unable to act on shell ${form.id}: ${error.message}`, error }),

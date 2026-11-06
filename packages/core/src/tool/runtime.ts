@@ -212,12 +212,14 @@ const flattenAllOf = (value: unknown): unknown => {
   return flattenAllOf({ ...Object.assign({}, ...allOf), ...rest })
 }
 
+// A keyword may appear twice only with the same primitive value (`type: "object"` on a struct and on the
+// `{ type: "object", additionalProperties: {} }` its open rest adds), which merging leaves unchanged.
 const canFlattenAllOf = (allOf: ReadonlyArray<Record<string, unknown>>, parent: Record<string, unknown>) => {
-  const keys = new Set(Object.keys(parent).filter((key) => key !== "allOf"))
+  const seen = new Map(Object.entries(parent).filter(([key]) => key !== "allOf"))
   return allOf.every((item) =>
-    Object.keys(item).every((key) => {
-      if (keys.has(key)) return false
-      keys.add(key)
+    Object.entries(item).every(([key, value]) => {
+      if (seen.has(key)) return typeof value !== "object" && seen.get(key) === value
+      seen.set(key, value)
       return true
     }),
   )

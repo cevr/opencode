@@ -68,6 +68,23 @@ test("Effect tool schemas use exact optional keys and flatten compatible constra
   })
 })
 
+test("a struct with an open rest is one object schema, its rest merged in rather than an allOf", () => {
+  const tool: Info = {
+    name: "open",
+    description: "Open",
+    input: Schema.StructWithRest(Schema.Struct({ value: Schema.optionalKey(Schema.String) }), [
+      Schema.Record(Schema.String, Schema.Unknown),
+    ]),
+    execute: () => Effect.succeed({ content: "unused" }),
+  }
+
+  expect(definition(tool).inputSchema).toEqual({
+    type: "object",
+    properties: { value: { type: "string" } },
+    additionalProperties: {},
+  })
+})
+
 test.each([
   { name: "plain", input: Schema.Struct({}), metadata: {} },
   {

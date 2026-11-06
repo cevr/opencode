@@ -2,7 +2,7 @@ import fs from "fs/promises"
 import { realpathSync, watch } from "node:fs"
 import os from "os"
 import path from "path"
-import { describe, expect } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer, Queue, Scope, Stream } from "effect"
 import { TestClock } from "effect/testing"
 import { Money } from "@opencode/schema/money"
@@ -39,6 +39,7 @@ import { ID, type Info as ShellInfo } from "@opencode/schema/shell"
 import { ShellTool } from "@opencode/core/tool/plugin/shell"
 import { ToolOutput } from "@opencode/core/tool-output"
 import { Tool } from "@opencode/core/tool"
+import { definition } from "@opencode/core/tool/runtime"
 import { tmpdir, tmpdirScoped } from "./fixture/tmpdir"
 import { tempGlobalLayer } from "./fixture/global"
 import { offlineModels } from "./fixture/models"
@@ -1486,7 +1487,7 @@ describe("ShellTool", () => {
               {
                 type: "text",
                 text: expect.stringContaining(
-                  `shell({ id: "${shellID}" }) checks it, shell({ id: "${shellID}", wait: <ms> }) waits for it to end, shell({ id: "${shellID}", kill: true }) stops it. Output is streaming to: ${info.file}`,
+                  `shell({ action: "check", id: "${shellID}" }) checks it, shell({ action: "wait", id: "${shellID}", ms: <ms> }) waits for it to end, shell({ action: "kill", id: "${shellID}" }) stops it. Output is streaming to: ${info.file}`,
                 ),
               },
             ])
@@ -1966,7 +1967,7 @@ describe("ShellTool", () => {
                     ),
                   ),
                 ).toBe(true)
-                const checked = yield* executeTool(registry, call({ id }, "call-check"))
+                const checked = yield* executeTool(registry, call({ action: "check", id }, "call-check"))
                 expect(checked.output).toMatchObject({ id, state: "running", output: "one\n", next: 4 })
                 expect(checked.metadata).toMatchObject({ id, state: "running", next: 4 })
                 expect(checked.metadata?.exit).toBeUndefined()
@@ -1976,24 +1977,24 @@ describe("ShellTool", () => {
                 ])
 
                 // Nothing new since that look.
-                const again = yield* executeTool(registry, call({ id }, "call-check-again"))
+                const again = yield* executeTool(registry, call({ action: "check", id }, "call-check-again"))
                 expect(again.output).toMatchObject({ output: "", next: 4 })
                 expect(again.content?.[1]).toEqual({ type: "text", text: "(no new output)" })
 
-                const short = yield* executeTool(registry, call({ id, wait: 200 }, "call-wait-short"))
+                const short = yield* executeTool(registry, call({ action: "wait", id, ms: 200 }, "call-wait-short"))
                 expect(short.output).toMatchObject({ id, state: "running", output: "" })
                 expect(textOf(short)).toContain("still running after waiting 0.2 s")
 
                 yield* go("go2")
-                const waited = yield* executeTool(registry, call({ id, wait: 10_000 }, "call-wait"))
+                const waited = yield* executeTool(registry, call({ action: "wait", id }, "call-wait"))
                 expect(waited.output).toMatchObject({ id, state: "exited", exitCode: 0, output: "two\n", next: 8 })
                 expect(textOf(waited)).toMatch(new RegExp(`^${id} · exited 0 · `))
 
-                const last = yield* executeTool(registry, call({ id, lines: 1 }, "call-lines"))
+                const last = yield* executeTool(registry, call({ action: "check", id, lines: 1 }, "call-lines"))
                 expect(last.output).toMatchObject({ state: "exited", output: "two\n", next: 8 })
-                const from = yield* executeTool(registry, call({ id, offset: 0 }, "call-offset"))
+                const from = yield* executeTool(registry, call({ action: "check", id, offset: 0 }, "call-offset"))
                 expect(from.output).toMatchObject({ output: "one\ntwo\n", next: 8 })
-                const rest = yield* executeTool(registry, call({ id, offset: 4 }, "call-offset-rest"))
+                const rest = yield* executeTool(registry, call({ action: "check", id, offset: 4 }, "call-offset-rest"))
                 expect(rest.output).toMatchObject({ output: "two\n", next: 8 })
 
                 // The wait that saw the end answered the agent: no notice follows.
@@ -2032,7 +2033,7 @@ describe("ShellTool", () => {
                 })
                 yield* shell.wait(other.id)
 
-                const listed = yield* executeTool(registry, call({ list: true }, "call-list"))
+                const listed = yield* executeTool(registry, call({ action: "list" }, "call-list"))
                 expect(listed.output).toEqual({
                   shells: [
                     {
@@ -2055,12 +2056,12 @@ describe("ShellTool", () => {
                   },
                 ])
 
-                const foreign = yield* executeTool(registry, call({ id: other.id }, "call-foreign"))
+                const foreign = yield* executeTool(registry, call({ action: "check", id: other.id }, "call-foreign"))
                 expect(foreign).toMatchObject({
                   status: "error",
                   error: { message: expect.stringContaining(`No shell ${other.id} in this session. Its shells: ${shellID}`) },
                 })
-                const killForeign = yield* executeTool(registry, call({ id: other.id, kill: true }, "call-kill-foreign"))
+                const killForeign = yield* executeTool(registry, call({ action: "kill", id: other.id }, "call-kill-foreign"))
                 expect(killForeign.status).toBe("error")
                 expect((yield* shell.get(other.id)).status).toBe("exited")
               }),
@@ -2071,27 +2072,113 @@ describe("ShellTool", () => {
       { timeout: 15_000 },
     )
 
-    it.live("rejects a call that mixes command and id, or gives neither", () =>
+    test("offers one flat object with an action enum and no flag fields", () => {
+      const schema = definition({ name: "shell", description: "", input: ShellTool.Input, execute: () => Effect.die("unused") }).inputSchema
+      // A root union is what providers reject; the root stays a plain object.
+      expect(schema).not.toHaveProperty("anyOf")
+      expect(schema).not.toHaveProperty("oneOf")
+      expect(schema).not.toHaveProperty("allOf")
+      expect(schema).toMatchObject({
+        type: "object",
+        properties: { action: { type: "string", enum: ["run", "check", "wait", "kill", "list"] } },
+      })
+      expect(Object.keys(schema.properties ?? {}).sort()).toEqual(
+        ["action", "background", "command", "description", "id", "lines", "ms", "offset", "timeout", "workdir"],
+      )
+      expect(schema).not.toHaveProperty("required")
+    })
+
+    const failure = (message: string | ReturnType<typeof expect.stringContaining>) => ({ status: "error", error: { message } })
+
+    it.live("rejects a field that is not its action's, a missing id or command, and an unknown field", () =>
       Effect.acquireUseRelease(
         Effect.promise(() => tmpdir()),
         (tmp) => {
           reset()
           return withSession(tmp.path, (registry) =>
             Effect.gen(function* () {
-              const both = yield* executeTool(registry, call({ command: helloCommand, id: "sh_x" }, "call-both"))
-              expect(both).toMatchObject({
-                status: "error",
-                error: {
-                  message:
-                    "Give either command (to run a command) or id (to act on a shell you started), not both.",
-                },
-              })
-              const neither = yield* executeTool(registry, call({}, "call-neither"))
-              expect(neither).toMatchObject({ status: "error", error: { message: expect.stringContaining("Give command") } })
-              const stray = yield* executeTool(registry, call({ command: helloCommand, wait: 10 }, "call-stray"))
-              expect(stray).toMatchObject({ status: "error", error: { message: expect.stringContaining("wait only go with id") } })
+              const run = (input: typeof ShellTool.Input.Type) => executeTool(registry, call(input, `call-${Permission.ID.create()}`))
+              expect(yield* run({ command: helloCommand, id: "sh_x" })).toMatchObject(
+                failure('action "run" takes command, workdir, timeout, description, background, not id.'),
+              )
+              expect(yield* run({ action: "kill", id: "sh_x", lines: 3 })).toMatchObject(
+                failure('action "kill" takes id, not lines.'),
+              )
+              expect(yield* run({ action: "check", id: "sh_x", ms: 10 })).toMatchObject(
+                failure('action "check" takes id, offset, lines, not ms.'),
+              )
+              expect(yield* run({ action: "list", command: helloCommand })).toMatchObject(
+                failure('action "list" takes no other fields, not command.'),
+              )
+              expect(yield* run({ action: "wait", ms: 10 })).toMatchObject(
+                failure('action "wait" needs id, the shell ID (sh_…) a shell call returned.'),
+              )
+              expect(yield* run({ action: "run" })).toMatchObject(failure('action "run" needs command.'))
+              expect(yield* run({ action: "check", id: "sh_x", offset: 0, lines: 1 })).toMatchObject(
+                failure("Give offset or lines, not both."),
+              )
+              expect(yield* run({})).toMatchObject(failure(expect.stringContaining("Give command to run a command")))
+              expect(yield* run({ id: "sh_x" })).toMatchObject(
+                failure(
+                  'Give the action to take on sh_x: { action: "check", id: "sh_x" }, { action: "wait", id: "sh_x", ms } or { action: "kill", id: "sh_x" }.',
+                ),
+              )
+              expect(yield* run({ command: helloCommand, cwd: "src" })).toMatchObject(
+                failure("The shell tool has no field cwd; it takes action and the fields of that action."),
+              )
               // Nothing ran.
               expect(assertions).toEqual([])
+            }),
+          )
+        },
+        (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]().then(() => undefined)),
+      ),
+    )
+
+    it.live("rejects the flag forms that came before actions, naming the action form", () =>
+      Effect.acquireUseRelease(
+        Effect.promise(() => tmpdir()),
+        (tmp) => {
+          reset()
+          return withSession(tmp.path, (registry) =>
+            Effect.gen(function* () {
+              const run = (input: typeof ShellTool.Input.Type) => executeTool(registry, call(input, `call-${Permission.ID.create()}`))
+              expect(yield* run({ id: "sh_x", kill: true })).toMatchObject(
+                failure('The shell tool has no kill field; use { action: "kill", id: "sh_x" }.'),
+              )
+              expect(yield* run({ list: true })).toMatchObject(
+                failure('The shell tool has no list field; use { action: "list" }.'),
+              )
+              expect(yield* run({ id: "sh_x", wait: 500 })).toMatchObject(
+                failure('The shell tool has no wait field; use { action: "wait", id: "sh_x", ms }.'),
+              )
+              // Even beside a command, or an action.
+              expect(yield* run({ command: helloCommand, wait: 10 })).toMatchObject(
+                failure('The shell tool has no wait field; use { action: "wait", id: "sh_…", ms }.'),
+              )
+              expect(yield* run({ action: "check", id: "sh_x", kill: true })).toMatchObject(
+                failure('The shell tool has no kill field; use { action: "kill", id: "sh_x" }.'),
+              )
+              expect(assertions).toEqual([])
+            }),
+          )
+        },
+        (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]().then(() => undefined)),
+      ),
+    )
+
+    it.live("runs a command given with action run, as without it", () =>
+      Effect.acquireUseRelease(
+        Effect.promise(() => tmpdir()),
+        (tmp) => {
+          reset()
+          return withSession(tmp.path, (registry) =>
+            Effect.gen(function* () {
+              const named = yield* executeTool(registry, call({ action: "run", command: helloCommand }, "call-action-run"))
+              const bare = yield* executeTool(registry, call({ command: helloCommand }, "call-bare-run"))
+              expect(named.content).toEqual(handleContent("hello"))
+              expect(bare.content).toEqual(handleContent("hello"))
+              expect(named.output).toMatchObject({ state: "exited", exitCode: 0, output: "hello" })
             }),
           )
         },
@@ -2162,7 +2249,7 @@ describe("ShellTool", () => {
                 const child = Number((yield* Effect.promise(() => fs.readFile(childFile, "utf8"))).trim())
                 expect(() => process.kill(child, 0)).not.toThrow()
 
-                const killed = yield* executeTool(registry, call({ id: shellID, kill: true }, "call-kill"))
+                const killed = yield* executeTool(registry, call({ action: "kill", id: shellID }, "call-kill"))
                 expect(killed.output).toMatchObject({ id: shellID, state: "killed", signal: "SIGTERM" })
                 expect(killed.metadata).toMatchObject({ id: shellID, state: "killed", signal: "SIGTERM" })
                 expect(textOf(killed)).toMatch(new RegExp(`^${shellID} · killed SIGTERM · `))
@@ -2184,7 +2271,7 @@ describe("ShellTool", () => {
                 yield* Effect.promise(() => Bun.sleep(100))
                 expect(notices).toEqual([])
 
-                const again = yield* executeTool(registry, call({ id: shellID, kill: true }, "call-kill-again"))
+                const again = yield* executeTool(registry, call({ action: "kill", id: shellID }, "call-kill-again"))
                 expect(again.output).toMatchObject({ id: shellID, state: "killed" })
                 expect(textOf(again)).toMatch(new RegExp(`^${shellID} · killed SIGTERM · .* · it had already ended`))
               }),

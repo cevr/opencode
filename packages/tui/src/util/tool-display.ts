@@ -62,15 +62,18 @@ export function toolDisplayContent(state: SessionMessageAssistantTool["state"]) 
 }
 
 /**
- * A shell call that acts on a handle rather than running a command: `{ id }` checks it, `{ id, wait }` waits on
- * it, `{ id, kill: true }` stops it, `{ list: true }` lists the session's shells. Its row's words.
+ * A shell call that acts on a handle rather than running a command: `{ action: "check", id }` checks it,
+ * `{ action: "wait", id }` waits on it, `{ action: "kill", id }` stops it, `{ action: "list" }` lists the
+ * session's shells. Its row's words. Older transcripts' flag forms (`{ id }`, `{ id, wait }`,
+ * `{ id, kill: true }`, `{ list: true }`) read the same.
  */
 export function shellActionSummary(input: Record<string, unknown>) {
-  if (typeof input.command === "string") return undefined
-  if (input.list === true) return "Listed shells"
+  const action = input.action
+  if (action === "run" || (action === undefined && typeof input.command === "string")) return undefined
+  if (action === "list" || (action === undefined && input.list === true)) return "Listed shells"
   if (typeof input.id !== "string") return undefined
-  if (input.kill === true) return `Killed ${input.id}`
-  if (input.wait !== undefined) return `Waited on ${input.id}`
+  if (action === "kill" || (action === undefined && input.kill === true)) return `Killed ${input.id}`
+  if (action === "wait" || (action === undefined && input.wait !== undefined)) return `Waited on ${input.id}`
   return `Checked ${input.id}`
 }
 
