@@ -1972,8 +1972,8 @@ describe("SessionProjector", () => {
           status: "completed",
           input: {},
           content: [{ type: "file", uri: `data:image/png;base64,${png.toString("base64")}`, mime: "image/png" }],
-          time: { created: 1, completed: 2 },
         },
+        time: { created: 1, completed: 2 },
       })
       expect(split.moved).toBe(true)
       expect(split.hashes).toEqual(new Set([hash]))
