@@ -287,25 +287,6 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
         }),
       )
       .handle(
-        "session.recover",
-        Effect.fn(function* (ctx) {
-          const location = yield* session.recover(ctx.params.sessionID).pipe(
-            Effect.catchTag("Session.NotFoundError", missingSession),
-            // The fallback was checked to exist; any of these means it changed or broke during the move.
-            Effect.catchTag(
-              [
-                "Session.DestinationNotFoundError",
-                "Session.DestinationNotDirectoryError",
-                "Session.DestinationUnavailableError",
-              ],
-              (error) =>
-                Effect.fail(new InvalidRequestError({ message: `Directory is unavailable: ${error.directory}` })),
-            ),
-          )
-          return { data: location ? { directory: location.directory } : undefined }
-        }),
-      )
-      .handle(
         "session.prompt",
         Effect.fn(function* (ctx) {
           return {

@@ -46,7 +46,9 @@ test.each([
 
     await fixture.create()
 
-    expect(fixture.requests).toEqual([{ payload: { projectID: "proj_test", name: "fresh" }, directory: null }])
+    expect(fixture.requests).toEqual([
+      { payload: { projectID: "proj_test", name: "fresh" }, directory: null },
+    ])
     expect(fixture.data.location.info({ directory: created })?.project.canonical).toBe(clone)
     expect(fixture.reads.locations.filter((directory) => directory === input.directory)).toHaveLength(
       input.home ? 3 : 1,
@@ -76,7 +78,9 @@ test.each([
     expect(fixture.reads.worktrees).toEqual(["proj_test"])
     expect(frame).toContain(clone)
     expect(frame.indexOf(clone)).toBeLessThan(frame.indexOf(main))
-    expect(fixture.requests).toEqual([{ payload: { projectID: "proj_test", name: "fresh" }, directory: null }])
+    expect(fixture.requests).toEqual([
+      { payload: { projectID: "proj_test", name: "fresh" }, directory: null },
+    ])
     expect(fixture.data.location.info(selected)?.project.canonical).toBe(clone)
     expect(fixture.moves).toEqual([])
   } finally {
@@ -172,33 +176,10 @@ test.each([false, true])("Ctrl+M moves only an existing session (home=%s)", asyn
   }
 })
 
-test("returns the session to its previous location without prompting", async () => {
-  const fixture = await renderMove({
-    directory: clone,
-    unavailable: "location",
-    showMissingLocation: true,
-    recovered: main,
-  })
-  try {
-    await fixture.app.waitFor(() => fixture.toast.currentToast !== null)
-
-    expect(fixture.recoveries).toEqual(["POST"])
-    expect(fixture.toast.currentToast).toMatchObject({
-      message: `Moved to ${main}: ${clone} no longer exists`,
-      variant: "info",
-    })
-    expect(fixture.app.captureCharFrame()).not.toContain("Session location unavailable")
-    expect(fixture.moves).toEqual([])
-  } finally {
-    fixture.app.renderer.destroy()
-  }
-})
-
 test("choosing a directory recovers the session when its location is unavailable", async () => {
   const fixture = await renderMove({ directory: clone, unavailable: "location", showMissingLocation: true })
   try {
     await fixture.app.waitForFrame((frame) => frame.includes("Session location unavailable"))
-    expect(fixture.recoveries).toEqual(["POST"])
     fixture.app.mockInput.pressEnter()
     await fixture.app.waitForFrame((frame) => frame.includes("Worktrees") && frame.includes(linked))
     await fixture.app.waitFor(() => fixture.app.renderer.currentFocusedEditor instanceof InputRenderable)
@@ -238,12 +219,7 @@ test("creating a worktree recovers the session without reading its removed locat
 })
 
 test("failed recovery does not navigate away from the session", async () => {
-  const fixture = await renderMove({
-    directory: clone,
-    unavailable: "location",
-    showMissingLocation: true,
-    moveFails: true,
-  })
+  const fixture = await renderMove({ directory: clone, unavailable: "location", showMissingLocation: true, moveFails: true })
   try {
     await fixture.app.waitForFrame((frame) => frame.includes("Session location unavailable"))
     fixture.app.mockInput.pressEnter()
@@ -312,13 +288,11 @@ async function renderMove(input: {
   unavailable?: "session" | "location"
   showMissingLocation?: boolean
   moveFails?: boolean
-  recovered?: string
 }) {
   const launch = input.launch ?? (input.home ? input.directory : main)
   const requests: unknown[] = []
   const removals: unknown[] = []
   const moves: unknown[] = []
-  const recoveries: string[] = []
   const reads = { session: 0, locations: [] as string[], worktrees: [] as string[], refresh: [] as unknown[] }
   const calls = createFetch(async (url, request) => {
     if (url.pathname === "/api/location") {
@@ -382,10 +356,6 @@ async function renderMove(input: {
     if (url.pathname === "/api/worktree/refresh") {
       reads.refresh.push(await request.json())
       return new Response(null, { status: 204 })
-    }
-    if (url.pathname === "/api/session/ses_clone/recover") {
-      recoveries.push(request.method)
-      return json(input.recovered ? { data: { directory: input.recovered } } : {})
     }
     if (url.pathname === "/api/session/ses_clone/move") {
       moves.push(await request.json())
@@ -453,7 +423,6 @@ async function renderMove(input: {
     requests,
     removals,
     moves,
-    recoveries,
     reads,
     async create() {
       await move.open()

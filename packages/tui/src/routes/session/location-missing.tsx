@@ -1,4 +1,4 @@
-import { createMemo, createSignal, onCleanup, onMount, Show } from "solid-js"
+import { createMemo } from "solid-js"
 import { useTuiPaths } from "../../context/runtime"
 import { useTheme } from "../../context/theme"
 import { Locale } from "../../util/locale"
@@ -16,29 +16,6 @@ export function SessionLocationMissing(props: { directory: string; projectID: st
   const client = useClient()
   const toast = useToast()
   const data = useData()
-  const paths = useTuiPaths()
-  // Stays true after a successful recovery: the session's new location replaces this component.
-  // If that update has not arrived after a few seconds, the prompt shows again.
-  const [recovering, setRecovering] = createSignal(true)
-  let settle: ReturnType<typeof setTimeout> | undefined
-  onCleanup(() => clearTimeout(settle))
-
-  onMount(() => {
-    client.api.session
-      .recover({ sessionID: props.sessionID })
-      .then((location) => {
-        if (!location) return setRecovering(false)
-        settle = setTimeout(() => setRecovering(false), 5000)
-        toast.show({
-          message: `Moved to ${abbreviateHome(location.directory, paths.home)}: ${abbreviateHome(props.directory, paths.home)} no longer exists`,
-          variant: "info",
-        })
-      })
-      .catch((error) => {
-        setRecovering(false)
-        toast.show({ title: "Failed to return session", message: errorMessage(error), variant: "error" })
-      })
-  })
 
   function open() {
     dialog.replace(() => (
@@ -76,11 +53,7 @@ export function SessionLocationMissing(props: { directory: string; projectID: st
     })
   }
 
-  return (
-    <Show when={!recovering()}>
-      <SessionLocationUnavailable directory={props.directory} onMove={open} />
-    </Show>
-  )
+  return <SessionLocationUnavailable directory={props.directory} onMove={open} />
 }
 
 export function SessionLocationUnavailable(props: { directory: string; onMove: () => void }) {

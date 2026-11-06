@@ -334,20 +334,6 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
       ),
     )
     .add(
-      HttpApiEndpoint.post("session.recover", "/api/session/:sessionID/recover", {
-        params: { sessionID: Session.ID },
-        success: Schema.Struct({ data: Location.PublicRef.pipe(Schema.optional) }),
-        error: [SessionNotFoundError, InvalidRequestError],
-      }).annotateMerge(
-        OpenApi.annotations({
-          identifier: "session.recover",
-          summary: "Recover session location",
-          description:
-            "Move an idle session whose directory no longer exists to its most recent earlier directory that still exists. Returns the new location, or nothing when the session was left in place.",
-        }),
-      ),
-    )
-    .add(
       HttpApiEndpoint.post("session.prompt", "/api/session/:sessionID/prompt", {
         params: { sessionID: Session.ID },
         payload: Schema.Struct({
