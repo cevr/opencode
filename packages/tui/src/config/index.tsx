@@ -252,6 +252,10 @@ export const Info = Schema.Struct({
     description: "Show the release highlights once after OpenCode updates",
   }),
   mouse: Schema.optional(Schema.Boolean).annotate({ description: "Enable terminal mouse capture" }),
+  escape_cancel_grace: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))).annotate({
+    description:
+      "Milliseconds after you send a prompt during which Escape on an empty composer cancels it: the run stops, the session reverts to before it and the prompt comes back to the composer. Later, Escape interrupts. 0 always interrupts (default 5000)",
+  }),
   cursor: Schema.optional(Cursor),
 })
 export type Info = Schema.Schema.Type<typeof Info>

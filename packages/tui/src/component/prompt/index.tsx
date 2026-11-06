@@ -72,6 +72,8 @@ import { useWorkingDirectoryActions } from "../../ui/working-directory-actions"
 import { truncateFilePath } from "../../ui/file-path"
 import { PromptMetadataRow } from "./metadata"
 import { limitLabel, useUsageLimits } from "../usage"
+import { escapeLabel, noteSent, secondsLeft, type EscapeIntent } from "../../prompt/escape"
+import { SessionMessage } from "@opencode/schema/session-message"
 
 export type PromptProps = {
   sessionID?: string
@@ -81,6 +83,8 @@ export type PromptProps = {
   onSubmit?: () => void
   onEmptySubmit?: () => boolean | Promise<boolean>
   ref?: (ref: PromptRef | undefined) => void
+  /** What Escape does to the session while the composer is empty; the route decides and handles it. */
+  escape?: () => EscapeIntent
   placeholders?: {
     normal?: string[]
     shell?: string[]
@@ -107,42 +111,48 @@ function randomIndex(count: number) {
   return Math.floor(Math.random() * count)
 }
 
-export function PromptInterruptStatus(props: {
-  armed: boolean
+/**
+ * What Escape will do, in the composer's status row: `esc cancel and edit · 4s`
+ * in the warning colour while a cancel is on offer, `esc interrupt` subdued after.
+ */
+export function PromptEscapeStatus(props: {
+  intent: EscapeIntent
   animations?: boolean
   text: RGBA
   subdued: RGBA
   warning: RGBA
   flash?: RGBA
 }) {
+  const cancel = () => props.intent.type === "cancel"
   const ignition = createAnimatable(
     { level: 0 },
     { enabled: () => props.animations ?? false, transition: tween({ duration: 0.22 }) },
   )
   createEffect(
     on(
-      () => props.armed,
-      (armed) => {
-        if (!armed || !props.animations) return ignition.jump({ level: 0 })
+      cancel,
+      (on) => {
+        if (!on || !props.animations) return ignition.jump({ level: 0 })
         ignition.jump({ level: 0.75 })
         ignition.animate({ level: 0 })
       },
       { defer: true },
     ),
   )
-  const armedColor = createMemo(() => {
+  const cancelColor = createMemo(() => {
     const level = ignition.value().level
     if (level === 0 || !props.flash) return props.warning
     return tint(props.warning, props.flash, level)
   })
 
   return (
-    <text fg={props.armed ? armedColor() : props.text} wrapMode="none" truncate flexShrink={1}>
-      esc{" "}
-      <span style={{ fg: props.armed ? armedColor() : props.subdued }}>
-        {props.armed ? "again to interrupt" : "interrupt"}
-      </span>
-    </text>
+    <Show when={escapeLabel(props.intent)}>
+      {(label) => (
+        <text fg={cancel() ? cancelColor() : props.text} wrapMode="none" truncate flexShrink={1}>
+          esc <span style={{ fg: cancel() ? cancelColor() : props.subdued }}>{label()}</span>
+        </text>
+      )}
+    </Show>
   )
 }
 
@@ -361,14 +371,12 @@ export function Prompt(props: PromptProps) {
     prompt: PromptInfo
     mode: "normal" | "shell"
     extmarkToPart: Map<number, PromptPartRef>
-    interrupt: number
     placeholder: number
   }>({
     placeholder: randomIndex(list().length),
     prompt: emptyPrompt(),
     mode: "normal",
     extmarkToPart: new Map(),
-    interrupt: 0,
   })
   let disposed = false
   let pasteQueue = Promise.resolve()
@@ -498,38 +506,6 @@ export function Prompt(props: PromptProps) {
         category: "Prompt",
         enabled: imageAttachments().length > 0,
         run: () => openImagePreview(0),
-      },
-      {
-        title: "Interrupt session",
-        name: "session.interrupt",
-        category: "Session",
-        palette: undefined,
-        enabled: status() === "running",
-        run: () => {
-          if (auto()?.visible) return
-          if (!input.focused) return
-          // TODO: this should be its own command
-          if (store.mode === "shell") {
-            setStore("mode", "normal")
-            return
-          }
-          if (!props.sessionID) return
-
-          setStore("interrupt", store.interrupt + 1)
-
-          setTimeout(() => {
-            setStore("interrupt", 0)
-          }, 5000)
-
-          if (store.interrupt >= 2) {
-            void client.api.session.interrupt({
-              sessionID: props.sessionID,
-              resume: true,
-            })
-            setStore("interrupt", 0)
-          }
-          dialog.clear()
-        },
       },
       {
         title: "Background blocking tools",
@@ -665,7 +641,6 @@ export function Prompt(props: PromptProps) {
       "prompt.stash.pop",
       "prompt.stash.list",
       "prompt.skills",
-      "session.interrupt",
       "session.background",
       "session.move",
     ],
@@ -1364,8 +1339,12 @@ export function Prompt(props: PromptProps) {
       // and rolls back if the server rejects it, so submission does not wait
       // on the network. On rejection the row is already rolled back; restore
       // the composer unless the user has started typing something new.
+      // Mint the message ID here so Escape can tell this prompt from one sent elsewhere.
+      const messageID = SessionMessage.ID.create()
+      noteSent(target, messageID, Date.now())
       data.session
         .prompt({
+          id: messageID,
           sessionID: target,
           text: inputText,
           files: promptFilesForServer(entry.files, terminalEnvironment.localServer === true),
@@ -1609,10 +1588,24 @@ export function Prompt(props: PromptProps) {
     if (agentLabel()) revealedPromptMetadata.add(local)
   })
   const borderHighlight = createMemo(() => tint(theme.border.base, highlight(), agentMetaAlpha()))
+  const draft = () => store.prompt.text !== "" || (store.prompt.files?.length ?? 0) > 0
+  // Escape's meaning for the session; nothing while the composer holds a draft (Escape leaves the session alone then).
+  const escapeIntent = createMemo((): EscapeIntent => {
+    if (store.mode === "shell" || draft()) return { type: "none" }
+    return props.escape?.() ?? { type: "none" }
+  })
+  const footerEscape = () => {
+    const intent = escapeIntent()
+    const label = escapeLabel(intent)
+    if (!label || intent.type === "none") return undefined
+    if (intent.type === "cancel") return { action: intent.type, label, seconds: secondsLeft(intent.left) }
+    return { action: intent.type, label }
+  }
   const footerInput = () => ({
     sessionID: props.sessionID,
     mode: store.mode,
-    showDetails: store.interrupt === 0 || dimensions().width >= 80,
+    showDetails: escapeIntent().type !== "cancel" || dimensions().width >= 80,
+    escape: footerEscape(),
   })
 
   const placeholderText = createMemo(() => {
@@ -1953,8 +1946,8 @@ export function Prompt(props: PromptProps) {
                           <spinner color={spinnerDef().color} frames={spinnerDef().frames} interval={40} />
                         </Show>
                       </box>
-                      <PromptInterruptStatus
-                        armed={store.interrupt > 0}
+                      <PromptEscapeStatus
+                        intent={escapeIntent()}
                         animations={animationsEnabled()}
                         text={theme.text.base}
                         subdued={theme.text.muted}

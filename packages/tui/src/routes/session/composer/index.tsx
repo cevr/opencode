@@ -14,6 +14,10 @@ export type ComposerProps = {
   open: boolean
   defaultTab?: string
   onClose?: () => void
+  /** Runs first on Escape; return true when it handled the key, and the panel stays open. */
+  onEscape?: () => boolean
+  /** Words after the `esc` hint, such as `interrupt`, when Escape does more than close. */
+  escapeHint?: string
   terminals?: boolean
   visibleTerminalID?: string
 }
@@ -76,7 +80,14 @@ export function Composer(props: ComposerProps) {
     commands: [
       { bind: "left", title: "Previous tab", group: "Composer", run: () => switchTab(-1) },
       { bind: "right", title: "Next tab", group: "Composer", run: () => switchTab(1) },
-      { bind: "escape", title: "Close composer", group: "Composer", run: close },
+      {
+        bind: "escape",
+        title: "Close composer",
+        group: "Composer",
+        run: () => {
+          if (!props.onEscape?.()) close()
+        },
+      },
       { bind: "ctrl+c", title: "Close composer", group: "Composer", run: close },
     ],
   }))
@@ -121,7 +132,7 @@ export function Composer(props: ComposerProps) {
                 </box>
               </Show>
               <text fg={theme.text.muted} onMouseUp={close}>
-                esc
+                esc{props.escapeHint ? ` ${props.escapeHint}` : ""}
               </text>
             </box>
             <SubagentsTab sessionID={props.sessionID} />
