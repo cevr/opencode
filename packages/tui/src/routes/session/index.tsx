@@ -53,6 +53,8 @@ import {
   executeCallSummary,
   finiteNumber,
   primitiveInputSummary,
+  shellActionSummary,
+  shellOutputText,
   toolDisplayContent,
   toolDisplayMetadata,
   type ExecuteCall,
@@ -3063,16 +3065,25 @@ function BlockTool(props: BlockToolProps) {
 const SHELL_DISPLAY_LIMIT = 1024 * 1024
 
 function Shell(props: ToolProps) {
+  const action = createMemo(() => shellActionSummary(props.input))
+  const output = createMemo(() => shellOutputText(props.part.state, props.metadata))
   return (
-    <ShellDisplay
-      part={props.part}
-      shellID={stringValue(props.metadata.shellID)}
-      command={stringValue(props.input.command)}
-      workdir={stringValue(props.input.workdir)}
-      status={props.part.state.status}
-      background={props.part.state.status === "completed" && props.metadata.status === "running"}
-      output={stringValue(props.metadata.shellID) ? undefined : props.output}
-    />
+    <Show
+      when={action()}
+      fallback={
+        <ShellDisplay
+          part={props.part}
+          shellID={stringValue(props.metadata.shellID)}
+          command={stringValue(props.input.command)}
+          workdir={stringValue(props.input.workdir)}
+          status={props.part.state.status}
+          background={props.part.state.status === "completed" && props.metadata.status === "running"}
+          output={stringValue(props.metadata.shellID) ? undefined : output()}
+        />
+      }
+    >
+      {(summary) => <GenericTool {...props} tool={summary()} input={{}} />}
+    </Show>
   )
 }
 

@@ -152,14 +152,20 @@ function props(frame: ToolFrame): ToolProps {
   }
 }
 
+const SHELL_HEADER = /^sh_\w+ · [^\n]*$/
+
 function text(v: unknown): string {
   return typeof v === "string" ? v : ""
 }
 
 export function toolOutputText(name: string, content: ReadonlyArray<{ type: string; text?: string }> | undefined) {
   if (!content) return ""
-  // V2 shell content appends model-only status after the user-visible command output.
-  if (canonicalToolName(name) === "shell") return content.find((item) => item.type === "text")?.text ?? ""
+  // V2 shell content leads with its handle's header line (`sh_… · exited 0 · 1.2 s`) and appends model-only
+  // guidance after the user-visible command output.
+  if (canonicalToolName(name) === "shell") {
+    const texts = content.flatMap((item) => (item.type === "text" && item.text !== undefined ? [item.text] : []))
+    return (SHELL_HEADER.test(texts[0] ?? "") ? texts[1] : texts[0]) ?? ""
+  }
   const joined = content.flatMap((item) => (item.type === "text" && item.text ? [item.text] : [])).join("\n")
   if (canonicalToolName(name) === "read") return readDisplayText(joined) ?? joined
   return joined

@@ -17,6 +17,14 @@ describe("Mini tool presentation", () => {
         { type: "text", text: "Command exited with code 0." },
       ]),
     ).toBe("")
+
+    // A handle's header line leads; the output follows it.
+    expect(
+      toolOutputText("shell", [
+        { type: "text", text: "sh_1ae9 · exited 0 · 0.2 s" },
+        { type: "text", text: "mini-output\n" },
+      ]),
+    ).toBe("mini-output\n")
   })
 
   test("normalizes only persisted tool aliases into current fields", () => {

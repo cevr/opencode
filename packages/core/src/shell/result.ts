@@ -49,6 +49,8 @@ export function notification(input: {
   state: "completed" | "cancelled" | "error"
   text: string
   output?: Output
+  // The final handle of a shell the shell tool started: its state, exit, runtime and read offset.
+  handle?: Record<string, unknown>
 }) {
   return {
     text: `<shell id="${input.jobID ?? input.shellID}" state="${input.state}" command="${input.command}">\n${input.text}\n</shell>`,
@@ -58,6 +60,7 @@ export function notification(input: {
       ...(input.jobID !== undefined ? { jobID: input.jobID } : {}),
       state: input.state,
       ...(input.output ? metadata(input.output) : {}),
+      ...(input.handle ? { handle: input.handle } : {}),
     },
   }
 }

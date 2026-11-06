@@ -61,6 +61,31 @@ export function toolDisplayContent(state: SessionMessageAssistantTool["state"]) 
   return state.content ?? []
 }
 
+/**
+ * A shell call that acts on a handle rather than running a command: `{ id }` checks it, `{ id, wait }` waits on
+ * it, `{ id, kill: true }` stops it, `{ list: true }` lists the session's shells. Its row's words.
+ */
+export function shellActionSummary(input: Record<string, unknown>) {
+  if (typeof input.command === "string") return undefined
+  if (input.list === true) return "Listed shells"
+  if (typeof input.id !== "string") return undefined
+  if (input.kill === true) return `Killed ${input.id}`
+  if (input.wait !== undefined) return `Waited on ${input.id}`
+  return `Checked ${input.id}`
+}
+
+/**
+ * The output text of a shell call: its content's text, less the handle's header line (`sh_… · exited 0 · 1.2 s`),
+ * which a call that returns a handle (`metadata.id`) puts first as its own part.
+ */
+export function shellOutputText(state: SessionMessageAssistantTool["state"], metadata: Record<string, unknown>) {
+  if (state.status === "streaming") return undefined
+  const texts = toolDisplayContent(state).flatMap((content) =>
+    content.type === "text" ? [content.text] : [content.name ?? content.uri],
+  )
+  return (typeof metadata.id === "string" && metadata.id.startsWith("sh_") ? texts.slice(1) : texts).join("\n")
+}
+
 export function nonEmptyToolContent<T>(content: ReadonlyArray<T> | undefined): [T, ...T[]] | undefined {
   if (!content) return undefined
   const [first, ...rest] = content

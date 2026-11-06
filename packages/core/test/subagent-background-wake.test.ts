@@ -74,7 +74,7 @@ const respond = (command: string) => (request: LLMRequest) => {
   if (transcript.includes("shell-42")) return TestLLM.text(FINAL, "final")
   if (transcript.includes('state=\\"cancelled\\"')) return TestLLM.text(CANCELLED, "cancelled")
   if (transcript.includes("is working in the background")) return TestLLM.text(DELEGATED, "delegated")
-  if (transcript.includes("Command moved to the background")) return TestLLM.text(WAITING, "waiting")
+  if (transcript.includes("started in the background")) return TestLLM.text(WAITING, "waiting")
   if (transcript.includes("run-shell")) return TestLLM.toolCall("call-shell", "shell", { command, background: true })
   if (transcript.includes("delegate"))
     return TestLLM.toolCall("call-grandchild", "subagent", {
