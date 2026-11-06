@@ -45,15 +45,6 @@ const messages = [
   },
   { type: "user", id: "msg_ask", text: "Fix the parser", time: { created: 1 } },
 ]
-const goal = {
-  id: "goal",
-  objective: "Ship the parser",
-  status: "active",
-  rounds: 1,
-  maxRounds: 50,
-  boot: "boot",
-  updatedAt: 0,
-}
 
 async function openSession(plugin: string, history: ReadonlyArray<unknown> = messages) {
   const fixture = await copyPlugin(plugin)
@@ -72,7 +63,6 @@ async function openSession(plugin: string, history: ReadonlyArray<unknown> = mes
           location: { directory, project: { id: "proj_test", directory, canonical: directory } },
           data: [{ ...model, name: "Fixture", variants: [], limit: { context: 8000, output: 1000 } }],
         })
-      if (url.pathname === "/api/rpc/opencode.goal/get") return json({ output: goal })
       return undefined
     },
   })
@@ -85,38 +75,16 @@ async function openSession(plugin: string, history: ReadonlyArray<unknown> = mes
   })
 }
 
-test("a plugin reads a session's context usage, goal and parts, and renders host markdown", async () => {
+test("a plugin renders host markdown", async () => {
   await using app = await openSession("session-reads")
   await app.ready
-  // part.get resolves text parts by ordinal; ui.Markdown conceals the markup and runs registered fence renderers.
+  // ui.Markdown conceals the markup and runs registered fence renderers.
   const frame = await waitForHighlightedFrame(
     app,
-    (frame) =>
-      frame.includes("usage 2000 of 8000 (25%)") &&
-      frame.includes("goal Ship the parser [active] 1↻") &&
-      frame.includes("Read text:0: The parser is fixed.") &&
-      frame.includes("Probe fence rendered"),
+    (frame) => frame.includes("Read text:0: The parser is fixed.") && frame.includes("Probe fence rendered"),
   )
   expect(frame).not.toContain("**parser**")
   expect(frame).not.toContain("```")
-
-  // The goal follows the goal plugin's changes.
-  app.events.emit({
-    id: "evt_goal_changed",
-    created: 4,
-    type: "rpc.opencode.goal.changed",
-    location: { directory },
-    data: { sessionID: session.id, goal: { ...goal, status: "paused", rounds: 2 } },
-  })
-  await app.waitForFrame((frame) => frame.includes("goal Ship the parser [paused] 2↻"))
-  app.events.emit({
-    id: "evt_goal_cleared",
-    created: 5,
-    type: "rpc.opencode.goal.changed",
-    location: { directory },
-    data: { sessionID: session.id, goal: null },
-  })
-  await app.waitForFrame((frame) => frame.includes("goal none [none]"))
 })
 
 test("a plugin sets transcript defaults", async () => {

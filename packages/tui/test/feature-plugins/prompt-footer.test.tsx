@@ -23,10 +23,10 @@ test("prompt footer separates simultaneous subagent, shell, and usage status", a
         id === "session.child.first" ? ["ctrl+j"] : id === "command.palette.show" ? ["ctrl+p"] : [],
       dispatch: (id: string) => dispatched.push(id),
     },
+    client: { rpc: () => ({ get: () => Promise.resolve(null), events: { on: () => () => {} } }) },
     data: {
       on: () => () => {},
       session: {
-        goal: () => undefined,
         family: () => ["session", "child"],
         status: (id: string) => (id === "child" ? "running" : "idle"),
         get: () => ({ id: "session", location: { directory: "/workspace" } }),
@@ -83,10 +83,10 @@ test("prompt footer can hide details", async () => {
         return []
       },
     },
+    client: { rpc: () => ({ get: () => Promise.resolve(null), events: { on: () => () => {} } }) },
     data: {
       on: () => () => {},
       session: {
-        goal: () => undefined,
         family: () => ["session"],
         status: () => "running",
         get: () => ({ id: "session", location: { directory: "/workspace" } }),
@@ -145,9 +145,17 @@ test("prompt footer can hide details", async () => {
 test("prompt footer shows the session's goal without its objective and opens it on click", async () => {
   const muted = RGBA.fromInts(100, 100, 100)
   const warning = RGBA.fromInts(200, 200, 0)
-  const goal = { objective: "Make the test suite pass", status: "active" as const }
-  // The host keeps each Session's goal current; the footer only reads it.
-  const [goals, setGoals] = createSignal<Record<string, unknown>>({ session: goal })
+  const goal = {
+    id: "goal",
+    objective: "Make the test suite pass",
+    status: "active",
+    rounds: 3,
+    maxRounds: 50,
+    boot: "boot",
+    updatedAt: 0,
+  }
+  const fetched = Promise.resolve(goal)
+  const changed: ((event: { data: { sessionID: string; goal: unknown } }) => void)[] = []
   const dialogs: unknown[] = []
   const context = {
     location: { directory: "/workspace" },
@@ -160,10 +168,15 @@ test("prompt footer shows the session's goal without its objective and opens it 
     },
     keymap: { shortcuts: () => [] },
     ui: { dialog: { show: (render: unknown) => dialogs.push(render) }, toast: { show: () => {} } },
+    client: {
+      rpc: () => ({
+        get: () => fetched,
+        events: { on: (_name: string, handler: (typeof changed)[number]) => (changed.push(handler), () => {}) },
+      }),
+    },
     data: {
       on: () => () => {},
       session: {
-        goal: (sessionID: string) => goals()[sessionID],
         family: () => ["session"],
         status: () => "idle",
         get: () => ({ id: "session", location: { directory: "/workspace" } }),
@@ -180,6 +193,8 @@ test("prompt footer shows the session's goal without its objective and opens it 
   )
 
   try {
+    // The footer fetches the goal from the goal plugin's RPC.
+    await fetched
     await app.renderOnce()
     const frame = app.captureCharFrame()
     expect(frame).toContain("◎ goal")
@@ -192,15 +207,16 @@ test("prompt footer shows the session's goal without its objective and opens it 
     expect(dialogs).toHaveLength(1)
     await app.mockMouse.moveTo(70, 1)
 
-    // Then it follows the goal of this Session only.
-    const change = (sessionID: string, next: unknown) => setGoals((all) => ({ ...all, [sessionID]: next }))
+    // Then it follows the plugin's changes for this Session only.
+    const change = (sessionID: string, next: unknown) =>
+      changed.forEach((handler) => handler({ data: { sessionID, goal: next } }))
     change("session", { ...goal, status: "paused", reason: "Stopped by the user" })
-    change("other", undefined)
+    change("other", null)
     await app.renderOnce()
     expect(app.captureCharFrame()).toContain("◎ goal paused")
     expect(findText(app.renderer.root, "◎ goal paused")?.fg.toInts()).toEqual(warning.toInts())
 
-    change("session", undefined)
+    change("session", null)
     await app.renderOnce()
     expect(app.captureCharFrame()).not.toContain("goal")
   } finally {
