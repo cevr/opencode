@@ -51,8 +51,15 @@ interface BaseOptions {
    * tool alone (no other direct tool and no Code Mode `execute`), and its context
    * carries `runtime` to reach the rest. Deny the tool to give an agent its usual tools.
    * `describe` writes the description the model is offered from the tools it reaches.
+   * `direct` names tools the model is also offered beside it, each with its own
+   * definition, when the agent may use them; the runtime still reaches them too.
    */
-  readonly runtime?: boolean | { readonly describe: (tools: ReadonlyArray<RuntimeTool>) => string }
+  readonly runtime?:
+    | boolean
+    | {
+        readonly describe?: (tools: ReadonlyArray<RuntimeTool>) => string
+        readonly direct?: ReadonlyArray<string>
+      }
 }
 
 export type Options = BaseOptions &

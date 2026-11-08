@@ -1333,6 +1333,37 @@ describe("Tool runtime", () => {
     }),
   )
 
+  it.effect("offers the tools it names direct beside it, called directly and still reached through it", () =>
+    Effect.gen(function* () {
+      const service = yield* Tool.Service
+      yield* transform(service, { echo: make() }, { codemode: false })
+      yield* transform(service, { constant: constant("mcp") })
+      yield* service.transform((editor) =>
+        editor.add({
+          ...runtime("echo", { text: "inner" }),
+          options: { codemode: false, runtime: { direct: ["echo", "absent"] } },
+        }),
+      )
+      const snapshot = yield* service.snapshot()
+      // A named tool the agent lacks is left out; the rest stay behind the runtime.
+      expect(snapshot.definitions.map((tool) => tool.name)).toEqual(["kernel", "echo"])
+      expect((yield* snapshot.execute(call("echo"))).output).toEqual({ text: "echo" })
+      expect((yield* snapshot.execute(call("kernel"))).output).toEqual({ text: 'constant,echo | {"text":"inner"}' })
+      expect(
+        yield* snapshot.execute(call("constant")).pipe(Effect.flip, Effect.map((error) => error.message)),
+      ).toContain('No tool named "constant" is currently available')
+      // A request whose hooks dropped the direct tool cannot call it.
+      expect(
+        yield* snapshot
+          .execute({ ...call("echo"), definitions: new Map() })
+          .pipe(Effect.flip, Effect.map((error) => error.message)),
+      ).toBe("Tool is not available for this request: echo")
+      // A denied direct tool is neither offered nor reached.
+      const denied = yield* service.snapshot([{ action: "echo", resource: "*", effect: "deny" }])
+      expect(denied.definitions.map((tool) => tool.name)).toEqual(["kernel"])
+    }),
+  )
+
   it.effect("leaves wholly denied tools out of reach", () =>
     Effect.gen(function* () {
       const service = yield* Tool.Service

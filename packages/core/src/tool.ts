@@ -252,7 +252,8 @@ const layer = Layer.effect(
       progress: input.progress ?? (() => Effect.void),
     })
 
-    // A runtime tool is the model's only tool; every other active tool is reached through it.
+    // A runtime tool is the model's only tool, beside the ones it names `direct`; every other active
+    // tool is reached through it.
     const runtimeSnapshot = (
       data: Data,
       active: ReadonlyMap<string, Tool.Info>,
@@ -279,8 +280,15 @@ const layer = Layer.effect(
         },
       })
       const offered = data.definitions.get(runtimeName)!
-      const describe =
-        typeof runtimeTool.options?.runtime === "object" ? runtimeTool.options.runtime.describe : undefined
+      const options = typeof runtimeTool.options?.runtime === "object" ? runtimeTool.options.runtime : undefined
+      const describe = options?.describe
+      // The tools offered beside the runtime with their own definitions; still reached through it too.
+      const named = new Set(options?.direct ?? [])
+      const direct = new Map(
+        Array.from(reachable)
+          .filter(([name]) => named.has(name))
+          .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)),
+      )
       return {
         definitions: [
           describe
@@ -291,16 +299,19 @@ const layer = Layer.effect(
                 ...(offered.outputSchema === undefined ? {} : { outputSchema: offered.outputSchema }),
               })
             : offered,
+          ...Array.from(direct.keys()).map((name) => data.definitions.get(name)!),
         ],
         execute: Effect.fnUntraced(function* (input: Parameters<Snapshot["execute"]>[0]) {
           const context = callContext(input)
           const event = yield* beforeExecute(input.call.name, input.call.input, context)
           const requested = input.definitions?.get(event.tool)
-          if (!requested && input.definitions && event.tool === runtimeName)
+          if (!requested && input.definitions && (event.tool === runtimeName || direct.has(event.tool)))
             return yield* new Tool.Error({ message: `Tool is not available for this request: ${event.tool}` })
           const name = requested?.name ?? event.tool
           if (name === runtimeName)
             return yield* executeTool(runtimeTool, name, event.input, { ...context, runtime: access(context) })
+          const tool = direct.get(name)
+          if (tool) return yield* executeTool(tool, name, event.input, context)
           return yield* new Tool.Error({
             message: `No tool named "${name}" is currently available. Please use a tool from the available tool list.`,
           })
