@@ -1631,9 +1631,11 @@ export function Session(props: {
               </Show>
             </box>
             <box flexShrink={0}>
-              <Show when={!composer.open && !disabled() && queuedPrompts().length > 0}>
-                <QueuedPromptDock prompts={queuedPrompts()} onOpen={openQueuedPrompts} />
-              </Show>
+              <Slot path="session.composer.queued" input={{ sessionID: route.sessionID }}>
+                <Show when={!composer.open && !disabled() && queuedPrompts().length > 0}>
+                  <QueuedPromptDock prompts={queuedPrompts()} onOpen={openQueuedPrompts} />
+                </Show>
+              </Slot>
               <Slot path="session.composer.top" input={{ sessionID: route.sessionID }} />
               <Composer
                 sessionID={route.sessionID}

@@ -222,6 +222,12 @@ export interface SlotMap {
   readonly "prompt.footer.status": PromptFooterInput
   readonly "prompt.footer.file": PromptFooterInput
   readonly "session.composer.top": { readonly sessionID: string }
+  /**
+   * The queued-prompts box above the composer (`N queued · …`, a click opens
+   * the Queued prompts picker), drawn while prompts wait for the turn to end.
+   * Published whether or not any wait, so a replacement may draw its own list.
+   */
+  readonly "session.composer.queued": { readonly sessionID: string }
   /** Above the transcript, full width. Empty by default. */
   readonly "session.header": { readonly sessionID: string }
   /** First child of the transcript scroll area. Empty by default. */

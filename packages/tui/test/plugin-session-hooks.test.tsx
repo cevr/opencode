@@ -46,7 +46,11 @@ const messages = [
   { type: "user", id: "msg_ask", text: "Fix the parser", time: { created: 1 } },
 ]
 
-async function openSession(plugin: string, history: ReadonlyArray<unknown> = messages) {
+async function openSession(
+  plugin: string,
+  history: ReadonlyArray<unknown> = messages,
+  inbox: ReadonlyArray<unknown> = [],
+) {
   const fixture = await copyPlugin(plugin)
   const setup = await createAppFixture({
     width: 100,
@@ -57,6 +61,7 @@ async function openSession(plugin: string, history: ReadonlyArray<unknown> = mes
       if (url.pathname === "/api/session") return json({ data: [session], cursor: {} })
       if (url.pathname === `/api/session/${session.id}`) return json({ data: session })
       if (url.pathname === `/api/session/${session.id}/message`) return json({ data: history, cursor: {} })
+      if (url.pathname === `/api/session/${session.id}/inbox`) return json({ data: inbox })
       if (/^\/api\/session\/[^/]+\/(inbox|permission)$/.test(url.pathname)) return json({ data: [] })
       if (url.pathname === "/api/model")
         return json({
@@ -168,6 +173,30 @@ test("a layout rule sees the row's message, so a message a slot hides takes no s
   // The hidden prompt adds no row: one blank row (the reply's own gap), then the reply.
   expect(lines[start + 1]?.trim()).toBe("")
   expect(lines[start + 2]?.trim()).not.toBe("")
+})
+
+const queued = [
+  {
+    id: "msg_queued",
+    sessionID: session.id,
+    type: "user",
+    delivery: "queue",
+    payload: { text: "Queued follow-up" },
+    time: { created: 4 },
+  },
+]
+
+test("the host draws its queued-prompts box above the composer while a prompt waits for the turn", async () => {
+  await using app = await openSession("session-reads", messages, queued)
+  await app.ready
+  await waitForHighlightedFrame(app, (frame) => frame.includes("1 queued · Queued follow-up"))
+})
+
+test("a plugin replaces the queued-prompts box, and the host's box is not drawn", async () => {
+  await using app = await openSession("queued-box", messages, queued)
+  await app.ready
+  const frame = await waitForHighlightedFrame(app, (frame) => frame.includes("Queued box: Queued follow-up"))
+  expect(frame).not.toContain("1 queued")
 })
 
 test("a plugin picks the bare rail composer", async () => {
