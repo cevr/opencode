@@ -452,6 +452,92 @@ test("typing on the highlighted custom option opens it without losing burst inpu
   }
 })
 
+const twoTargets = [
+  { value: "staging", label: "Staging" },
+  { value: "production", label: "Production" },
+]
+
+test("typing a letter on any choice row opens the custom answer with that letter", async () => {
+  await using tmp = await tmpdir()
+  const prompt = await mountForm(tmp.path, 80, [{ key: "target", type: "string", options: twoTargets, custom: true }])
+  try {
+    await prompt.app.mockInput.typeText("west 2")
+    await prompt.app.waitFor(() => prompt.app.renderer.currentFocusedEditor?.plainText === "west 2")
+    await prompt.app.waitForFrame((frame) => frame.includes("3. west 2"))
+    expect(prompt.replies).toEqual([])
+  } finally {
+    prompt.app.renderer.destroy()
+  }
+})
+
+test("a digit selects the choice it numbers", async () => {
+  await using tmp = await tmpdir()
+  const prompt = await mountForm(tmp.path, 80, [{ key: "target", type: "string", options: twoTargets, custom: true }])
+  try {
+    prompt.app.mockInput.pressKey("2")
+    await prompt.app.waitFor(() => prompt.replies.length === 1)
+    expect(prompt.replies).toEqual([{ answer: { target: "production" } }])
+    expect(prompt.app.renderer.currentFocusedEditor).toBeNull()
+  } finally {
+    prompt.app.renderer.destroy()
+  }
+})
+
+test("a digit past the choices opens the custom answer with that digit", async () => {
+  await using tmp = await tmpdir()
+  const prompt = await mountForm(tmp.path, 80, [{ key: "target", type: "string", options: twoTargets, custom: true }])
+  try {
+    prompt.app.mockInput.pressKey("4")
+    await prompt.app.waitFor(() => prompt.app.renderer.currentFocusedEditor?.plainText === "4")
+    expect(prompt.replies).toEqual([])
+  } finally {
+    prompt.app.renderer.destroy()
+  }
+})
+
+test("a digit toggles a multiselect choice, and typing then opens the custom answer", async () => {
+  await using tmp = await tmpdir()
+  const prompt = await mountForm(tmp.path, 80, [
+    { key: "targets", type: "multiselect", options: twoTargets, custom: true },
+  ])
+  try {
+    prompt.app.mockInput.pressKey("2")
+    await prompt.app.waitForFrame((frame) => frame.includes("[✓] Production"))
+    prompt.app.mockInput.pressKey("2")
+    await prompt.app.waitForFrame((frame) => frame.includes("[ ] Production"))
+    prompt.app.mockInput.pressKey("1")
+    await prompt.app.waitForFrame((frame) => frame.includes("[✓] Staging"))
+
+    await prompt.app.mockInput.typeText("eu1")
+    await prompt.app.waitFor(() => prompt.app.renderer.currentFocusedEditor?.plainText === "eu1")
+    await prompt.app.waitForFrame((frame) => frame.includes("[✓] eu1"))
+    const frame = prompt.app.captureCharFrame()
+    expect(frame).toContain("[✓] Staging")
+    expect(frame).toContain("[ ] Production")
+    expect(prompt.replies).toEqual([])
+  } finally {
+    prompt.app.renderer.destroy()
+  }
+})
+
+test("typing on a choice question without custom answers ignores letters and keeps digits", async () => {
+  await using tmp = await tmpdir()
+  const prompt = await mountForm(tmp.path, 80, [{ key: "target", type: "string", options: twoTargets }])
+  try {
+    await prompt.app.mockInput.typeText("xyz")
+    await Bun.sleep(50)
+    expect(prompt.app.renderer.currentFocusedEditor).toBeNull()
+    expect(prompt.app.captureCharFrame()).not.toContain("xyz")
+    expect(prompt.replies).toEqual([])
+
+    prompt.app.mockInput.pressKey("2")
+    await prompt.app.waitFor(() => prompt.replies.length === 1)
+    expect(prompt.replies).toEqual([{ answer: { target: "production" } }])
+  } finally {
+    prompt.app.renderer.destroy()
+  }
+})
+
 test("enter on an empty custom multiselect option clearly enters editing", async () => {
   await using tmp = await tmpdir()
   const prompt = await mountForm(tmp.path, 80, [

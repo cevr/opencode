@@ -242,14 +242,19 @@ export function FormPrompt(props: { form: FormWithLocation }) {
     target.focus()
   })
 
+  // Typing on a choice question goes straight to the custom answer, from any row:
+  // a digit that numbers a row stays that row's shortcut until the editor opens,
+  // and every other printable key opens the editor with that key typed.
   onCleanup(
     keymap.intercept("key", ({ event, consume }) => {
       if (!active()) return
-      if (textual() || !other() || (store.editing && renderer.currentFocusedEditor === textarea)) return
+      if (textual() || confirm() || !custom() || (store.editing && renderer.currentFocusedEditor === textarea)) return
       if (event.ctrl || event.meta || event.option || event.super || event.hyper) return
       if ((!store.editing && event.sequence === " ") || !/^[^\p{C}\p{Zl}\p{Zp}]$/u.test(event.sequence)) return
       const current = answerField()
       if (!current) return
+      if (!store.editing && /^[1-9]$/.test(event.sequence) && Number(event.sequence) <= rows().length + 1) return
+      if (!other()) setStore("selected", rows().length)
       updateCustom(current, input() + event.sequence)
       if (!store.editing) setStore("editing", true)
       consume()
