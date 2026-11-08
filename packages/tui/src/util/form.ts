@@ -109,12 +109,40 @@ export function formValidateValue(field: FormAnswerField, value: FormValue | und
     return "Select only available options"
 }
 
-export function formDisplayValue(field: FormAnswerField, value: FormValue | undefined, emptyMultiselect: string) {
+export function formDisplayValue(
+  field: FormAnswerField,
+  value: FormValue | undefined,
+  emptyMultiselect: string,
+  notes?: FormNotes,
+) {
   if (value === undefined) return ""
-  const label = (item: string | number | boolean) =>
-    formRows(field).find((row) => row.value === item)?.label ?? String(item)
+  const label = (item: string | number | boolean) => {
+    const text = formRows(field).find((row) => row.value === item)?.label ?? String(item)
+    const note = typeof item === "string" ? notes?.[item] : undefined
+    return note ? formNoteText(text, note) : text
+  }
   if (Array.isArray(value)) return value.length === 0 ? emptyMultiselect : value.map(label).join(", ")
   return label(value)
+}
+
+/** Notes the user added to chosen options, by option value. */
+export type FormNotes = Record<string, string>
+
+function formNoteText(value: string, note: string) {
+  return `${value} (note: ${note})`
+}
+
+/**
+ * The answer as sent: a chosen option with a note carries it in the same string,
+ * `<value> (note: <note>)`, so the answer keeps the shape it has without notes.
+ * Notes are only offered on fields that take a custom answer, which accept any string.
+ */
+export function formWithNotes(value: FormValue, notes: FormNotes | undefined): FormValue {
+  if (!notes) return value
+  const noted = (item: string) => (notes[item] ? formNoteText(item, notes[item]) : item)
+  if (typeof value === "string") return noted(value)
+  if (Array.isArray(value)) return value.map(noted)
+  return value
 }
 
 export function formToggleMultiselect(value: FormValue | undefined, item: string) {

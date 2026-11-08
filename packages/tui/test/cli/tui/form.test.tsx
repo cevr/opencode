@@ -457,10 +457,18 @@ const twoTargets = [
   { value: "production", label: "Production" },
 ]
 
-test("typing a letter on any choice row opens the custom answer with that letter", async () => {
+test("letters on an option row do nothing, and on the custom row they start the custom answer", async () => {
   await using tmp = await tmpdir()
   const prompt = await mountForm(tmp.path, 80, [{ key: "target", type: "string", options: twoTargets, custom: true }])
   try {
+    await prompt.app.mockInput.typeText("west")
+    await Bun.sleep(50)
+    expect(prompt.app.renderer.currentFocusedEditor).toBeNull()
+    expect(prompt.app.captureCharFrame()).toContain("3. Type your own answer")
+    expect(prompt.replies).toEqual([])
+
+    prompt.app.mockInput.pressArrow("down")
+    prompt.app.mockInput.pressArrow("down")
     await prompt.app.mockInput.typeText("west 2")
     await prompt.app.waitFor(() => prompt.app.renderer.currentFocusedEditor?.plainText === "west 2")
     await prompt.app.waitForFrame((frame) => frame.includes("3. west 2"))
@@ -483,19 +491,21 @@ test("a digit selects the choice it numbers", async () => {
   }
 })
 
-test("a digit past the choices opens the custom answer with that digit", async () => {
+test("a digit past the choices does nothing on an option row", async () => {
   await using tmp = await tmpdir()
   const prompt = await mountForm(tmp.path, 80, [{ key: "target", type: "string", options: twoTargets, custom: true }])
   try {
     prompt.app.mockInput.pressKey("4")
-    await prompt.app.waitFor(() => prompt.app.renderer.currentFocusedEditor?.plainText === "4")
+    await Bun.sleep(50)
+    expect(prompt.app.renderer.currentFocusedEditor).toBeNull()
+    expect(prompt.app.captureCharFrame()).toContain("3. Type your own answer")
     expect(prompt.replies).toEqual([])
   } finally {
     prompt.app.renderer.destroy()
   }
 })
 
-test("a digit toggles a multiselect choice, and typing then opens the custom answer", async () => {
+test("a digit toggles a multiselect choice, and typing on the custom row then opens the custom answer", async () => {
   await using tmp = await tmpdir()
   const prompt = await mountForm(tmp.path, 80, [
     { key: "targets", type: "multiselect", options: twoTargets, custom: true },
@@ -508,6 +518,7 @@ test("a digit toggles a multiselect choice, and typing then opens the custom ans
     prompt.app.mockInput.pressKey("1")
     await prompt.app.waitForFrame((frame) => frame.includes("[✓] Staging"))
 
+    prompt.app.mockInput.pressArrow("up")
     await prompt.app.mockInput.typeText("eu1")
     await prompt.app.waitFor(() => prompt.app.renderer.currentFocusedEditor?.plainText === "eu1")
     await prompt.app.waitForFrame((frame) => frame.includes("[✓] eu1"))
@@ -533,6 +544,104 @@ test("typing on a choice question without custom answers ignores letters and kee
     prompt.app.mockInput.pressKey("2")
     await prompt.app.waitFor(() => prompt.replies.length === 1)
     expect(prompt.replies).toEqual([{ answer: { target: "production" } }])
+  } finally {
+    prompt.app.renderer.destroy()
+  }
+})
+
+test("n on an option opens a note, and enter keeps the option chosen with its note", async () => {
+  await using tmp = await tmpdir()
+  const prompt = await mountForm(tmp.path, 80, [{ key: "target", type: "string", options: twoTargets, custom: true }])
+  try {
+    await prompt.app.waitForFrame((frame) => frame.includes("n notes"))
+    prompt.app.mockInput.pressArrow("down")
+    prompt.app.mockInput.pressKey("n")
+    await prompt.app.mockInput.typeText("keep SQLite for tests")
+    await prompt.app.waitFor(() => prompt.app.renderer.currentFocusedEditor?.plainText === "keep SQLite for tests")
+    await prompt.app.waitForFrame((frame) => frame.includes("enter save note") && frame.includes("esc discard"))
+    expect(prompt.app.captureCharFrame()).not.toContain("Production ✓")
+
+    prompt.app.mockInput.pressEnter()
+    await prompt.app.waitFor(() => prompt.app.renderer.currentFocusedEditor === null)
+    await prompt.app.waitForFrame(
+      (frame) => frame.includes("Production ✓") && frame.includes("note: keep SQLite for tests"),
+    )
+    expect(prompt.replies).toEqual([])
+
+    prompt.app.mockInput.pressEnter()
+    await prompt.app.waitFor(() => prompt.replies.length === 1)
+    expect(prompt.replies).toEqual([{ answer: { target: "production (note: keep SQLite for tests)" } }])
+  } finally {
+    prompt.app.renderer.destroy()
+  }
+})
+
+test("escape in a note discards the edit and leaves the choice as it was", async () => {
+  await using tmp = await tmpdir()
+  const prompt = await mountForm(tmp.path, 80, [{ key: "target", type: "string", options: twoTargets, custom: true }])
+  try {
+    prompt.app.mockInput.pressKey("n")
+    await prompt.app.mockInput.typeText("draft")
+    await prompt.app.waitFor(() => prompt.app.renderer.currentFocusedEditor?.plainText === "draft")
+    prompt.app.mockInput.pressEscape()
+    await prompt.app.waitFor(() => prompt.app.renderer.currentFocusedEditor === null)
+    await prompt.app.waitForFrame((frame) => frame.includes("n notes"))
+    const frame = prompt.app.captureCharFrame()
+    expect(frame).not.toContain("draft")
+    expect(frame).not.toContain("Staging ✓")
+    expect(prompt.cancellations).toEqual([])
+
+    prompt.app.mockInput.pressEnter()
+    await prompt.app.waitFor(() => prompt.replies.length === 1)
+    expect(prompt.replies).toEqual([{ answer: { target: "staging" } }])
+  } finally {
+    prompt.app.renderer.destroy()
+  }
+})
+
+test("notes on multiselect options select them, never uncheck them, and ride in the answer", async () => {
+  await using tmp = await tmpdir()
+  const prompt = await mountForm(tmp.path, 80, [
+    { key: "targets", type: "multiselect", options: twoTargets, custom: true },
+  ])
+  try {
+    prompt.app.mockInput.pressKey("n")
+    await prompt.app.mockInput.typeText("eu only")
+    await prompt.app.waitFor(() => prompt.app.renderer.currentFocusedEditor?.plainText === "eu only")
+    prompt.app.mockInput.pressEnter()
+    await prompt.app.waitForFrame((frame) => frame.includes("[✓] Staging") && frame.includes("note: eu only"))
+
+    prompt.app.mockInput.pressKey("n")
+    await prompt.app.waitFor(() => prompt.app.renderer.currentFocusedEditor?.plainText === "eu only")
+    prompt.app.mockInput.pressEnter()
+    await prompt.app.waitFor(() => prompt.app.renderer.currentFocusedEditor === null)
+    await prompt.app.waitForFrame((frame) => frame.includes("[✓] Staging") && frame.includes("note: eu only"))
+
+    prompt.app.mockInput.pressKey("2")
+    await prompt.app.waitForFrame((frame) => frame.includes("[✓] Production"))
+    prompt.app.mockInput.pressArrow("right")
+    await prompt.app.waitForFrame((frame) => frame.includes("Staging (note: eu only), Production"))
+
+    prompt.app.mockInput.pressEnter()
+    await prompt.app.waitFor(() => prompt.replies.length === 1)
+    expect(prompt.replies).toEqual([{ answer: { targets: ["staging (note: eu only)", "production"] } }])
+  } finally {
+    prompt.app.renderer.destroy()
+  }
+})
+
+test("a choice without custom answers offers no notes", async () => {
+  await using tmp = await tmpdir()
+  const prompt = await mountForm(tmp.path, 80, [{ key: "target", type: "string", options: twoTargets }])
+  try {
+    expect(prompt.app.captureCharFrame()).not.toContain("n notes")
+    prompt.app.mockInput.pressKey("n")
+    await Bun.sleep(50)
+    expect(prompt.app.renderer.currentFocusedEditor).toBeNull()
+
+    prompt.app.mockInput.pressEnter()
+    await prompt.app.waitFor(() => prompt.replies.length === 1)
+    expect(prompt.replies).toEqual([{ answer: { target: "staging" } }])
   } finally {
     prompt.app.renderer.destroy()
   }

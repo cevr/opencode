@@ -11,6 +11,7 @@ import {
   formTextual,
   formToggleMultiselect,
   formValidateValue,
+  formWithNotes,
   isFormAnswerField,
 } from "../../src/util/form"
 import type { FormAnswerField } from "../../src/util/form"
@@ -107,4 +108,13 @@ test("updates multiselects without mutating their source", () => {
   expect(formToggleMultiselect(source, "two")).toEqual(["one", "custom", "two"])
   expect(formSetMultiselectCustom(source, "custom", "replacement")).toEqual(["one", "replacement"])
   expect(source).toEqual(["one", "custom"])
+})
+
+test("formWithNotes carries a chosen option's note in its answer string", () => {
+  const notes = { postgres: "but keep SQLite for tests" }
+  expect(formWithNotes("postgres", notes)).toBe("postgres (note: but keep SQLite for tests)")
+  expect(formWithNotes("mysql", notes)).toBe("mysql")
+  expect(formWithNotes(["mysql", "postgres"], notes)).toEqual(["mysql", "postgres (note: but keep SQLite for tests)"])
+  expect(formWithNotes(true, notes)).toBe(true)
+  expect(formWithNotes("postgres", undefined)).toBe("postgres")
 })

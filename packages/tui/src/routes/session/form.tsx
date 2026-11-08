@@ -32,9 +32,10 @@ import {
   formTextual,
   formToggleMultiselect,
   formValidateValue,
+  formWithNotes,
   isFormAnswerField,
 } from "../../util/form"
-import type { FormAnswerField } from "../../util/form"
+import type { FormAnswerField, FormNotes } from "../../util/form"
 
 export const FORM_MODE = "form"
 
@@ -49,8 +50,16 @@ type FormDraft = {
   externalReady: Record<string, boolean>
   selected: number
   editing: boolean
+  // Notes on chosen options, by field key then option value.
+  notes: Record<string, FormNotes | undefined>
+  // The notes field is open under the highlighted option.
+  noting: boolean
+  noteDraft: string
   error: string
 }
+
+/** Opens the notes field on the highlighted option of a choice question. */
+export const FORM_NOTE_KEY = "n"
 
 // Holds in-progress answers per form across FormPrompt remounts, since the
 // session route is keyed by sessionID and unmounts on tab switch. Mirrors
@@ -84,11 +93,15 @@ export function FormPrompt(props: { form: FormWithLocation }) {
       externalReady: {},
       selected: formSelected(configuredFields[0], configuredFields[0]?.default),
       editing: false,
+      notes: {},
+      noting: false,
+      noteDraft: "",
       error: "",
     },
   )
 
   let textarea: TextareaRenderable | undefined
+  let notesArea: TextareaRenderable | undefined
   const [inputTarget, setInputTarget] = createSignal<TextareaRenderable>()
   let review: ScrollBoxRenderable | undefined
 
@@ -195,6 +208,7 @@ export function FormPrompt(props: { form: FormWithLocation }) {
   })
   const customChecked = createMemo(() => customPicked() || (multi() && other() && store.editing))
   const actionLabel = createMemo(() => {
+    if (store.noting) return "save note"
     if (confirm()) return "submit"
     const external = externalField()
     if (external) {
@@ -222,6 +236,8 @@ export function FormPrompt(props: { form: FormWithLocation }) {
     const snapshot = unwrap(store)
     drafts.set(props.form.id, {
       ...snapshot,
+      noting: false,
+      noteDraft: "",
       custom:
         current && textarea && !textarea.isDestroyed
           ? { ...snapshot.custom, [current.key]: textarea.plainText }
@@ -242,19 +258,25 @@ export function FormPrompt(props: { form: FormWithLocation }) {
     target.focus()
   })
 
-  // Typing on a choice question goes straight to the custom answer, from any row:
-  // a digit that numbers a row stays that row's shortcut until the editor opens,
-  // and every other printable key opens the editor with that key typed.
+  // Typing with the custom row highlighted starts the custom answer with that key,
+  // no Enter first. On an option row, letters do nothing but the notes key, and a
+  // digit picks the row it numbers. Keys typed before the notes field takes focus
+  // land in its draft.
   onCleanup(
     keymap.intercept("key", ({ event, consume }) => {
       if (!active()) return
-      if (textual() || confirm() || !custom() || (store.editing && renderer.currentFocusedEditor === textarea)) return
       if (event.ctrl || event.meta || event.option || event.super || event.hyper) return
+      if (store.noting) {
+        if (renderer.currentFocusedEditor === notesArea) return
+        if (!/^[^\p{C}\p{Zl}\p{Zp}]$/u.test(event.sequence)) return
+        setStore("noteDraft", store.noteDraft + event.sequence)
+        consume()
+        return
+      }
+      if (textual() || !other() || (store.editing && renderer.currentFocusedEditor === textarea)) return
       if ((!store.editing && event.sequence === " ") || !/^[^\p{C}\p{Zl}\p{Zp}]$/u.test(event.sequence)) return
       const current = answerField()
       if (!current) return
-      if (!store.editing && /^[1-9]$/.test(event.sequence) && Number(event.sequence) <= rows().length + 1) return
-      if (!other()) setStore("selected", rows().length)
       updateCustom(current, input() + event.sequence)
       if (!store.editing) setStore("editing", true)
       consume()
@@ -280,7 +302,43 @@ export function FormPrompt(props: { form: FormWithLocation }) {
   }
 
   function replySingle(field: FormAnswerField, value: FormValue) {
-    reply({ [field.key]: value })
+    reply({ [field.key]: formWithNotes(value, store.notes[field.key]) })
+  }
+
+  // Notes ride in the answer string, so only fields that accept any string offer them.
+  const notable = createMemo(
+    () => custom() && !confirm() && !textual() && !other() && rows()[store.selected] !== undefined,
+  )
+
+  function openNote() {
+    const current = answerField()
+    const row = rows()[store.selected]
+    if (!current || !row || !notable()) return
+    setStore("noteDraft", store.notes[current.key]?.[String(row.value)] ?? "")
+    setStore("noting", true)
+    setStore("error", "")
+  }
+
+  function closeNote() {
+    setStore("noting", false)
+    setStore("noteDraft", "")
+  }
+
+  // Saving a note keeps its option chosen: it selects it if it was not, and never
+  // unchecks a multiselect option. An empty note removes the option's note.
+  function saveNote() {
+    const current = answerField()
+    const row = rows()[store.selected]
+    if (!current || !row) return closeNote()
+    const value = String(row.value)
+    const text = (notesArea && !notesArea.isDestroyed ? notesArea.plainText : store.noteDraft).trim()
+    const { [value]: _previous, ...rest } = store.notes[current.key] ?? {}
+    setStore("notes", current.key, text ? { ...rest, [value]: text } : rest)
+    const chosen = store.answers[current.key]
+    if (multi()) {
+      if (!Array.isArray(chosen) || !chosen.includes(value)) toggle(value)
+    } else if (chosen !== row.value) answer(current.key, row.value)
+    closeNote()
   }
 
   function pick(value: FormValue, customValue?: string) {
@@ -323,6 +381,7 @@ export function FormPrompt(props: { form: FormWithLocation }) {
     setStore("tab", index)
     setStore("selected", next && isFormAnswerField(next) ? formSelected(next, store.answers[next.key]) : 0)
     setStore("editing", false)
+    closeNote()
     setStore("error", "")
   }
 
@@ -361,6 +420,11 @@ export function FormPrompt(props: { form: FormWithLocation }) {
   usePaste((event) => {
     if (!active()) return
     const value = stripAnsiSequences(decodePasteBytes(event.bytes)).replace(/\r\n?/g, "\n")
+    if (store.noting) {
+      if (notesArea && !notesArea.isDestroyed) notesArea.insertText(value.replace(/\n/g, " "))
+      event.preventDefault()
+      return
+    }
     if (store.editing && renderer.currentFocusedEditor === textarea) {
       textarea.insertText(value)
       event.preventDefault()
@@ -376,6 +440,10 @@ export function FormPrompt(props: { form: FormWithLocation }) {
       .then((content) => {
         if (!active() || content?.mime !== "text/plain") return
         const value = stripAnsiSequences(content.data).replace(/\r\n?/g, "\n")
+        if (store.noting) {
+          if (notesArea && !notesArea.isDestroyed) notesArea.insertText(value.replace(/\n/g, " "))
+          return
+        }
         if (store.editing || textual()) {
           textarea?.insertText(value)
           return
@@ -534,7 +602,7 @@ export function FormPrompt(props: { form: FormWithLocation }) {
       Object.fromEntries(
         fields().flatMap((field) => {
           const value = store.answers[field.key]
-          return value === undefined ? [] : [[field.key, value] as const]
+          return value === undefined ? [] : [[field.key, formWithNotes(value, store.notes[field.key])] as const]
         }),
       ),
     )
@@ -556,6 +624,16 @@ export function FormPrompt(props: { form: FormWithLocation }) {
           return pasteClipboard()
         },
       },
+    ],
+  }))
+
+  Keymap.createLayer(() => ({
+    mode: FORM_MODE,
+    priority: 2,
+    enabled: store.noting,
+    commands: [
+      { bind: "return", title: "Save note", group: "Form", run: saveNote },
+      { bind: "escape", title: "Discard note", group: "Form", run: closeNote },
     ],
   }))
 
@@ -653,7 +731,7 @@ export function FormPrompt(props: { form: FormWithLocation }) {
 
     return {
       mode: FORM_MODE,
-      enabled: !store.editing && !textual(),
+      enabled: !store.editing && !store.noting && !textual(),
       commands: [
         {
           id: "app.exit",
@@ -757,6 +835,7 @@ export function FormPrompt(props: { form: FormWithLocation }) {
                   run: () => setStore("selected", (store.selected + 1) % total),
                 },
                 { bind: "return", title: "Select answer", group: "Form", run: () => selectOption() },
+                ...(notable() ? [{ bind: FORM_NOTE_KEY, title: "Add a note", group: "Form", run: openNote }] : []),
                 ...(multi()
                   ? [{ bind: "space", title: "Toggle answer", group: "Form", run: () => selectOption() }]
                   : []),
@@ -925,12 +1004,15 @@ export function FormPrompt(props: { form: FormWithLocation }) {
                       if (Array.isArray(value)) return value.includes(String(row.value))
                       return value === row.value
                     }
+                    const note = () => store.notes[answerField()?.key ?? ""]?.[String(row.value)]
+                    const noting = () => store.noting && active()
+                    const indent = () => (multi() ? 7 : 3)
                     return (
                       <box
-                        onMouseMove={() => setStore("selected", i())}
-                        onMouseDown={() => setStore("selected", i())}
+                        onMouseMove={() => !store.noting && setStore("selected", i())}
+                        onMouseDown={() => !store.noting && setStore("selected", i())}
                         onMouseUp={() => {
-                          if (renderer.getSelection()?.getSelectedText()) return
+                          if (store.noting || renderer.getSelection()?.getSelectedText()) return
                           selectOption()
                         }}
                       >
@@ -971,8 +1053,42 @@ export function FormPrompt(props: { form: FormWithLocation }) {
                           </Show>
                         </box>
                         <Show when={row.description}>
-                          <box paddingLeft={multi() ? 7 : 3}>
+                          <box paddingLeft={indent()}>
                             <text fg={theme.text.muted}>{row.description}</text>
+                          </box>
+                        </Show>
+                        <Show when={noting()}>
+                          <box paddingLeft={indent()} flexDirection="row">
+                            <text fg={theme.text.muted} flexShrink={0}>
+                              {"note: "}
+                            </text>
+                            <textarea
+                              flexGrow={1}
+                              cursorStyle={cursorStyle()}
+                              ref={(val: TextareaRenderable) => {
+                                notesArea = val
+                                val.traits = { status: "NOTE" }
+                                queueMicrotask(() => {
+                                  if (val.isDestroyed) return
+                                  val.setText(store.noteDraft)
+                                  val.gotoLineEnd()
+                                  setInputTarget(val)
+                                })
+                              }}
+                              initialValue={store.noteDraft}
+                              placeholder="Add a note to this answer"
+                              placeholderColor={theme.text.muted}
+                              minHeight={1}
+                              maxHeight={3}
+                              textColor={theme.text.formfield.focused}
+                              focusedTextColor={theme.text.formfield.focused}
+                              cursorColor={theme.text.formfield.focused}
+                            />
+                          </box>
+                        </Show>
+                        <Show when={!noting() && picked() && note()}>
+                          <box paddingLeft={indent()}>
+                            <text fg={theme.text.muted}>note: {note()}</text>
                           </box>
                         </Show>
                       </box>
@@ -981,10 +1097,10 @@ export function FormPrompt(props: { form: FormWithLocation }) {
                 </For>
                 <Show when={custom()}>
                   <box
-                    onMouseMove={() => setStore("selected", rows().length)}
-                    onMouseDown={() => setStore("selected", rows().length)}
+                    onMouseMove={() => !store.noting && setStore("selected", rows().length)}
+                    onMouseDown={() => !store.noting && setStore("selected", rows().length)}
                     onMouseUp={() => {
-                      if (renderer.getSelection()?.getSelectedText()) return
+                      if (store.noting || renderer.getSelection()?.getSelectedText()) return
                       selectOption()
                     }}
                   >
@@ -1100,7 +1216,7 @@ export function FormPrompt(props: { form: FormWithLocation }) {
                       </box>
                     )
                   }
-                  const value = () => formDisplayValue(item, store.answers[item.key], "(none)")
+                  const value = () => formDisplayValue(item, store.answers[item.key], "(none)", store.notes[item.key])
                   const answered = () => store.answers[item.key] !== undefined
                   const missing = () => !answered() && item.required === true
                   const invalid = () => formValidateValue(item, store.answers[item.key])
@@ -1144,7 +1260,7 @@ export function FormPrompt(props: { form: FormWithLocation }) {
               {"⇆"} <span style={{ fg: theme.text.muted }}>tab</span>
             </text>
           </Show>
-          <Show when={!confirm() && !textual() && !externalField() && !store.editing}>
+          <Show when={!confirm() && !textual() && !externalField() && !store.editing && !store.noting}>
             <text fg={theme.text.base}>
               {"↑↓"} <span style={{ fg: theme.text.muted }}>select</span>
             </text>
@@ -1169,8 +1285,16 @@ export function FormPrompt(props: { form: FormWithLocation }) {
               c <span style={{ fg: theme.text.muted }}>copy</span>
             </text>
           </Show>
-          <text fg={theme.text.base} onMouseUp={cancel}>
-            esc <span style={{ fg: theme.text.muted }}>{store.editing && !textual() ? "close" : "dismiss"}</span>
+          <Show when={notable() && !store.editing && !store.noting}>
+            <text fg={theme.text.base} onMouseUp={openNote}>
+              {FORM_NOTE_KEY} <span style={{ fg: theme.text.muted }}>notes</span>
+            </text>
+          </Show>
+          <text fg={theme.text.base} onMouseUp={() => (store.noting ? closeNote() : cancel())}>
+            esc{" "}
+            <span style={{ fg: theme.text.muted }}>
+              {store.noting ? "discard" : store.editing && !textual() ? "close" : "dismiss"}
+            </span>
           </text>
         </box>
         <Show when={store.error}>
