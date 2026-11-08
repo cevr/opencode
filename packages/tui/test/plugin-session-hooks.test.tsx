@@ -156,6 +156,20 @@ test("a plugin claims the transcript's header, first and last rows, user prompt 
   expect(lines[user - 1]?.trim()).toBe("")
 })
 
+test("a layout rule sees the row's message, so a message a slot hides takes no space", async () => {
+  await using app = await openSession("hidden-message")
+  await app.ready
+  const frame = await waitForHighlightedFrame(
+    app,
+    (frame) => frame.includes("Transcript start claimed") && frame.includes("The parser is fixed."),
+  )
+  const lines = frame.split("\n")
+  const start = lines.findIndex((line) => line.includes("Transcript start claimed"))
+  // The hidden prompt adds no row: one blank row (the reply's own gap), then the reply.
+  expect(lines[start + 1]?.trim()).toBe("")
+  expect(lines[start + 2]?.trim()).not.toBe("")
+})
+
 test("a plugin picks the bare rail composer", async () => {
   await using app = await openSession("composer-rail")
   await app.ready

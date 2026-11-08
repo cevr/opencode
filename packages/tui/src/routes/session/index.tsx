@@ -1735,6 +1735,13 @@ function transcriptRowKind(
   return "other"
 }
 
+// The message a row draws, as layout rules see it: none for a group, which spans several.
+function transcriptRowMessageID(row: SessionRow) {
+  if (row.type === "message" || row.type === "assistant-footer") return row.messageID
+  if (row.type === "part") return row.ref.messageID
+  return undefined
+}
+
 function SessionRowView(props: SessionRowViewProps) {
   const plugins = usePlugin()
   const [target, setTarget] = createSignal<BoxRenderable>()
@@ -1748,6 +1755,7 @@ function SessionRowView(props: SessionRowViewProps) {
     return rule({
       kind: transcriptRowKind(props.row, props.message),
       previous: props.previous ? transcriptRowKind(props.previous, props.message) : undefined,
+      messageID: transcriptRowMessageID(props.row),
     })
   })
   return (

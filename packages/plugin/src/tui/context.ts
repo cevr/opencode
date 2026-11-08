@@ -547,8 +547,17 @@ export type TranscriptRowKind = "user" | "text" | "reasoning" | "tool" | "group"
  * last-enabled plugin wins.
  */
 export interface Layout {
-  /** Blank rows above a transcript row. The host default is 1. */
-  readonly rowGap?: (row: { readonly kind: TranscriptRowKind; readonly previous?: TranscriptRowKind }) => number
+  /**
+   * Blank rows above a transcript row. The host default is 1. `messageID` is
+   * the message the row draws (a message, one of its parts or its footer;
+   * none for a group), so a plugin whose slot draws nothing for a message
+   * can give its row no gap either.
+   */
+  readonly rowGap?: (row: {
+    readonly kind: TranscriptRowKind
+    readonly previous?: TranscriptRowKind
+    readonly messageID?: string
+  }) => number
   /** Horizontal padding of the transcript and the dock, in cells. The host default is 2. */
   readonly inset?: number
   /**
