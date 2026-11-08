@@ -11,7 +11,7 @@ import {
 } from "@opentui/core"
 import { openUrl } from "@opencode/util/open"
 import { useTheme } from "../../context/theme"
-import type { FormAnswer, FormField, FormValue } from "@opencode/client"
+import type { FormAction, FormAnswer, FormField, FormValue } from "@opencode/client"
 import { useData, type FormWithLocation } from "../../context/data"
 import { useClipboard } from "../../context/clipboard"
 import { SplitBorder } from "../../ui/border"
@@ -22,6 +22,8 @@ import { useInteractivity } from "../../context/interactivity"
 import { useCursorStyle } from "../../config"
 import { errorMessage } from "../../util/error"
 import {
+  formAction,
+  formActionMark,
   formCustom,
   formDisplayValue,
   formInitialValues,
@@ -79,6 +81,9 @@ export function FormPrompt(props: { form: FormWithLocation }) {
   const clipboard = useClipboard()
   const toast = useToast()
   const configuredFields = props.form.fields.filter(isFormAnswerField)
+  // The form's own keys, offered on every answer field (Form.Action).
+  const actions = props.form.actions ?? []
+  const marked = (item: FormField) => formAction(actions, store.answers[item.key])
   const initial = formInitialValues(props.form.fields)
   const draft = drafts.get(props.form.id)
   drafts.delete(props.form.id)
@@ -139,7 +144,7 @@ export function FormPrompt(props: { form: FormWithLocation }) {
     const value = store.answers[item.key]
     if (value === undefined) return false
     if (item.type === "external") return value === true
-    return formValidateValue(item, value) === undefined
+    return marked(item) !== undefined || formValidateValue(item, value) === undefined
   }
   const answered = createMemo(() => fields().filter(completed).length)
   const field = createMemo(() => fields()[store.tab])
@@ -379,10 +384,31 @@ export function FormPrompt(props: { form: FormWithLocation }) {
   function selectTab(index: number) {
     const next = fields()[index]
     setStore("tab", index)
-    setStore("selected", next && isFormAnswerField(next) ? formSelected(next, store.answers[next.key]) : 0)
+    setStore(
+      "selected",
+      next && isFormAnswerField(next) && !marked(next) ? formSelected(next, store.answers[next.key]) : 0,
+    )
     setStore("editing", false)
     closeNote()
     setStore("error", "")
+  }
+
+  // An action answers the field on screen with its value and moves on, or replies when the
+  // form is one question; on a field it already answered, it clears the answer instead.
+  function runAction(action: FormAction) {
+    const current = answerField()
+    if (!current) return
+    if (store.answers[current.key] === action.value) {
+      answer(current.key, undefined)
+      return
+    }
+    setStore("editing", false)
+    answer(current.key, action.value)
+    if (single()) {
+      reply({ [current.key]: action.value })
+      return
+    }
+    selectTab(store.tab + 1)
   }
 
   function selectOption() {
@@ -593,7 +619,7 @@ export function FormPrompt(props: { form: FormWithLocation }) {
     }
     const invalid = fields()
       .filter(isFormAnswerField)
-      .find((field) => formValidateValue(field, store.answers[field.key]))
+      .find((field) => !marked(field) && formValidateValue(field, store.answers[field.key]))
     if (invalid) {
       setStore("error", formValidateValue(invalid, store.answers[invalid.key]) ?? "Invalid answer")
       return
@@ -635,6 +661,19 @@ export function FormPrompt(props: { form: FormWithLocation }) {
       { bind: "return", title: "Save note", group: "Form", run: saveNote },
       { bind: "escape", title: "Discard note", group: "Form", run: closeNote },
     ],
+  }))
+
+  // Above the editing layer, so an action runs from the custom answer's editor too.
+  Keymap.createLayer(() => ({
+    mode: FORM_MODE,
+    priority: 3,
+    enabled: actions.length > 0 && !store.noting && !confirm() && answerField() !== undefined,
+    commands: actions.map((action) => ({
+      bind: action.key,
+      title: action.label,
+      group: "Form",
+      run: () => runAction(action),
+    })),
   }))
 
   Keymap.createLayer(() => ({
@@ -968,6 +1007,14 @@ export function FormPrompt(props: { form: FormWithLocation }) {
             <box>
               <text fg={theme.text.base}>{answerField()!.description ?? formLabel(answerField()!)}</text>
             </box>
+            <Show when={marked(answerField()!)}>
+              {(action) => (
+                <text fg={theme.text.formfield.selected}>
+                  ✓ {formActionMark(action())}{" "}
+                  <span style={{ fg: theme.text.muted }}>· {action().key} again undoes</span>
+                </text>
+              )}
+            </Show>
             <Show when={textual() ? answerField()!.key : undefined} keyed>
               <box paddingLeft={1}>
                 <textarea
@@ -1216,10 +1263,14 @@ export function FormPrompt(props: { form: FormWithLocation }) {
                       </box>
                     )
                   }
-                  const value = () => formDisplayValue(item, store.answers[item.key], "(none)", store.notes[item.key])
+                  const value = () => {
+                    const action = marked(item)
+                    if (action) return formActionMark(action)
+                    return formDisplayValue(item, store.answers[item.key], "(none)", store.notes[item.key])
+                  }
                   const answered = () => store.answers[item.key] !== undefined
                   const missing = () => !answered() && item.required === true
-                  const invalid = () => formValidateValue(item, store.answers[item.key])
+                  const invalid = () => (marked(item) ? undefined : formValidateValue(item, store.answers[item.key]))
                   return (
                     <box paddingLeft={1}>
                       <text>
@@ -1289,6 +1340,15 @@ export function FormPrompt(props: { form: FormWithLocation }) {
             <text fg={theme.text.base} onMouseUp={openNote}>
               {FORM_NOTE_KEY} <span style={{ fg: theme.text.muted }}>notes</span>
             </text>
+          </Show>
+          <Show when={!confirm() && answerField() && !store.noting}>
+            <For each={actions}>
+              {(action) => (
+                <text fg={theme.text.base} onMouseUp={() => runAction(action)}>
+                  {action.key} <span style={{ fg: theme.text.muted }}>{action.label}</span>
+                </text>
+              )}
+            </For>
           </Show>
           <text fg={theme.text.base} onMouseUp={() => (store.noting ? closeNote() : cancel())}>
             esc{" "}

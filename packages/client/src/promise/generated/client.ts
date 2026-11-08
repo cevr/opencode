@@ -986,7 +986,13 @@ export function make(options: ClientOptions) {
             {
               method: "POST",
               path: `/api/session/${encodeURIComponent(input.sessionID)}/form`,
-              body: { id: input["id"], title: input["title"], metadata: input["metadata"], fields: input["fields"] },
+              body: {
+                id: input["id"],
+                title: input["title"],
+                metadata: input["metadata"],
+                actions: input["actions"],
+                fields: input["fields"],
+              },
               successStatus: 200,
               declaredStatuses: [400, 401, 404, 409],
               empty: false,

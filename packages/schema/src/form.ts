@@ -122,6 +122,20 @@ export type Field = StringField | NumberField | IntegerField | BooleanField | Mu
 export const Fields = Schema.NonEmptyArray(Field).annotate({ identifier: "Form.Fields" })
 export type Fields = typeof Fields.Type
 
+// A key the form offers on every answer field besides its choices, e.g. ctrl+x to dismiss a
+// question. Pressing it answers the field on screen with `value` and moves on; pressing it
+// again on that field clears the answer. The reply carries `value` like any answer, and it is
+// valid for every answer field of the form.
+export const Action = Schema.Struct({
+  key: Schema.String.annotate({ description: "The key that runs it, in keybind form, e.g. `ctrl+x`" }),
+  label: Schema.String.annotate({ description: "What the footer names it, e.g. `dismiss`" }),
+  value: Schema.String.annotate({ description: "The answer a field takes when it runs" }),
+  mark: Schema.String.pipe(optional).annotate({
+    description: "What a field it answered shows in place of the answer, e.g. `dismissed`; the label when absent",
+  }),
+}).annotate({ identifier: "Form.Action" })
+export interface Action extends Schema.Schema.Type<typeof Action> {}
+
 const InfoBase = {
   id: ID,
   // This should be typed as SessionID. It is a plain string only because MCP elicitation
@@ -131,6 +145,7 @@ const InfoBase = {
   sessionID: Schema.String,
   title: Schema.String,
   metadata: Metadata.pipe(optional),
+  actions: Schema.Array(Action).pipe(optional),
 }
 
 export const Info = Schema.Struct({

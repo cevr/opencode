@@ -357,6 +357,7 @@ export type SessionFormCreateInput = {
   readonly id?: Form.ID | undefined
   readonly title: string
   readonly metadata?: Form.Metadata | undefined
+  readonly actions?: ReadonlyArray<Form.Action> | undefined
   readonly fields: Form.Fields
 }
 export type SessionFormCreateOutput = Form.Info

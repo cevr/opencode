@@ -95,6 +95,7 @@ const FormCreatePayload = Schema.Struct({
   id: Form.ID.pipe(Schema.optional),
   title: Form.Info.fields.title,
   metadata: Form.Info.fields.metadata,
+  actions: Form.Info.fields.actions,
   fields: Form.Info.fields.fields,
 }).annotate({ identifier: "Form.CreatePayload" })
 

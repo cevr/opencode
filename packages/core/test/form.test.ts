@@ -30,6 +30,37 @@ describe("Form", () => {
     }),
   )
 
+  it.effect("accepts a form action's value on any answer field, and refuses actions that share a key or value", () =>
+    Effect.sync(() => {
+      const fields = [
+        { key: "pick", type: "string", options: [{ value: "a", label: "A" }] },
+        { key: "count", type: "number" },
+      ] satisfies ReadonlyArray<Form.Field>
+      const actions = [{ key: "ctrl+x", label: "dismiss", value: "x:dismiss" }]
+
+      expect(Form.validateAnswer(fields, { pick: "x:dismiss", count: "x:dismiss" }, actions)).toBeUndefined()
+      expect(Form.validateAnswer(fields, { pick: "x:dismiss" })).toBe("Invalid option for form field: pick")
+      expect(Form.validateActions(actions)).toBeUndefined()
+      expect(Form.validateActions([...actions, { key: "ctrl+x", label: "skip", value: "x:skip" }])).toBe(
+        "Duplicate form action key: ctrl+x",
+      )
+      expect(Form.validateActions([...actions, { key: "ctrl+k", label: "skip", value: "x:dismiss" }])).toBe(
+        "Duplicate form action value: x:dismiss",
+      )
+    }),
+  )
+
+  it.effect("keeps a form's actions on the form it creates", () =>
+    Effect.gen(function* () {
+      const service = yield* Form.Service
+      const actions = [{ key: "ctrl+x", label: "dismiss", value: "x:dismiss", mark: "dismissed" }]
+      const created = yield* service.create({ ...input, id: Form.ID.create("frm_actions"), actions })
+      expect(created.actions).toEqual(actions)
+      yield* service.reply({ id: created.id, answer: { name: "x:dismiss" } })
+      expect(yield* service.state(created.id)).toEqual({ status: "answered", answer: { name: "x:dismiss" } })
+    }),
+  )
+
   it.effect("returns a terminal cancelled state from ask", () =>
     Effect.gen(function* () {
       const service = yield* Form.Service

@@ -27,6 +27,7 @@ async function mountForm(
   height = 20,
   clipboardText?: string,
   response?: { reply?: 404 | 409; cancel?: 404 | 409; syncFailure?: boolean },
+  actions?: FormWithLocation["actions"],
 ) {
   const state = path.join(root, "state")
   await mkdir(state, { recursive: true })
@@ -42,6 +43,7 @@ async function mountForm(
     id: "frm_test",
     sessionID: "ses_test",
     title: "Authorization required",
+    ...(actions === undefined ? {} : { actions }),
     fields: fields ?? [
       {
         key: "authorization",
@@ -929,6 +931,83 @@ test("space does not select a single-choice option", async () => {
     prompt.app.mockInput.pressKey(" ")
     expect(prompt.app.captureCharFrame()).not.toContain("Staging ✓")
     expect(prompt.replies).toEqual([])
+  } finally {
+    prompt.app.renderer.destroy()
+  }
+})
+
+const dismiss = [{ key: "ctrl+x", label: "dismiss", value: "test:dismiss", mark: "dismissed" }]
+const twoQuestions: FormWithLocation["fields"] = [
+  { key: "first", type: "string", title: "First", description: "Which target first?", options: twoTargets, custom: true },
+  { key: "second", type: "string", title: "Second", description: "Which target next?", options: twoTargets, custom: true },
+]
+
+test("a form action answers the field on screen with its value and moves on; pressed again it undoes", async () => {
+  await using tmp = await tmpdir()
+  const prompt = await mountForm(tmp.path, 100, twoQuestions, 24, undefined, undefined, dismiss)
+  try {
+    await prompt.app.waitForFrame((frame) => frame.includes("ctrl+x dismiss"))
+    prompt.app.mockInput.pressKey("x", { ctrl: true })
+    await prompt.app.waitForFrame((frame) => frame.includes("Which target next?"))
+    expect(prompt.replies).toEqual([])
+    // ctrl+x is the default leader, and <leader>q dismisses the form: the action took the key, so q does not.
+    prompt.app.mockInput.pressKey("q")
+    await Bun.sleep(50)
+    expect(prompt.cancellations).toEqual([])
+
+    // Back on the first: marked, and the same key clears the mark.
+    prompt.app.mockInput.pressArrow("left")
+    await prompt.app.waitForFrame((frame) => frame.includes("✓ dismissed · ctrl+x again undoes"))
+    prompt.app.mockInput.pressKey("x", { ctrl: true })
+    await prompt.app.waitForFrame((frame) => !frame.includes("✓ dismissed"))
+    expect(prompt.app.captureCharFrame()).toContain("Which target first?")
+
+    // Dismissed again, the next key reaches the second question: the leader did not take it.
+    prompt.app.mockInput.pressKey("x", { ctrl: true })
+    await prompt.app.waitForFrame((frame) => frame.includes("Which target next?"))
+    prompt.app.mockInput.pressKey("2")
+    await prompt.app.waitForFrame((frame) => frame.includes("First: dismissed"))
+    expect(prompt.app.captureCharFrame()).toContain("Second: Production")
+    expect(prompt.app.captureCharFrame()).not.toContain("ctrl+x dismiss")
+
+    prompt.app.mockInput.pressEnter()
+    await prompt.app.waitFor(() => prompt.replies.length === 1)
+    expect(prompt.replies).toEqual([{ answer: { first: "test:dismiss", second: "production" } }])
+  } finally {
+    prompt.app.renderer.destroy()
+  }
+})
+
+test("a form action on a one-question form replies at once, from the custom answer's editor too", async () => {
+  await using tmp = await tmpdir()
+  const prompt = await mountForm(
+    tmp.path,
+    100,
+    [{ key: "target", type: "string", options: twoTargets, custom: true }],
+    20,
+    undefined,
+    undefined,
+    dismiss,
+  )
+  try {
+    prompt.app.mockInput.pressArrow("down")
+    prompt.app.mockInput.pressArrow("down")
+    await prompt.app.mockInput.typeText("eu1")
+    await prompt.app.waitFor(() => prompt.app.renderer.currentFocusedEditor?.plainText === "eu1")
+    prompt.app.mockInput.pressKey("x", { ctrl: true })
+    await prompt.app.waitFor(() => prompt.replies.length === 1)
+    expect(prompt.replies).toEqual([{ answer: { target: "test:dismiss" } }])
+  } finally {
+    prompt.app.renderer.destroy()
+  }
+})
+
+test("a form without actions shows no action key", async () => {
+  await using tmp = await tmpdir()
+  const prompt = await mountForm(tmp.path, 100, twoQuestions, 24)
+  try {
+    await prompt.app.waitForFrame((frame) => frame.includes("Which target first?"))
+    expect(prompt.app.captureCharFrame()).not.toContain("ctrl+x")
   } finally {
     prompt.app.renderer.destroy()
   }

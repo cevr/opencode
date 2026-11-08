@@ -127,13 +127,14 @@ export const layer = Layer.effect(
           const id = input.id ?? ID.create()
           const existing = yield* Cache.getSuccess(forms, id)
           if (Option.isSome(existing)) return yield* new AlreadyExistsError({ id })
-          const invalid = validateFields(input.fields)
+          const invalid = validateFields(input.fields) ?? validateActions(input.actions ?? [])
           if (invalid) return yield* new InvalidFormError({ message: invalid })
           const form: Info = {
             id,
             sessionID: input.sessionID,
             title: input.title,
             ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
+            ...(input.actions === undefined || input.actions.length === 0 ? {} : { actions: input.actions }),
             fields: input.fields,
           }
           const entry: Entry = {
@@ -182,7 +183,7 @@ export const layer = Layer.effect(
         Effect.gen(function* () {
           const entry = yield* requireEntry(input.id)
           if (entry.state.status !== "pending") return yield* new AlreadySettledError({ id: input.id })
-          const invalid = validateAnswer(entry.form.fields, input.answer)
+          const invalid = validateAnswer(entry.form.fields, input.answer, entry.form.actions)
           if (invalid) return yield* new InvalidAnswerError({ id: input.id, message: invalid })
           const next: TerminalState = { status: "answered", answer: input.answer }
           yield* bus.publish(Form.Event.Replied, {
@@ -232,7 +233,12 @@ export const layer = Layer.effect(
 
 export const node = makeLocationNode({ service: Service, layer, deps: [Bus.node] })
 
-export function validateAnswer(form: ReadonlyArray<Form.Field>, answer: Answer) {
+// A field answered with one of the form's action values is valid whatever its type.
+export function validateAnswer(
+  form: ReadonlyArray<Form.Field>,
+  answer: Answer,
+  actions: ReadonlyArray<Form.Action> = [],
+) {
   const fields = new Map(form.map((field) => [field.key, field] as const))
   for (const key of Object.keys(answer)) {
     if (!fields.has(key)) return `Unknown form field: ${key}`
@@ -249,6 +255,7 @@ export function validateAnswer(form: ReadonlyArray<Form.Field>, answer: Answer) 
       continue
     }
     if (!active) return `Form field is not active: ${field.key}`
+    if (actions.some((action) => action.value === value)) continue
     const invalid = validateField(field, value)
     if (invalid) return invalid
   }
@@ -288,6 +295,19 @@ export function validateFields(fields: ReadonlyArray<Form.Field>) {
       if (invalid) return `${invalid}: ${field.key} -> ${when.key}`
     }
     earlier.set(field.key, field)
+  }
+}
+
+// Each action needs its own key and its own value, or the TUI could not tell them apart.
+export function validateActions(actions: ReadonlyArray<Form.Action>) {
+  const keys = new Set<string>()
+  const values = new Set<string>()
+  for (const action of actions) {
+    if (!action.key || !action.label || !action.value) return "Form action needs a key, a label and a value"
+    if (keys.has(action.key)) return `Duplicate form action key: ${action.key}`
+    if (values.has(action.value)) return `Duplicate form action value: ${action.value}`
+    keys.add(action.key)
+    values.add(action.value)
   }
 }
 

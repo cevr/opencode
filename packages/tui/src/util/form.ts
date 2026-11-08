@@ -1,4 +1,4 @@
-import type { FormField, FormValue } from "@opencode/client"
+import type { FormAction, FormField, FormValue } from "@opencode/client"
 
 export type FormAnswerField = Exclude<FormField, { type: "external" }>
 
@@ -123,6 +123,17 @@ export function formDisplayValue(
   }
   if (Array.isArray(value)) return value.length === 0 ? emptyMultiselect : value.map(label).join(", ")
   return label(value)
+}
+
+/** The form action whose value a field holds, if an action answered it. */
+export function formAction(actions: ReadonlyArray<FormAction> | undefined, value: FormValue | undefined) {
+  if (typeof value !== "string") return undefined
+  return actions?.find((action) => action.value === value)
+}
+
+/** What a field an action answered shows in place of its answer. */
+export function formActionMark(action: FormAction) {
+  return action.mark ?? action.label
 }
 
 /** Notes the user added to chosen options, by option value. */

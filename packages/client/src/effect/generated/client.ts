@@ -704,7 +704,13 @@ const EndpointSessionFormCreate = (raw: RawClient["server.session"]) => (input: 
   preserveEffect<SessionFormCreateOutput>()(
     raw["session.form.create"]({
       params: { sessionID: input["sessionID"] },
-      payload: { id: input["id"], title: input["title"], metadata: input["metadata"], fields: input["fields"] },
+      payload: {
+        id: input["id"],
+        title: input["title"],
+        metadata: input["metadata"],
+        actions: input["actions"],
+        fields: input["fields"],
+      },
     }).pipe(
       Effect.mapError(mapClientError),
       Effect.map((value) => value.data),

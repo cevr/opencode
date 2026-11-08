@@ -129,6 +129,8 @@ export type FormID = string
 
 export type FormMetadata = { [x: string]: JsonValue }
 
+export type FormAction = { key: string; label: string; value: string; mark?: string }
+
 export type FormWhen = {
   key: string
   op: "eq" | "neq"
@@ -2704,13 +2706,21 @@ export type SessionMessageAssistant = {
   retry?: SessionMessageAssistantRetry
 }
 
-export type FormInfo = { id: FormID; sessionID: string; title: string; metadata?: FormMetadata; fields: FormFields }
+export type FormInfo = {
+  id: FormID
+  sessionID: string
+  title: string
+  metadata?: FormMetadata
+  actions?: Array<FormAction>
+  fields: FormFields
+}
 
 export type FormDetail = {
   id: FormID
   sessionID: string
   title: string
   metadata?: FormMetadata
+  actions?: Array<FormAction>
   fields: FormFields
   state: FormState
 }
@@ -2738,7 +2748,14 @@ export type SessionMessageAssistantContentEncoded =
 
 export type GenerateDecisionsResponse = { data: GenerateDecisionResult }
 
-export type FormInfo1 = { id: FormID; sessionID: string; title: string; metadata?: FormMetadata1; fields: FormFields1 }
+export type FormInfo1 = {
+  id: FormID
+  sessionID: string
+  title: string
+  metadata?: FormMetadata1
+  actions?: Array<FormAction>
+  fields: FormFields1
+}
 
 export type SessionMessageInfo =
   | SessionMessageAgentSelected
@@ -3547,6 +3564,9 @@ export type SessionFormCreateInput = {
   readonly id?: string | null | undefined
   readonly title: string
   readonly metadata?: { readonly [x: string]: JsonValue } | undefined
+  readonly actions?:
+    | ReadonlyArray<{ readonly key: string; readonly label: string; readonly value: string; readonly mark?: string }>
+    | undefined
   readonly fields: readonly [
     (
       | {
