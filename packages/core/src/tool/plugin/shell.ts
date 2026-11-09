@@ -670,6 +670,11 @@ export const Plugin = {
                 ),
               )
             return run(input, form.command, context).pipe(
+              // Shell spans, including the job that waits for a backgrounded command, name the call that started them.
+              Effect.annotateSpans({
+                "gen_ai.tool.call.id": context.id,
+                ...(input.background === true ? { "opencode.shell.background": true } : {}),
+              }),
               Effect.map(({ handle, content }) => ({
                 output: handle,
                 content,

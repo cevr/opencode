@@ -436,8 +436,21 @@ export function SearchPalette(props: SiteSearchProps & { openOnMount?: SearchVia
         >
           <div data-slot="field">
             <svg data-slot="icon" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.25" />
-              <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.25" />
+              <circle
+                cx="7.43"
+                cy="7.43"
+                r="5.06"
+                stroke="currentColor"
+                stroke-width="1.5"
+                vector-effect="non-scaling-stroke"
+              />
+              <path
+                d="M11 11L13.33 13.33"
+                stroke="currentColor"
+                stroke-width="1.5"
+                stroke-linecap="square"
+                vector-effect="non-scaling-stroke"
+              />
             </svg>
             <input
               ref={input}
@@ -557,7 +570,7 @@ export function SearchPalette(props: SiteSearchProps & { openOnMount?: SearchVia
  * panel also tones the page behind it into a narrow band next to the panel colour, so the panel stays
  * at least 97% white (dark: at most 12%) over any page, which keeps its text at 4.5:1 or more.
  */
-function searchLook(s: SiteSettings) {
+export function searchLook(s: SiteSettings) {
   const alpha = s.searchPanelOpacity / 100
   const blur = alpha < 1 && s.searchPanelBlur > 0 ? `blur(${s.searchPanelBlur}px)` : ""
   // Light: map the page's 0–1 onto lo–1 with contrast(c) then brightness(b), in sRGB like compositing.

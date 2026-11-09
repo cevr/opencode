@@ -21,8 +21,8 @@ import {
   Suspense,
 } from "solid-js"
 import { Dynamic, isServer } from "solid-js/web"
-import interLatin from "../../asset/fonts/inter-latin.woff2"
-import interRest from "../../asset/fonts/inter-rest.woff2"
+import { interFaces, interLatin } from "./inter-fonts"
+import { AgentIcon, Bracket, PersonIcon, ThemeCycle } from "./site-controls"
 import logoLight from "../../asset/brand/opencode-logo-light.svg"
 import logoDark from "../../asset/brand/opencode-logo-dark.svg"
 import wordmarkLight from "../../asset/brand/opencode-wordmark-light.svg"
@@ -68,9 +68,9 @@ import { Tooltips } from "./tooltip"
 import { SiteSearch } from "./search"
 import { preloadVisibleLinks } from "./preload-visible"
 import { adoptVoice, dropVoice } from "./voice/host"
-// The fan's styles load with the page; its code on first use (loadLogoFan).
+// The logo menu's other styles (Settings › Logo menu: list, cards) and the shared nav menus in the site's colours.
 import "./logo-fan.css"
-import type { LogoFan } from "./logo-fan"
+import "./nav-menus.css"
 import { logoVariantSvgs } from "./logo-variants"
 import { AnomalyLogo, Logo, LogoIcon, Wordmark } from "./marks"
 import {
@@ -87,6 +87,7 @@ import {
 } from "./settings"
 
 export { Chevron, ExternalArrow, NewTab, PlatformIcon } from "./icons"
+export { Bracket } from "./site-controls"
 export {
   applyCarouselPreset,
   carouselBreakpoints,
@@ -104,37 +105,6 @@ export {
 const SettingsPanel = import.meta.env.DEV ? lazy(() => import("./settings-panel")) : undefined
 const DesignMode = import.meta.env.DEV ? lazy(() => import("./design-mode")) : undefined
 const DevicePreview = import.meta.env.DEV ? lazy(() => import("./device-preview")) : undefined
-
-// The logo's fan menu, loaded the first time it may open: a pointer, touch or focus on a logo, or
-// a right-click before any of those.
-const [logoFan, setLogoFan] = createSignal<typeof LogoFan>()
-let logoFanLoad: Promise<void> | undefined
-const loadLogoFan = () => (logoFanLoad ??= import("./logo-fan").then((module) => void setLogoFan(() => module.LogoFan)))
-const prefetchLogoFan = () => {
-  if (siteSettings.logoMenu === "fan") void loadLogoFan().catch(() => (logoFanLoad = undefined))
-}
-
-// Inter as WOFF2, split so most pages only fetch the Latin file (about 95 KB instead of the 870 KB
-// TTF). The other file has the Greek, Cyrillic, Vietnamese and symbol glyphs. The ranges must not
-// overlap: a character in both that Inter lacks would fetch the second file only to fall back. The
-// Latin file keeps both axes (weight, optical size) but only the OpenType features the site uses
-// (pyftsubset --layout-features="calt,case,ccmp,locl,tnum,pnum,kern,mark,mkmk,cpsp,liga"): no
-// character variants or stylistic sets.
-const interFaces = [
-  [
-    interRest,
-    "U+0180-0191, U+0193-0217, U+021C-0236, U+0238-02BA, U+02BD-02C5, U+02C8, U+02CA-02D7, U+02DE-02FF, U+0309, U+030D-0325, U+032A-058F, U+0E3F, U+1D00-1E9D, U+1E9F-1FFF, U+2070-20AB, U+20AD-20B8, U+20BA-20BC, U+20BE-2112, U+2114-2115, U+2117-2121, U+2123-2125, U+2127-212D, U+212F-218F, U+2200-2211, U+2213-2214, U+2216-2218, U+221A-221D, U+221F-2247, U+2249-225F, U+2261-2263, U+2266-2302, U+2304-2317, U+2319-2324, U+2326-232A, U+232C-238A, U+238C-23CD, U+23CF-259F, U+2600-2712, U+2714, U+2716-2E7F, U+A640-A9FF, U+E000-F8FF",
-  ],
-  [
-    interLatin,
-    "U+0000-017F, U+0192, U+0218-021B, U+0237, U+02BB-02BC, U+02C6-02C7, U+02C9, U+02D8-02DD, U+0300-0308, U+030A-030C, U+0326-0329, U+1E9E, U+2000-206F, U+20AC, U+20B9, U+20BD, U+2113, U+2116, U+2122, U+2126, U+212E, U+2190-21FF, U+2212, U+2215, U+2219, U+221E, U+2248, U+2260, U+2264-2265, U+2303, U+2318, U+2325, U+232B, U+238B, U+23CE, U+25A0-25FF, U+2713, U+2715, U+FB01-FB02, U+FEFF, U+FFFD",
-  ],
-]
-  .map(
-    ([url, range]) =>
-      `@font-face { font-family: "Inter"; src: local("Inter"), local("Inter Variable"), url(${url}) format("woff2"); font-weight: 100 900; font-display: optional; unicode-range: ${range}; }`,
-  )
-  .join("\n")
 
 // A nav item as the nav renders it: a known one (links.ts) or a custom link (nav-order.tsx).
 type NavItemView = { id: string; label: string; href: string; arrow: boolean; external: boolean; company: boolean }
@@ -158,7 +128,13 @@ const speculationRules = JSON.stringify({
       where: {
         and: [
           {
-            href_matches: ["{/:locale}?/:page(product|ide|mini|font)", "{/:locale}?/extensions/*", "/docs{/*}?", "/data{/*}?"],
+            href_matches: [
+              "{/:locale}?/:page(product|ide|mini|font)",
+              "{/:locale}?/product/*",
+              "{/:locale}?/extensions/*",
+              "/docs{/*}?",
+              "/data{/*}?",
+            ],
           },
           { not: { selector_matches: "[hreflang]" } },
         ],
@@ -167,13 +143,7 @@ const speculationRules = JSON.stringify({
   ],
 })
 
-// Labels and headlines match status.opencode.ai.
-const statusLabel = {
-  operational: "site.status.operational",
-  degraded: "site.status.degraded",
-  outage: "site.status.outage",
-  unknown: "site.status.unknown",
-} as const satisfies Record<ServiceStatus, Key>
+// The tooltips match status.opencode.ai's headlines. The label is only "Normal" or "Status".
 const statusHeadline = {
   operational: "site.status.operationalHeadline",
   degraded: "site.status.degradedHeadline",
@@ -224,6 +194,11 @@ export function Site(props: {
    * for a reference page that must always show the locked set (/dev/docs).
    */
   docsVariants?: string
+  /**
+   * Stands in for the status API's answer (`undefined` as a failed fetch), for the gallery of status
+   * states (/dev/components#sidebar-status). Overrides Settings › Status preview.
+   */
+  status?: () => ServiceStatus[] | undefined
 }) {
   const i18n = useI18n()
   const language = useLanguage()
@@ -260,10 +235,13 @@ export function Site(props: {
   const [logoMenu, setLogoMenu] = createSignal<{ owner: "sidebar" | "topbar"; x: number; y: number; origin?: number }>()
   const [menu, setMenu] = createSignal(false)
   const [sectionNav, setSectionNav] = createSignal(false)
+  // The shared nav menus (packages/nav-menus), once their code has loaded (onMount).
+  let navMenus: { close: () => void; stop: () => void } | undefined
   onCloseMenus(() => {
     setMenu(false)
     setSectionNav(false)
     setLogoMenu(undefined)
+    navMenus?.close()
   })
   const [markdown, setMarkdown] = createSignal(false)
   // The Markdown view's code, loaded the first time it is wanted: its shortcut's "m", a pointer or
@@ -312,9 +290,42 @@ export function Site(props: {
   // area from) and the browser bar colour take the bar's blue as painted, and a fixed strip under the
   // home indicator (site.css) gives Safari a blue element touching the bottom edge.
   const lettersBottom = () => lettersBarShown() && lettersBarAtEnd()
-  const [lettersBlue, setLettersBlue] = createSignal<string>()
+  // The tint comes on as the bar starts to open, with the bar pinned to the bottom edge at full height
+  // (site.css), so the toolbar area and the whole bar are blue in the same frame. It holds while the
+  // bar opens (the page catching up with its growth can leave it short of the end for a frame) and,
+  // once the bar closes, until it has finished closing, so the bottom never turns back while the bar
+  // is still on screen. The bar's transition is none under reduced motion.
+  const [lettersTint, setLettersTint] = createSignal(false)
+  let lettersOpened = 0
   createEffect(
     on(lettersBottom, (bottom) => {
+      if (bottom) return setLettersTint(true)
+      const bar = document.querySelector<HTMLElement>('[data-component="letters-bar"]')
+      const duration = bar ? parseFloat(getComputedStyle(bar).transitionDuration) * 1000 : 0
+      const wait = lettersBarShown() ? lettersOpened + duration - performance.now() : duration
+      if (wait <= 0) return setLettersTint(false)
+      const timer = setTimeout(() => setLettersTint(lettersBottom()), wait)
+      onCleanup(() => clearTimeout(timer))
+    }),
+  )
+  createEffect(
+    on(lettersBarShown, (shown) => {
+      if (shown) lettersOpened = performance.now()
+    }),
+  )
+  // Development only: Like letters?'s bar appears at once instead of sliding open, to compare
+  // (?letters-bar=instant, kept until ?letters-bar=slide).
+  const [lettersInstant, setLettersInstant] = createSignal(false)
+  onMount(() => {
+    if (!import.meta.env.DEV) return
+    const asked = new URLSearchParams(location.search).get("letters-bar")
+    if (asked === "instant") localStorage.setItem("opencode-letters-bar", "instant")
+    if (asked === "slide") localStorage.removeItem("opencode-letters-bar")
+    setLettersInstant(localStorage.getItem("opencode-letters-bar") === "instant")
+  })
+  const [lettersBlue, setLettersBlue] = createSignal<string>()
+  createEffect(
+    on(lettersTint, (bottom) => {
       const link = document.querySelector<HTMLElement>('[data-component="letters-bar"] a')
       const blue = bottom && link ? getComputedStyle(link).backgroundColor : undefined
       setLettersBlue(blue)
@@ -333,7 +344,9 @@ export function Site(props: {
       (shown) => {
         if (!shown) return
         const root = document.documentElement
-        if (window.scrollY + window.innerHeight < root.scrollHeight - 4) return
+        // Less what the bar has already grown (all of it when it appears at once).
+        const grown = document.querySelector('[data-component="letters-bar"]')?.getBoundingClientRect().height ?? 0
+        if (window.scrollY + window.innerHeight < root.scrollHeight - grown - 4) return
         const until = performance.now() + 400
         const follow = () => {
           window.scrollTo(0, root.scrollHeight)
@@ -358,12 +371,13 @@ export function Site(props: {
   const navVariant = () => siteSettings.nav
   const logoVariant = () => siteSettings.logo
   const popoverTheme = () => siteSettings.popover
-  const statusPreview = () => siteSettings.status
-  const liveStatus = createAsync(() => status())
-  const statusView = () => {
+  const statusPreview = () => (props.status ? "live" : siteSettings.status)
+  const liveStatus = props.status ?? createAsync(() => status())
+  const statusBars = () => {
     const preview = statusPreview()
-    const bars = preview === "live" ? (liveStatus() ?? statusSamples.operational) : statusSamples[preview]
-    return { bars, current: bars[bars.length - 1] }
+    if (preview !== "live") return statusSamples[preview]
+    // A failed or slow fetch has no answer, and a state this site doesn't know reads as unknown.
+    return (liveStatus() ?? statusSamples.unknown).map((bar) => (bar in statusHeadline ? bar : "unknown"))
   }
 
   // Follows the locale, so a client-side language switch relabels the nav and footer.
@@ -585,6 +599,19 @@ export function Site(props: {
     })
   })
 
+  // In the docs layout the sidebar leaves with the article at the page's end, but the logo and the
+  // docs lockup stay fixed (site.css): while the sidebar is on its way out, its items pass under
+  // them, and data-under fades them out there.
+  onMount(() => {
+    if (!props.aside) return
+    const sidebar = document.querySelector<HTMLElement>('[data-component="sidebar"]')
+    if (!sidebar) return
+    const update = () => sidebar.toggleAttribute("data-under", sidebar.getBoundingClientRect().top < -0.5)
+    window.addEventListener("scroll", update, { passive: true })
+    update()
+    onCleanup(() => window.removeEventListener("scroll", update))
+  })
+
   // Dark plates, videos and banners scroll under the fixed marks (the GitHub mark, the product pages'
   // previous/next chevrons and, on bare pages like /font, the logo): each switches to the artwork
   // for what is behind it (surface.ts, github-link.css).
@@ -737,7 +764,10 @@ export function Site(props: {
     }
     if (restore && !markdownPages())
       loadMarkdown()
-        .then(() => setMarkdown(true), () => undefined)
+        .then(
+          () => setMarkdown(true),
+          () => undefined,
+        )
         .finally(booted)
 
     document.addEventListener("keydown", navigateWithNumber)
@@ -748,8 +778,30 @@ export function Site(props: {
     document.addEventListener("pointerover", focusHoveredRow)
     wide.addEventListener("change", closeMenus)
     const stopMenuLinks = closeMenusOnLinks()
+    // Settings › Logo menu › fan (the default) is the shared nav menus' logo menu (packages/nav-menus), as on the
+    // docs, Data, the Console and the status page; the home, Brand and Press links stay in the visitor's language.
+    // Opening it closes the site's own menus. Its code (with the inlined brand files) loads after the page, so it stays
+    // out of every page's first JavaScript (script/check-client-bundle.ts).
+    let unmounted = false
+    void import("@opencode/nav-menus").then((module) => {
+      if (unmounted) return
+      const stop = module.installNavMenus({
+        link: (path) => (["/", "/brand", "/press"].includes(path) ? language.route(path) : path),
+      })
+      navMenus = { close: () => module.closeNavMenus(), stop }
+    })
+    const closeSiteMenus = () => {
+      setMenu(false)
+      setSectionNav(false)
+      setLogoMenu(undefined)
+    }
+    document.addEventListener("opencode-nav-menu-open", closeSiteMenus)
 
     onCleanup(() => {
+      unmounted = true
+      navMenus?.stop()
+      navMenus = undefined
+      document.removeEventListener("opencode-nav-menu-open", closeSiteMenus)
       stopMenuLinks()
       stopPreloads()
       for (const type of ["pointerover", "focusin", "touchstart", "click"])
@@ -832,13 +884,7 @@ export function Site(props: {
     event.preventDefault()
     const logo = event.currentTarget
     // The menu key or Shift+F10 report no pointer position.
-    const keyboard = event.button === 0 && event.clientX === 0 && event.clientY === 0
-    if (siteSettings.logoMenu === "fan" && !logoFan())
-      return void loadLogoFan().then(
-        () => showLogoMenu(logo, owner, keyboard),
-        () => (logoFanLoad = undefined),
-      )
-    showLogoMenu(logo, owner, keyboard)
+    showLogoMenu(logo, owner, event.button === 0 && event.clientX === 0 && event.clientY === 0)
   }
 
   const showLogoMenu = (logo: HTMLElement, owner: "sidebar" | "topbar", keyboard: boolean) => {
@@ -970,20 +1016,7 @@ export function Site(props: {
   )
 
   const logoMenuView = (owner: "sidebar" | "topbar") => (
-    <Show
-      when={siteSettings.logoMenu !== "fan" && logoMenu()?.owner === owner && logoMenu()}
-      fallback={
-        <Show when={siteSettings.logoMenu === "fan" && logoFan()}>
-          {(fan) => (
-            <Dynamic
-              component={fan()}
-              position={logoMenu()?.owner === owner ? logoMenu() : undefined}
-              onSelect={() => setLogoMenu(undefined)}
-            />
-          )}
-        </Show>
-      }
-    >
+    <Show when={siteSettings.logoMenu !== "fan" && logoMenu()?.owner === owner && logoMenu()}>
       {(position) => (
         <Show when={siteSettings.logoMenu === "list"} fallback={assetCards(position())}>
           <div
@@ -1046,11 +1079,12 @@ export function Site(props: {
       data-slot="logo"
       data-variant={logoVariant()}
       data-design="logoScale logoMenu logoMenuItem logoMenuHover pressIcon"
-      aria-label={i18n.t("nav.logoAlt")}
-      title={i18n.t("nav.home")}
-      onContextMenu={(event) => openLogoMenu(event, owner)}
-      onPointerEnter={prefetchLogoFan}
-      onFocus={prefetchLogoFan}
+      aria-label={i18n.t("nav.logoHome")}
+      title={i18n.t("nav.logoHome")}
+      data-nav-logo={siteSettings.logoMenu === "fan" ? "" : undefined}
+      aria-haspopup={siteSettings.logoMenu === "fan" ? "menu" : undefined}
+      aria-expanded={siteSettings.logoMenu === "fan" ? "false" : undefined}
+      onContextMenu={(event) => siteSettings.logoMenu !== "fan" && openLogoMenu(event, owner)}
       onClick={() => {
         setMenu(false)
         setLogoMenu(undefined)
@@ -1143,34 +1177,51 @@ export function Site(props: {
       </bdi>
     </span>
   )
-  const statusLink = () => (
-    // Its own boundary, so a page change (and a card growing into a product page) does not wait
-    // for the status API.
-    <Suspense>
+  // "Normal" only while the current status is operational; anything else, including no answer yet,
+  // a failed fetch or a state this site doesn't know, is "Status". The bars keep the real history.
+  const statusAnchor = (bars: () => ServiceStatus[]) => {
+    const current = () => bars()[bars().length - 1]
+    return (
       <a
         href="https://status.opencode.ai"
         target="_blank"
         rel="noopener"
         data-component="status"
         data-design="statusBars"
-        data-state={statusView().current}
-        title={i18n.t(statusHeadline[statusView().current])}
+        data-state={current()}
+        title={i18n.t(statusHeadline[current()])}
       >
         <span data-slot="bars" aria-hidden="true">
-          <For each={statusView().bars}>{(bar) => <span data-state={bar} />}</For>
+          <For each={bars()}>{(bar) => <span data-state={bar} />}</For>
         </span>
         <span data-slot="status-label">
-          <span data-slot="sr-only">{i18n.t("site.status.prefix")}</span>
-          <Show when={statusView().current === "operational"} fallback={i18n.t(statusLabel[statusView().current])}>
+          <Show
+            when={current() === "operational"}
+            fallback={
+              <>
+                <span data-slot="sr-only">
+                  {i18n.t("site.status.prefix")}
+                  {i18n.t(statusHeadline[current()])}
+                </span>
+                <span aria-hidden="true">{i18n.t("site.footer.status")}</span>
+              </>
+            }
+          >
+            <span data-slot="sr-only">{i18n.t("site.status.prefix")}</span>
             <span data-design-copy="footer.status.ok">
-              {designCopy("footer.status.ok", i18n.t(statusLabel.operational))}
+              {designCopy("footer.status.ok", i18n.t("site.status.operational"))}
             </span>
           </Show>
         </span>
         <ExternalArrow />
         <NewTab />
       </a>
-    </Suspense>
+    )
+  }
+  const statusLink = () => (
+    // Its own boundary, so a page change (and a card growing into a product page) does not wait
+    // for the status API. Until the answer arrives the same link holds the row, as "Status".
+    <Suspense fallback={statusAnchor(() => statusSamples.unknown)}>{statusAnchor(statusBars)}</Suspense>
   )
 
   return (
@@ -1187,7 +1238,8 @@ export function Site(props: {
       data-theme={theme()}
       data-popover={popoverTheme()}
       data-letters-bar={lettersBarShown() && lettersBarInView() ? "" : undefined}
-      data-letters-end={lettersBottom() ? "" : undefined}
+      data-letters-end={lettersTint() ? "" : undefined}
+      data-letters-motion={lettersInstant() ? "instant" : undefined}
       data-spacer={props.page === "home" || props.page === "product" ? siteSettings.spacer : undefined}
       data-logo={logoVariant()}
       data-hero-install={props.page === "home" ? siteSettings.heroInstall : undefined}
@@ -1685,15 +1737,6 @@ function MenuIcon(props: { name: "wordmark" | "brand" | "press" }) {
   )
 }
 
-/** "[ ]" with a dash that appears on hover or for the current item, as in the footer list. */
-export function Bracket() {
-  return (
-    <span data-slot="box" aria-hidden="true">
-      [<span data-slot="fill" />]
-    </span>
-  )
-}
-
 function ThemeToggle(props: { theme: (typeof themes)[number]; onChange: (theme: (typeof themes)[number]) => void }) {
   const i18n = useI18n()
   return (
@@ -1743,71 +1786,4 @@ function snapToPixels(el: HTMLElement) {
     observer.disconnect()
     cancelAnimationFrame(frame)
   })
-}
-
-/** One button showing the current theme; each click moves to the next (system, light, dark). */
-function ThemeCycle(props: { theme: (typeof themes)[number]; onChange: (theme: (typeof themes)[number]) => void }) {
-  const i18n = useI18n()
-  const next = () => themes[(themes.indexOf(props.theme) + 1) % themes.length]
-  return (
-    <button
-      type="button"
-      data-slot="cycle"
-      aria-label={i18n.t("site.theme.cycle", {
-        theme: i18n.t(`site.theme.${props.theme}`),
-        next: i18n.t(`site.theme.${next()}`),
-      })}
-      onClick={() => props.onChange(next())}
-    >
-      {/* All three icons stay in place so the change can cross-fade. */}
-      <For each={themes}>
-        {(item) => (
-          <span data-slot="icon" data-current={props.theme === item ? "" : undefined}>
-            <ThemeIcon theme={item} />
-          </span>
-        )}
-      </For>
-    </button>
-  )
-}
-
-// A face (eyes and a smile, no outline) on the 16px icon grid, shown in the Markdown view.
-function PersonIcon() {
-  // Drawn about 2px larger than the 16px grid in the same 14px box, to match the robot's ink (the
-  // face alone is smaller than the robot's head and ears); the stroke is thinned to stay 1.1px.
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="1.45 1.3 13.1 13.1"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="1.02"
-      aria-hidden="true"
-    >
-      <rect x="4.5" y="3.5" width="2" height="4" fill="currentColor" stroke="none" />
-      <rect x="9.5" y="3.5" width="2" height="4" fill="currentColor" stroke="none" />
-      <path d="M3.25 9.25Q8 14 12.75 9.25" />
-    </svg>
-  )
-}
-
-// A robot face on the 16px icon grid, drawn like the theme icons.
-function AgentIcon() {
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="1.25"
-      aria-hidden="true"
-    >
-      <rect x="2.125" y="2.125" width="11.75" height="11.75" />
-      <path d="M0.875 6V10M15.125 6V10" />
-      <rect x="4.875" y="5.75" width="2" height="4.5" fill="currentColor" stroke="none" />
-      <rect x="9.125" y="5.75" width="2" height="4.5" fill="currentColor" stroke="none" />
-    </svg>
-  )
 }

@@ -23,6 +23,7 @@
   "dependencies": {
     "@ibm/plex": "6.4.1",
     "@kitlangton/rolling-number": "0.4.1",
+    "@opencode/nav-menus": "workspace:*",
     "@opencode/ui": "workspace:*",
     "@solidjs/meta": "catalog:",
     "@solidjs/router": "catalog:",
@@ -46,6 +47,7 @@
     "@babel/core": "7.29.7",
     "@cloudflare/build-output-utils": "0.8.5",
     "@cloudflare/config": "0.23.0",
+    "@hona/strobe": "catalog:",
     "@mdx-js/mdx": "3.1.1",
     "@types/babel__core": "7.20.5",
     "@types/bun": "catalog:",

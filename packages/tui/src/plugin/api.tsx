@@ -1,10 +1,25 @@
 import { PluginContextProvider } from "@opencode/plugin/tui"
-import { createRoot, createUniqueId, getOwner, onCleanup, runWithOwner, untrack, type JSX } from "solid-js"
+import {
+  children,
+  createMemo,
+  createRoot,
+  createUniqueId,
+  ErrorBoundary,
+  getOwner,
+  onCleanup,
+  onMount,
+  runWithOwner,
+  untrack,
+  type JSX,
+  type ParentProps,
+} from "solid-js"
 import type {
+  CodeProps,
   Context,
   Dialog,
   DialogSelectOptions,
   Layout,
+  MarkdownProps,
   Page,
   SlotClaim,
   SlotMap,
@@ -22,21 +37,23 @@ import { Keymap } from "../context/keymap"
 import { useRoute } from "../context/route"
 import { useTuiApp, useTuiPaths } from "../context/runtime"
 import { useLocation } from "../context/location"
-import { useThemes } from "../context/theme"
+import { useTheme, useThemes } from "../context/theme"
+import { useConfig } from "../config"
+import { filetype } from "../util/filetype"
+import { usePlugin } from "./context"
 import { DialogAlert } from "../ui/dialog-alert"
 import { DialogConfirm } from "../ui/dialog-confirm"
 import { DialogPrompt } from "../ui/dialog-prompt"
 import { DialogSelect } from "../ui/dialog-select"
 import { useDialog } from "../ui/dialog"
-import { PluginBoundary } from "./render"
 import { useToast } from "../ui/toast"
 import { useAttention } from "../context/attention"
 import { useStorage } from "../context/storage"
 import { useSessionTabs } from "../context/session-tabs"
 import { useOptionalPanel } from "../context/panel"
 import { useLocal } from "../context/local"
+import { errorMessage } from "../util/error"
 import { abbreviateHome } from "../util/path-format"
-import { PluginCode, PluginMarkdown } from "./render"
 
 export type Dispose = () => Promise<void>
 
@@ -475,4 +492,81 @@ export function createDialogApi(
     },
   }
   return api
+}
+
+// Contain render-time plugin crashes: a throwing slot, route or dialog must not
+// take down the app or the other plugins. The crash surfaces as one error toast.
+export function PluginBoundary(props: ParentProps<{ id: string; where: string; onCrash?: () => void }>) {
+  const toast = useToast()
+  return (
+    <ErrorBoundary
+      fallback={(error) => {
+        // One toast per crash: onMount is untracked, so prop updates while
+        // the boundary is latched cannot re-toast.
+        onMount(() => {
+          toast.show({
+            variant: "error",
+            title: "Plugin",
+            message: `${props.id} crashed in ${props.where}: ${errorMessage(error)}`,
+          })
+          props.onCrash?.()
+        })
+        return null
+      }}
+    >
+      <PluginOutput>{props.children}</PluginOutput>
+    </ErrorBoundary>
+  )
+}
+
+// Bare text is only valid under <text>. Left to the host's insert, it would
+// throw outside the boundary and crash the app, so reject it here instead.
+function PluginOutput(props: ParentProps) {
+  const output = children(() => props.children)
+  const nodes = createMemo(() => {
+    const resolved = output.toArray()
+    if (resolved.some((node) => typeof node === "string" || typeof node === "number"))
+      throw new Error("rendered bare text; wrap it in <text>")
+    return resolved
+  })
+  return <>{nodes()}</>
+}
+
+// ui.Markdown: the transcript's markdown, with the current syntax style,
+// every registered code-block renderer and the user's markdown mode.
+function PluginMarkdown(props: MarkdownProps) {
+  const plugins = usePlugin()
+  const theme = useTheme()
+  const { currentMarkdownSyntax: syntax } = useThemes()
+  const config = useConfig()
+  return (
+    <markdown
+      syntaxStyle={syntax()}
+      renderNode={plugins.markdown()}
+      content={props.content}
+      streaming={props.streaming ?? false}
+      internalBlockMode="top-level"
+      tableOptions={{ style: "grid", cellPaddingX: 1 }}
+      conceal={(config.data.session?.markdown ?? "rendered") === "rendered"}
+      fg={props.fg ?? theme.markdown.text}
+      bg={props.bg ?? theme.background.base}
+    />
+  )
+}
+
+// ui.Code: source highlighted like the transcript's, by the path's language.
+function PluginCode(props: CodeProps) {
+  const theme = useTheme()
+  const { currentSyntax: syntax } = useThemes()
+  return (
+    <code
+      conceal={false}
+      wrapMode="none"
+      content={props.content}
+      filetype={filetype(props.path)}
+      syntaxStyle={syntax()}
+      fg={props.fg ?? theme.text.base}
+      bg={props.bg}
+    />
+  )
 }

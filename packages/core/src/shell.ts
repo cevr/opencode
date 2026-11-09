@@ -41,6 +41,7 @@ export const DIRECTORY = "shell"
 export const OUTPUT_SEGMENT_BYTES = 8 * 1024 * 1024
 // How long a kill waits after SIGTERM before it sends SIGKILL to the process group.
 export const KILL_GRACE = Duration.seconds(3)
+const SPAN_COMMAND_LIMIT = 200
 
 type Info = Shell.Info
 type CreateInput = Shell.CreateInput & {
@@ -56,6 +57,8 @@ type Active = {
   // The absolute byte offset `file` starts at, and, once output rotated, where `file.1` starts.
   base: number
   previous?: number
+  // Absolute byte offsets where the last two lines start, so a truncation notice can size a cut-off line.
+  lineStarts: [number, number]
   // Resolves with the terminal Info once the command exits, times out, or is killed. A wait
   // started after termination resolves immediately from the already-completed deferred.
   done: Deferred.Deferred<Info, NotFoundError>
@@ -217,7 +220,7 @@ const layer = () =>
       })
 
       const remove = Effect.fn("Shell.remove")(function* (id: Shell.ID) {
-        yield* require(id)
+        yield* annotate((yield* require(id)).info)
         yield* removeCommand(id)
       })
 
@@ -228,15 +231,22 @@ const layer = () =>
       })
 
       const get = Effect.fn("Shell.get")(function* (id: Shell.ID) {
-        return (yield* require(id)).info
+        const { info } = yield* require(id)
+        yield* annotate(info)
+        return info
       })
 
       const wait = Effect.fn("Shell.wait")(function* (id: Shell.ID) {
-        return yield* Deferred.await((yield* require(id)).done)
+        const command = yield* require(id)
+        yield* annotate(command.info)
+        const info = yield* Deferred.await(command.done)
+        yield* annotate(info)
+        return info
       })
 
       const timeout = Effect.fn("Shell.timeout")(function* (id: Shell.ID, duration: number) {
         const command = yield* require(id)
+        yield* annotate(command.info)
         if (command.info.status !== "running" || !command.timeout) return command.info
         yield* command.timeout(duration)
         return command.info
@@ -244,6 +254,7 @@ const layer = () =>
 
       const backgroundCommand = Effect.fn("Shell.background")(function* (id: Shell.ID) {
         const command = yield* require(id)
+        yield* annotate(command.info)
         if (command.info.status !== "running") return command.info
         if (command.timeout) yield* command.timeout(0)
         command.info = produce(command.info, (draft) => {
@@ -254,45 +265,60 @@ const layer = () =>
 
       const kill = Effect.fn("Shell.kill")(function* (id: Shell.ID) {
         const command = yield* require(id)
+        yield* annotate(command.info)
         const sweep = command.info.status === "running" && command.kill ? yield* command.kill : undefined
         const info = yield* Deferred.await(command.done)
         if (sweep) yield* Fiber.join(sweep)
+        yield* annotate(info)
         return info
       })
 
       // Reads `length` bytes of one segment file from its own offset `start`.
-      const readFile = (file: string, start: number, length: number) =>
-        Effect.promise(
-          () =>
-            new Promise<Buffer>((resolve) => {
-              if (length <= 0) return resolve(Buffer.alloc(0))
-              const chunks: Buffer[] = []
-              const stream = createReadStream(file, { start, end: start + length - 1 })
-              stream.on("data", (chunk: string | Buffer) => chunks.push(Buffer.from(chunk)))
-              stream.on("end", () => resolve(Buffer.concat(chunks)))
-              stream.on("error", () => resolve(Buffer.concat(chunks)))
-            }),
-        )
+      const readRange = (file: string, start: number, length: number) =>
+        length <= 0
+          ? Effect.succeed(Buffer.alloc(0))
+          : Effect.promise(
+              () =>
+                new Promise<Buffer>((resolve) => {
+                  const buffer = Buffer.alloc(length)
+                  const stream = createReadStream(file, { start, end: start + length - 1 })
+                  let offset = 0
+                  stream.on("data", (chunk: string | Buffer) => {
+                    const bytes = Buffer.from(chunk)
+                    bytes.copy(buffer, offset)
+                    offset += bytes.length
+                  })
+                  stream.on("end", () => resolve(buffer.subarray(0, offset)))
+                  stream.on("error", () => resolve(buffer.subarray(0, 0)))
+                }),
+            )
+
+      // Bytes before the oldest kept segment were dropped by rotation.
+      const earliestOf = (command: Active) => command.previous ?? command.base
+
+      // Reads `length` bytes from absolute offset `start` (at or past the earliest kept byte), across both segments.
+      const readSpan = Effect.fnUntraced(function* (command: Active, start: number, length: number) {
+        const base = command.base
+        const older =
+          command.previous !== undefined && start < base
+            ? yield* readRange(`${command.file}.1`, start - command.previous, Math.min(length, base - start))
+            : Buffer.alloc(0)
+        const newer =
+          start + length > base
+            ? yield* readRange(command.file, Math.max(0, start - base), start + length - Math.max(start, base))
+            : Buffer.alloc(0)
+        return older.length === 0 ? newer : Buffer.concat([older, newer])
+      })
 
       const output = Effect.fnUntraced(function* (id: Shell.ID, input?: Shell.OutputInput) {
         const command = yield* require(id)
         const cursor = input?.cursor ?? 0
         const limit = input?.limit ?? 65536
         if (cursor >= command.size) return { output: "", cursor: command.size, size: command.size, truncated: false }
-        // Bytes before the oldest kept segment were dropped by rotation; a read from there starts at the oldest kept.
-        const earliest = command.previous ?? command.base
+        // A read from before the earliest kept byte starts at the earliest kept.
+        const earliest = earliestOf(command)
         const start = Math.max(earliest, cursor)
-        const length = Math.min(limit, command.size - start)
-        const base = command.base
-        const older =
-          command.previous !== undefined && start < base
-            ? yield* readFile(`${command.file}.1`, start - command.previous, Math.min(length, base - start))
-            : Buffer.alloc(0)
-        const newer =
-          start + length > base
-            ? yield* readFile(command.file, Math.max(0, start - base), start + length - Math.max(start, base))
-            : Buffer.alloc(0)
-        const bytes = Buffer.concat([older, newer])
+        const bytes = yield* readSpan(command, start, Math.min(limit, command.size - start))
         return {
           output: bytes.toString("utf8"),
           cursor: start + bytes.length,
@@ -302,31 +328,52 @@ const layer = () =>
       })
 
       const result = Effect.fn("Shell.result")(function* (started: Shell.Info) {
+        yield* annotate(started)
         const info = yield* wait(started.id).pipe(
           Effect.catchTag("Shell.NotFoundError", () =>
             Effect.succeed({ ...started, status: "killed" as const, time: { ...started.time, completed: Date.now() } }),
           ),
         )
+        yield* annotate(info)
         const capture = yield* Effect.gen(function* () {
           const limits = Config.latest(yield* config.entries(), "tool_output")
           const maxLines = limits?.max_lines ?? ToolOutput.MAX_LINES
           const maxBytes = limits?.max_bytes ?? ToolOutput.MAX_BYTES
-          const latest = yield* output(info.id, { cursor: Number.MAX_SAFE_INTEGER })
-          const page = yield* output(info.id, { cursor: Math.max(0, latest.size - maxBytes), limit: maxBytes })
-          const lines = page.output.split("\n")
-          if (page.output.endsWith("\n")) lines.pop()
-          const truncated = latest.size > maxBytes || lines.length > maxLines
-          const text = lines.length > maxLines ? lines.slice(-maxLines).join("\n") : page.output
           const command = yield* require(info.id)
-          const total = command.newlines + (page.output.endsWith("\n") ? 0 : 1)
-          const shown = Math.min(lines.length, maxLines)
-          const kept = command.previous ?? command.base
-          const notice = !truncated
-            ? ""
-            : kept > 0
-              ? `\n\n[showing lines ${total - shown + 1}-${total} of ${total}; the newest output is saved to ${info.file}, the first ${kept} bytes were dropped]`
-              : `\n\n[showing lines ${total - shown + 1}-${total} of ${total}; full output saved to ${info.file}]`
-          return { output: `${text || "(no output)"}${notice}`, truncated }
+          const earliest = earliestOf(command)
+          const start = Math.max(earliest, command.size - maxBytes)
+          // Read the byte before the window too, to tell whether the window starts on a line boundary.
+          // Past rotation that byte may be gone; a window at the earliest kept byte then counts as mid-line.
+          const before = Math.max(earliest, start - 1)
+          const window = yield* readSpan(command, before, command.size - before)
+          const page = window.subarray(charBoundary(window, start - before)).toString("utf8")
+          const partial = start > 0 && (before === start || window[0] !== 10)
+          const endsWithNewline = page.endsWith("\n")
+          const lines = page.split("\n")
+          if (endsWithNewline) lines.pop()
+          const total = command.newlines + (endsWithNewline ? 0 : 1)
+          const suffix =
+            earliest > 0
+              ? `the newest output is saved to ${info.file}, the first ${earliest} bytes were dropped]`
+              : `full output saved to ${info.file}]`
+          if (partial && lines.length === 1) {
+            const lineStart = endsWithNewline ? command.lineStarts[0] : command.lineStarts[1]
+            const lineSize = command.size - (endsWithNewline ? 1 : 0) - lineStart
+            const shownSize = Buffer.byteLength(lines[0])
+            return {
+              output: `${lines[0]}\n\n[showing the last ${formatSize(shownSize)} of line ${total} (${formatSize(lineSize)}); ${suffix}`,
+              truncated: true,
+            }
+          }
+          if (start > 0 || lines.length > maxLines) {
+            // A window that starts mid-line drops that partial line so the line numbers stay exact.
+            const kept = lines.slice(-Math.min(maxLines, lines.length - (partial ? 1 : 0)))
+            return {
+              output: `${kept.join("\n")}\n\n[showing lines ${total - kept.length + 1}-${total} of ${total}; ${suffix}`,
+              truncated: true,
+            }
+          }
+          return { output: page || "(no output)", truncated: false }
         }).pipe(Effect.catchTag("Shell.NotFoundError", () => Effect.succeed(undefined)))
         return { info, capture }
       })
@@ -368,6 +415,7 @@ const layer = () =>
           metadata: input.metadata ?? {},
           time: { started: Date.now() },
         }
+        yield* annotate(info)
 
         // Spawn through the Environment and stream combined output to the file. The handle is scope-bound, so
         // the managing fiber keeps its scope open until the command terminates (it awaits `done` at the
@@ -397,6 +445,7 @@ const layer = () =>
                 size: 0,
                 newlines: 0,
                 base: 0,
+                lineStarts: [0, 0],
                 done: Deferred.makeUnsafe<Info, NotFoundError>(),
               }
               commands.set(id, command)
@@ -419,10 +468,13 @@ const layer = () =>
                       stream = createWriteStream(file)
                     }
                     stream.write(chunk)
-                    command.size += chunk.length
                     // Count while streaming so truncation notices never rescan the output file.
-                    for (let index = chunk.indexOf(10); index !== -1; index = chunk.indexOf(10, index + 1))
+                    for (let index = chunk.indexOf(10); index !== -1; index = chunk.indexOf(10, index + 1)) {
                       command.newlines++
+                      command.lineStarts[0] = command.lineStarts[1]
+                      command.lineStarts[1] = command.size + index + 1
+                    }
+                    command.size += chunk.length
                   }),
                 ),
               )
@@ -494,17 +546,19 @@ const layer = () =>
               // The process exits even after a timeout kill, so this fiber always publishes the outcome.
               runFork(
                 Effect.gen(function* () {
-                  yield* handle.exitCode.pipe(
-                    Effect.flatMap((code) => end({ status: "exited", exit: code })),
+                  const exited = yield* handle.exitCode.pipe(
+                    Effect.map((code) => ({ exit: code, signal: undefined })),
                     Effect.catch((error) =>
-                      end({
-                        status: "exited",
+                      Effect.succeed({
+                        exit: undefined,
                         signal:
                           error.cause instanceof CrossSpawnSpawner.KilledBySignal ? error.cause.signal : undefined,
                       }),
                     ),
                   )
-                  const outcome = yield* Deferred.await(ended)
+                  yield* end({ status: "exited", ...exited })
+                  // A timeout keeps its status but still records how the killed process exited.
+                  const outcome = { ...(yield* Deferred.await(ended)), ...exited }
                   // Report the terminal status only once captured output is complete, so a reader that
                   // sees it never reads a partial file.
                   yield* outputDone.await
@@ -567,6 +621,38 @@ const layer = () =>
       })
     }),
   )
+
+// Spans carry only the command text, truncated; never env, stdin or output. Shells outlive the turn that started
+// them, so the session comes from the shell's own metadata rather than the caller's span annotations.
+function annotate(info: Info) {
+  const sessionID = info.metadata.sessionID
+  return Effect.annotateCurrentSpan({
+    "opencode.shell.id": info.id,
+    "opencode.shell.command": spanCommand(info.command),
+    ...(typeof sessionID === "string" ? { "session.id": sessionID } : {}),
+    ...(info.metadata.background === true ? { "opencode.shell.background": true } : {}),
+    ...(info.status === "running" ? {} : { "opencode.shell.status": info.status }),
+    ...(info.exit === undefined ? {} : { "process.exit.code": info.exit }),
+  })
+}
+
+// Strict OTLP JSON parsers reject a lone surrogate, which a cut through an emoji would leave.
+function spanCommand(command: string) {
+  if (command.length <= SPAN_COMMAND_LIMIT) return command.toWellFormed()
+  return `${command.slice(0, SPAN_COMMAND_LIMIT).toWellFormed()}…`
+}
+
+// Moves past UTF-8 continuation bytes (at most 3) so a byte cut never splits a character.
+function charBoundary(bytes: Buffer, offset: number) {
+  const limit = Math.min(bytes.length, offset + 3)
+  for (let index = offset; index < limit; index++) if ((bytes[index] & 0xc0) !== 0x80) return index
+  return limit
+}
+
+function formatSize(bytes: number) {
+  const kb = bytes / 1024
+  return kb > 1024 ? `${(kb / 1024).toFixed(1)} MB` : `${Math.round(kb)} KB`
+}
 
 export const node = makeLocationNode({
   service: Service,

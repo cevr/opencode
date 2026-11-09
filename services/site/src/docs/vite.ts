@@ -56,8 +56,8 @@ export function docs(): Plugin {
 }
 
 // MDX as Astro's MDX integration compiled it (GitHub-flavoured Markdown, smart punctuation, Shiki,
-// heading ids), with the docs' own plugins. The module also exports the page's frontmatter, its
-// headings and its Markdown twin (`# Title` and the source, as the docs have always served it).
+// heading ids), with the docs' own plugins, which wrap code in the site's CodeFrame and headings in
+// HeadingLink. The module also exports the page's frontmatter, its headings and its Markdown twin (`# Title` and the source, as the docs have always served it).
 async function compileMdx(source: string, id: string) {
   const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(source)
   const parsed = frontmatterSchema.safeParse(match ? parse(match[1]) : {})
