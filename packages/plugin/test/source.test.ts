@@ -33,6 +33,35 @@ test("an edit inside a linked workspace package reloads the plugin", async () =>
   expect(before.module).toMatchObject({ value: "before" })
 })
 
+// A server keeps one set of sources per location: an unchanged local graph is
+// evaluated once per process, as an installed package is, and every set
+// still watches the graph, so each location hears an edit.
+test("sets of sources share one evaluation of an unchanged graph and each watches it", async () => {
+  await using dir = await fixture({
+    ...workspace,
+    "plugin/tui.ts": 'export { value } from "@ws/lib"; export const instance = {}',
+  })
+  await dir.link("plugin/node_modules/@ws/lib", "lib")
+  const watched: string[] = []
+  const other = createPluginSources(async (file) => {
+    watched.push(file)
+  })
+  try {
+    const first = await dir.sources.read(dir.url("plugin/tui.ts"))
+    const second = await other.read(dir.url("plugin/tui.ts"))
+    expect(second).toBe(first)
+    expect(watched.toSorted()).toEqual(dir.watched.toSorted())
+    expect(watched).toContain(dir.path("lib/value.ts"))
+    await dir.write("lib/value.ts", 'export const value = "after"')
+    const edited = await other.read(dir.url("plugin/tui.ts"))
+    expect(edited.module).toMatchObject({ value: "after" })
+    expect((edited.module as { instance: unknown }).instance).not.toBe((first.module as { instance: unknown }).instance)
+    expect(await dir.sources.read(dir.url("plugin/tui.ts"))).toBe(edited)
+  } finally {
+    other.dispose()
+  }
+})
+
 test("installed packages stay outside the source graph and keep their instance", async () => {
   await using dir = await fixture(workspace)
   await dir.link("plugin/node_modules/@ws/lib", "lib")
