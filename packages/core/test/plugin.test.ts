@@ -12,6 +12,9 @@ import { Plugin } from "@opencode/core/plugin"
 import { PluginHost } from "@opencode/core/plugin/host"
 import { Rpc } from "@opencode/core/rpc"
 import { Event } from "@opencode/schema/config"
+import { Form as FormSchema } from "@opencode/schema/form"
+import { Location } from "@opencode/core/location"
+import { AbsolutePath } from "@opencode/core/schema"
 import { PluginModule } from "@opencode/core/plugin/module"
 import { Session } from "@opencode/core/session"
 import { SessionSchema } from "@opencode/core/session/schema"
@@ -722,6 +725,41 @@ it.effect("host event subscriptions deliver requested rpc types and ignore unkno
     expect(Array.from(yield* Fiber.join(fiber)).map((event) => [event.type, event.data])).toEqual([
       ["rpc.test.ping", { value: 1 }],
     ])
+  }),
+)
+
+it.effect("host event subscriptions deliver only the plugin's own location's events and unlocated ones", () =>
+  Effect.gen(function* () {
+    const bus = yield* Bus.Service
+    const plugins = yield* Plugin.Service
+    const location = yield* Location.Service
+    const heard = yield* Deferred.make<ReadonlyArray<string>>()
+    // Loaded as the server loads a plugin, whose own fiber has no ambient Location.
+    yield* plugins.activate([
+      {
+        id: "listener",
+        revision: "1",
+        effect: (ctx) =>
+          ctx.event.subscribe({ types: ["form.replied"] }).pipe(
+            Stream.map((event) => event.data.sessionID),
+            Stream.take(2),
+            Stream.runCollect,
+            Effect.flatMap((ids) => Deferred.succeed(heard, Array.from(ids))),
+            Effect.forkScoped({ startImmediately: true }),
+          ),
+      },
+    ])
+    yield* plugins.awaitActivation
+
+    const replied = (sessionID: string) => ({ id: FormSchema.ID.make(`frm_${sessionID}`), sessionID, answer: {} })
+    const elsewhere = { directory: AbsolutePath.make(path.join(location.directory, "elsewhere")) }
+    yield* bus.publish(FormSchema.Event.Replied, replied("other"), { location: elsewhere })
+    yield* bus.publish(FormSchema.Event.Replied, replied("own"), {
+      location: { directory: location.directory, workspaceID: location.workspaceID },
+    })
+    yield* bus.publish(FormSchema.Event.Replied, replied("global"), { global: true })
+
+    expect(yield* Deferred.await(heard)).toEqual(["own", "global"])
   }),
 )
 

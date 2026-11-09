@@ -94,6 +94,8 @@ export const make = Effect.fn("PluginHost.make")(function* (plugin: Pick<Interfa
           workspaceID:
             input.location.workspace === undefined ? location.workspaceID : Workspace.ID.make(input.location.workspace),
         })
+  const local = <A, E, R>(stream: Stream.Stream<A, E, R>) =>
+    stream.pipe(Stream.provideService(Location.Service, location))
   const isCurrentLocation = (ref: Location.Ref) =>
     ref.directory === location.directory && ref.workspaceID === location.workspaceID
   const response = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -267,8 +269,10 @@ export const make = Effect.fn("PluginHost.make")(function* (plugin: Pick<Interfa
     },
     event: {
       // The bus only delivers the requested types, which TypeScript cannot follow through the generic signature.
+      // A plugin is loaded once per location, so it hears its own location's events and global ones, as the bus
+      // delivers them under an ambient Location; the plugin's own fiber has none, so the stream carries the host's.
       subscribe: ((input?: { readonly types?: ReadonlyArray<string> }) => {
-        if (!input?.types?.length) return bus.subscribe().pipe(Stream.filter(isPublicEvent))
+        if (!input?.types?.length) return local(bus.subscribe()).pipe(Stream.filter(isPublicEvent))
         const unknown = new Array<string>()
         const [first, ...rest] = input.types.flatMap((type) => {
           if (isRpcType(type)) return [Rpc.eventDefinition(type)]
@@ -276,7 +280,7 @@ export const make = Effect.fn("PluginHost.make")(function* (plugin: Pick<Interfa
           if (!definition) unknown.push(type)
           return definition ? [definition] : []
         })
-        const events = first ? bus.subscribe([first, ...rest]) : Stream.never
+        const events = first ? local(bus.subscribe([first, ...rest])) : Stream.never
         if (unknown.length === 0) return events
         return Stream.unwrap(
           Effect.logWarning("ignoring unknown event types", { pluginID, types: unknown }).pipe(Effect.as(events)),
