@@ -43,6 +43,7 @@ import {
   type SessionMessageUser,
   type SessionInfo,
   type ModelInfo,
+  isSessionNotFoundError,
 } from "@opencode/client"
 import { useLocal } from "../../context/local"
 import { Locale } from "../../util/locale"
@@ -81,6 +82,7 @@ import { Composer } from "./composer"
 import { filetype } from "../../util/filetype"
 import parsers from "../../parsers-config"
 import { errorMessage } from "../../util/error"
+import { useLog } from "../../context/log"
 import { useToast } from "../../ui/toast"
 import stripAnsi from "strip-ansi"
 import { usePromptRef } from "../../context/prompt"
@@ -144,6 +146,10 @@ addDefaultParsers(parsers.parsers)
 // Exclude temporary bottom space when measuring the real transcript height.
 const NAVIGATION_SLACK_ID = "session-navigation-slack"
 const BACKGROUND_TOOL_HINT_DELAY = 3_000
+// A failed session reload is tried again after 500 ms, doubling to 10 s; the fourth failure is a toast.
+const RELOAD_RETRY_MS = 500
+const RELOAD_RETRY_MAX_MS = 10_000
+const RELOAD_RETRY_NOTICE = 3
 
 // Budgets count rendered entries (see mount-budget.ts); a collapsed group costs one.
 // The tail comfortably overfills a tall viewport; older rows mount as the reader approaches them.
@@ -350,8 +356,25 @@ export function Session(props: {
     }),
   )
 
+  // A reload refused for a moment (a restarted service still booting, a second restart mid-request)
+  // keeps the session on screen and is tried again; only a session the server says is gone leaves.
+  const log = useLog({ component: "session-route" })
+  const [reloadRetry, setReloadRetry] = createSignal(0)
+  let reloadFailures = 0
+  let reloadTimer: ReturnType<typeof setTimeout> | undefined
+  onCleanup(() => clearTimeout(reloadTimer))
+  const leave = (sessionID: string, reason: string, error?: unknown) => {
+    log.info("session route leaving", {
+      sessionID,
+      reason,
+      error: error === undefined ? undefined : errorMessage(error),
+    })
+    sessionTabs.enabled() ? sessionTabs.close(sessionID) : navigate({ type: "home" })
+  }
   createEffect(() => {
     if (client.connection.status() !== "connected") return
+    reloadRetry()
+    clearTimeout(reloadTimer)
     setSynced(false)
     const sessionID = route.sessionID
     void (async () => {
@@ -367,19 +390,26 @@ export function Session(props: {
           variant: "error",
           duration: 5000,
         })
-        sessionTabs.enabled() ? sessionTabs.close(sessionID) : navigate({ type: "home" })
+        leave(sessionID, "not found")
         return
       }
+      reloadFailures = 0
       editor.reconnect(info.location.directory)
       setSynced(true)
     })().catch((error) => {
       if (route.sessionID !== sessionID) return
-      toast.show({
-        message: errorMessage(error),
-        variant: "error",
-        duration: 5000,
-      })
-      sessionTabs.enabled() ? sessionTabs.close(sessionID) : navigate({ type: "home" })
+      if (isSessionNotFoundError(error)) {
+        toast.show({ message: errorMessage(error), variant: "error", duration: 5000 })
+        leave(sessionID, "not found", error)
+        return
+      }
+      const attempt = reloadFailures++
+      const delay = Math.min(RELOAD_RETRY_MS * 2 ** attempt, RELOAD_RETRY_MAX_MS)
+      log.info("session reload failed, retrying", { sessionID, attempt, delay, error: errorMessage(error) })
+      // Quiet while a restart settles; a failure that persists is said once.
+      if (attempt === RELOAD_RETRY_NOTICE)
+        toast.show({ message: `${errorMessage(error)} (retrying)`, variant: "warning", duration: 5000 })
+      reloadTimer = setTimeout(() => setReloadRetry((value) => value + 1), delay)
     })
   })
 

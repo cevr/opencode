@@ -3,6 +3,7 @@ import type { LocationRef } from "@opencode/client"
 import { createSimpleContext } from "./helper"
 import type { PromptInfo } from "../prompt/history"
 import { useTuiStartup } from "./runtime"
+import { useOptionalLog } from "./log"
 
 export type HomeRoute = {
   type: "home"
@@ -30,6 +31,7 @@ export const { use: useRoute, provider: RouteProvider } = createSimpleContext({
   name: "Route",
   init: (props: { initialRoute?: Route }) => {
     const startup = useTuiStartup()
+    const log = useOptionalLog({ component: "route" })
     const [store, setStore] = createStore<Route>(
       props.initialRoute ?? initialRoute(startup.initialRoute) ?? { type: "home" },
     )
@@ -39,6 +41,9 @@ export const { use: useRoute, provider: RouteProvider } = createSimpleContext({
         return store
       },
       navigate(route: Route) {
+        // Leaving a session for home is rare and easy to miss; the log keeps which session was left.
+        if (store.type === "session" && route.type !== "session")
+          log.info("route left session", { sessionID: store.sessionID, to: route.type })
         setStore(reconcile(route))
       },
     }

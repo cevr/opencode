@@ -13,7 +13,15 @@ export function LogProvider(props: ParentProps<{ log: LogSink }>) {
 export function useLog(tags: LogTags = {}) {
   const sink = useContext(LogContext)
   if (!sink) throw new Error("Log context must be used within a LogProvider")
+  return writer(sink, tags)
+}
 
+/** `useLog` for a context that may be mounted without a LogProvider (component tests); there it writes nothing. */
+export function useOptionalLog(tags: LogTags = {}) {
+  return writer(useContext(LogContext) ?? (() => {}), tags)
+}
+
+function writer(sink: LogSink, tags: LogTags) {
   const write = (level: LogLevel, message: string, extra: LogTags = {}) => sink(level, message, { ...tags, ...extra })
   return {
     debug: (message: string, extra?: LogTags) => write("debug", message, extra),
