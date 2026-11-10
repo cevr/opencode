@@ -63,11 +63,6 @@ type FormDraft = {
 /** Opens the notes field on the highlighted option of a choice question. */
 export const FORM_NOTE_KEY = "n"
 
-/** Rows the session keeps around the docked form: its bottom padding, the jump row and a header or transcript line. */
-const FORM_SESSION_ROWS = 4
-/** The fewest rows the form takes, however short the terminal. */
-const FORM_MIN_HEIGHT = 8
-
 // Holds in-progress answers per form across FormPrompt remounts, since the
 // session route is keyed by sessionID and unmounts on tab switch. Mirrors
 // component/prompt/draft-stash.ts: a draft is consumed on take.
@@ -174,9 +169,6 @@ export function FormPrompt(props: { form: FormWithLocation }) {
   })
   const confirm = createMemo(() => !single() && store.tab >= fields().length)
   const reviewMaxHeight = createMemo(() => Math.max(3, dimensions().height - 14))
-  // The form never grows past the terminal less the session's rows around the dock, so a
-  // question taller than that scrolls in `body` while the keys under it stay on screen.
-  const formMaxHeight = createMemo(() => Math.max(FORM_MIN_HEIGHT, dimensions().height - FORM_SESSION_ROWS))
   const [bodyHeight, setBodyHeight] = createSignal(0)
   const [bodyContentHeight, setBodyContentHeight] = createSignal(0)
   const bodyOverflows = () => bodyContentHeight() > bodyHeight()
@@ -948,8 +940,9 @@ export function FormPrompt(props: { form: FormWithLocation }) {
       border={["left"]}
       borderColor={theme.background.action.primary.focused}
       customBorderChars={SplitBorder.customBorderChars}
-      maxHeight={formMaxHeight()}
     >
+      {/* The session's dock gives way to the terminal's height (routes/session/index.tsx), so a question
+          taller than that scrolls here while the keys under it stay on screen. */}
       <scrollbox
         flexShrink={1}
         minHeight={0}

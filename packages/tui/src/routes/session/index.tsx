@@ -253,6 +253,8 @@ export function Session(props: {
     if (props.promptMuted && composer.open) setComposer("open", false)
   })
   const disabled = createMemo(() => promptedPermissions().length > 0 || forms().length > 0)
+  // A form in the dock: the dock gives way to the terminal's height and the form scrolls its question.
+  const formDocked = createMemo(() => !picker() && promptedPermissions().length === 0 && forms().length > 0)
 
   const renderer = useRenderer()
   const dimensions = useTerminalDimensions()
@@ -1578,7 +1580,8 @@ export function Session(props: {
         >
           <Show when={session()}>
             <Slot path="session.header" input={{ sessionID: route.sessionID }} />
-            <box flexGrow={1} minHeight={0} position="relative">
+            {/* No basis of its own: the transcript takes the rows the dock leaves, so a docked form gives way only once it has none. */}
+            <box flexGrow={1} flexBasis={0} minHeight={0} position="relative">
               <scrollbox
                 ref={(r) => {
                   scroll = r
@@ -1666,30 +1669,32 @@ export function Session(props: {
                 </box>
               </Show>
             </box>
-            <box flexShrink={0}>
-              <Slot path="session.composer.queued" input={{ sessionID: route.sessionID }}>
-                <Show when={!composer.open && !disabled() && queuedPrompts().length > 0}>
-                  <QueuedPromptDock prompts={queuedPrompts()} onOpen={openQueuedPrompts} />
-                </Show>
-              </Slot>
-              <Slot path="session.composer.top" input={{ sessionID: route.sessionID }} />
-              <Composer
-                sessionID={route.sessionID}
-                pluginTabs={plugins.composerTabs()}
-                open={picker()}
-                defaultTab={composer.tab ?? (session()?.parentID ? "subagents" : undefined)}
-                onClose={() => {
-                  const parent = session()?.parentID
-                  if (parent) {
-                    navigate({ type: "session", sessionID: parent })
-                    return
-                  }
-                  setComposer("open", false)
-                }}
-                onDismiss={() => setComposer({ open: false, dismissed: true })}
-                terminals={props.terminals}
-                visibleTerminalID={props.visibleTerminalID}
-              />
+            <box flexShrink={formDocked() ? 1 : 0} minHeight={0}>
+              <box flexShrink={0}>
+                <Slot path="session.composer.queued" input={{ sessionID: route.sessionID }}>
+                  <Show when={!composer.open && !disabled() && queuedPrompts().length > 0}>
+                    <QueuedPromptDock prompts={queuedPrompts()} onOpen={openQueuedPrompts} />
+                  </Show>
+                </Slot>
+                <Slot path="session.composer.top" input={{ sessionID: route.sessionID }} />
+                <Composer
+                  sessionID={route.sessionID}
+                  pluginTabs={plugins.composerTabs()}
+                  open={picker()}
+                  defaultTab={composer.tab ?? (session()?.parentID ? "subagents" : undefined)}
+                  onClose={() => {
+                    const parent = session()?.parentID
+                    if (parent) {
+                      navigate({ type: "session", sessionID: parent })
+                      return
+                    }
+                    setComposer("open", false)
+                  }}
+                  onDismiss={() => setComposer({ open: false, dismissed: true })}
+                  terminals={props.terminals}
+                  visibleTerminalID={props.visibleTerminalID}
+                />
+              </box>
               <Switch>
                 <Match when={picker()}>{null}</Match>
                 <Match when={promptedPermissions().length > 0}>

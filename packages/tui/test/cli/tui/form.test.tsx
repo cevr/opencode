@@ -20,15 +20,20 @@ import { TestTuiContexts } from "../../fixture/tui-environment"
 import { createTuiResolvedConfig } from "../../fixture/tui-runtime"
 import { createApi, createEventStream, createFetch, directory, json } from "../../fixture/tui-client"
 
-/** The form where the session route docks it (routes/session/index.tsx): below a transcript that shrinks, in a box that does not. */
+/** The form where the session route docks it (routes/session/index.tsx): below a transcript that gives way first, in a dock that gives way next. */
 function Docked(props: { children: JSX.Element }) {
   return (
     <box height="100%" paddingBottom={1}>
-      <box flexGrow={1} minHeight={0}>
+      <box flexGrow={1} flexBasis={0} minHeight={0}>
         <text>transcript</text>
       </box>
       <box height={1} flexShrink={0} />
-      <box flexShrink={0}>{props.children}</box>
+      <box flexShrink={1} minHeight={0}>
+        <box flexShrink={0}>
+          <text>tray</text>
+        </box>
+        {props.children}
+      </box>
     </box>
   )
 }
@@ -1072,6 +1077,8 @@ test("a question taller than the screen scrolls, from its first line to its opti
     expect(first).not.toContain("line 60 of the question")
     // The keys stay on screen while the question scrolls.
     expect(first).toContain("esc dismiss")
+    // The dock's other rows keep their place; the question gives way.
+    expect(first).toContain("tray")
     for (let page = 0; page < 20 && !prompt.app.captureCharFrame().includes("Type your own answer"); page++) {
       prompt.app.mockInput.pressKey(PAGE_DOWN)
       await prompt.app.renderOnce()
