@@ -95,7 +95,12 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
                 data.session.get(route.data.sessionID)?.agent ??
                 agentStore.current)
               : agentStore.current
-          return agents().find((agent) => agent.id === selected) ?? agents().at(0)
+          // A subagent's session runs a subagent-mode agent: keep it, so a message sent there does not switch it to a primary one.
+          return (
+            agents().find((agent) => agent.id === selected) ??
+            visibleAgents().find((agent) => agent.id === selected) ??
+            agents().at(0)
+          )
         },
         set(id: string) {
           if (!agents().some((agent) => agent.id === id))

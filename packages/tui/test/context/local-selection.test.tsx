@@ -162,6 +162,19 @@ test("same-model agent switches clear drafts without a model acknowledgment", as
   expect(setup.local.model.current()?.modelID).toBe("second")
 })
 
+test("a subagent's session keeps its own subagent agent, so a message sent to it does not switch it to a primary one", async () => {
+  await using setup = await renderLocal({
+    models: [model("first")],
+    agents: [agent("build"), { ...agent("general"), mode: "subagent" }],
+    sessions: [session("ses_first", { providerID: "provider", id: "first" }, "general")],
+  })
+  await setup.data.session.sync("ses_first")
+  setup.route.navigate({ type: "session", sessionID: "ses_first" })
+  expect(setup.local.agent.current()?.id).toBe("general")
+  // The agents to pick from stay the primary ones.
+  expect(setup.local.agent.list().map((item) => item.id)).toEqual(["build"])
+})
+
 async function publishSelection(
   setup: Awaited<ReturnType<typeof renderLocal>>,
   agent: string,
