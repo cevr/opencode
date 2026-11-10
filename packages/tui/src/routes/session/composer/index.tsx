@@ -16,6 +16,8 @@ export type ComposerProps = {
   open: boolean
   defaultTab?: string
   onClose?: () => void
+  /** What Escape, Ctrl+C and the `esc` label do: just put the panel away; onClose when absent. A tab's own close (Up past the first row) stays onClose. */
+  onDismiss?: () => void
   terminals?: boolean
   visibleTerminalID?: string
   /** Plugin tabs (`ui.composerTab`), after the host's; the mount site reads them from the plugin registry. */
@@ -45,6 +47,11 @@ export function Composer(props: ComposerProps) {
 
   function close() {
     props.onClose?.()
+  }
+
+  function dismiss() {
+    if (props.onDismiss) props.onDismiss()
+    else close()
   }
 
   const ctx = {
@@ -80,8 +87,8 @@ export function Composer(props: ComposerProps) {
     commands: [
       { bind: "left", title: "Previous tab", group: "Composer", run: () => switchTab(-1) },
       { bind: "right", title: "Next tab", group: "Composer", run: () => switchTab(1) },
-      { bind: "escape", title: "Close composer", group: "Composer", run: close },
-      { bind: "ctrl+c", title: "Close composer", group: "Composer", run: close },
+      { bind: "escape", title: "Close composer", group: "Composer", run: dismiss },
+      { bind: "ctrl+c", title: "Close composer", group: "Composer", run: dismiss },
     ],
   }))
 
@@ -124,7 +131,7 @@ export function Composer(props: ComposerProps) {
                   </For>
                 </box>
               </Show>
-              <text fg={theme.text.muted} onMouseUp={close}>
+              <text fg={theme.text.muted} onMouseUp={dismiss}>
                 esc
               </text>
             </box>

@@ -241,7 +241,12 @@ export function Session(props: {
   const [composer, setComposer] = createStore({
     open: false,
     tab: undefined as string | undefined,
+    // A subagent's view opens on its picker; Escape dismisses it to show the prompt, which messages the subagent.
+    dismissed: false,
   })
+  const picker = createMemo(
+    () => composer.open || (!!session()?.parentID && !composer.dismissed && forms().length === 0),
+  )
   props.onTerminalPicker?.(() => setComposer({ open: true, tab: "terminals" }))
   onCleanup(() => props.onTerminalPicker?.(undefined))
   createEffect(() => {
@@ -1452,7 +1457,7 @@ export function Session(props: {
       id: "session.child.first",
       group: "Session",
       run: () => {
-        if (composer.open || session()?.parentID) setComposer("open", false)
+        if (picker()) setComposer({ open: false, dismissed: true })
         else setComposer({ open: true, tab: "subagents" })
         dialog.clear()
       },
@@ -1514,7 +1519,7 @@ export function Session(props: {
     on(
       () => route.sessionID,
       () => {
-        setComposer("open", false)
+        setComposer({ open: false, dismissed: false })
         clearMessageNavigation()
       },
     ),
@@ -1671,7 +1676,7 @@ export function Session(props: {
               <Composer
                 sessionID={route.sessionID}
                 pluginTabs={plugins.composerTabs()}
-                open={composer.open || (!!session()?.parentID && forms().length === 0)}
+                open={picker()}
                 defaultTab={composer.tab ?? (session()?.parentID ? "subagents" : undefined)}
                 onClose={() => {
                   const parent = session()?.parentID
@@ -1681,11 +1686,12 @@ export function Session(props: {
                   }
                   setComposer("open", false)
                 }}
+                onDismiss={() => setComposer({ open: false, dismissed: true })}
                 terminals={props.terminals}
                 visibleTerminalID={props.visibleTerminalID}
               />
               <Switch>
-                <Match when={composer.open || (!!session()?.parentID && forms().length === 0)}>{null}</Match>
+                <Match when={picker()}>{null}</Match>
                 <Match when={promptedPermissions().length > 0}>
                   <Show when={promptedPermissions()[0]?.id} keyed>
                     {(_) => {
