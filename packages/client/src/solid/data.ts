@@ -87,7 +87,15 @@ export type CreateDataInput = {
    * render tool-result files: a session full of screenshots otherwise keeps hundreds of MB of base64 alive.
    */
   readonly omitToolFileData?: boolean
+  /**
+   * While any Session reads as running, how often the server's snapshot of running Sessions is read again, so a
+   * turn whose end the event stream missed stops reading as running. Also caps the retry delay of a failed read.
+   */
+  readonly activeRecheckMs?: number
 }
+
+/** The default `activeRecheckMs`: a minute, one small read per client while something runs. */
+export const defaultActiveRecheckMs = 60_000
 
 const messagePageLimit = 20
 // Trailing window for event bursts that each ask for the same refetch.
@@ -701,34 +709,74 @@ export function createData(config: CreateDataInput) {
     )
   }
 
+  // Which Sessions run is mirrored from lifecycle events, so a turn that ends while the event stream is down (a
+  // service restart fails or stops it after the stream dropped) is never heard. Each connection hydrates the mirror
+  // from the server's snapshot; a failed read is retried, and while any Session reads as running the snapshot is
+  // read again every `activeRecheckMs` as a backstop, so a missed end never keeps a Session running for good.
+  const activeRecheckMs = config.activeRecheckMs ?? defaultActiveRecheckMs
+  let activeTimer: ReturnType<typeof setTimeout> | undefined
+  onCleanup(() => clearTimeout(activeTimer))
+  const connected = () => !disposed && (!config.connection || config.connection.status() === "connected")
+
+  function scheduleActive(delay: number, failures: number) {
+    clearTimeout(activeTimer)
+    activeTimer = setTimeout(() => {
+      activeTimer = undefined
+      // A reconnect hydrates afresh; a quiet mirror with nothing running has nothing to go stale.
+      if (!connected()) return
+      if (failures > 0 || Object.values(store.session.active).includes("running")) return hydrateActive(failures)
+      scheduleActive(activeRecheckMs, 0)
+    }, delay)
+  }
+
+  function hydrateActive(failures: number) {
+    clearTimeout(activeTimer)
+    activeTimer = undefined
+    if (!connected()) return
+    const updates = new Map<string, DataSessionStatus | undefined>()
+    activeUpdates = updates
+    void api()
+      .session.active()
+      .then((active) => {
+        if (activeUpdates !== updates) return
+        // Lifecycle events received during hydration supersede the snapshot.
+        const snapshot = new Map<string, DataSessionStatus>(Object.keys(active).map((id) => [id, "running"]))
+        updates.forEach((status, id) => {
+          if (status === undefined) return snapshot.delete(id)
+          snapshot.set(id, status)
+        })
+        activeUpdates = undefined
+        const ended = Object.entries(store.session.active).flatMap(([id, status]) =>
+          status === "running" && snapshot.get(id) !== "running" ? [id] : [],
+        )
+        setStore("session", "active", reconcile(Object.fromEntries(snapshot)))
+        // Sessions created before this connection (while disconnected, or before the client started)
+        // never delivered `session.created`; without their info a running child never joins its root's family.
+        snapshot.forEach((status, id) => {
+          if (status === "running" && !store.session.info[id]) refresh(() => result.session.sync(id))
+        })
+        // A turn that ended unheard left its info (outcome, idle time) and transcript behind: read them again.
+        ended.forEach((id) => {
+          if (!store.session.info[id]) return
+          result.session.invalidate(id)
+          refresh(() => result.session.sync(id))
+          if (store.session.message[id] === undefined) return
+          result.session.message.invalidate(id)
+          refresh(() => result.session.message.sync(id))
+        })
+        scheduleActive(activeRecheckMs, 0)
+      })
+      .catch(() => {
+        if (activeUpdates !== updates) return
+        activeUpdates = undefined
+        scheduleActive(Math.min(activeRecheckMs, 1_000 * 2 ** failures), failures + 1)
+      })
+  }
+
   function handleEvent(event: OpenCodeEvent) {
     switch (event.type) {
       case "server.connected": {
-        const updates = new Map<string, DataSessionStatus | undefined>()
-        activeUpdates = updates
-        refresh(() =>
-          api()
-            .session.active()
-            .then((active) => {
-              if (activeUpdates !== updates) return
-              // Lifecycle events received during hydration supersede the snapshot.
-              const snapshot = new Map<string, DataSessionStatus>(Object.keys(active).map((id) => [id, "running"]))
-              updates.forEach((status, id) => {
-                if (status === undefined) return snapshot.delete(id)
-                snapshot.set(id, status)
-              })
-              activeUpdates = undefined
-              setStore("session", "active", reconcile(Object.fromEntries(snapshot)))
-              // Sessions created before this connection (while disconnected, or before the client started)
-              // never delivered `session.created`; without their info a running child never joins its root's family.
-              snapshot.forEach((status, id) => {
-                if (status === "running" && !store.session.info[id]) refresh(() => result.session.sync(id))
-              })
-            })
-            .catch(() => {
-              if (activeUpdates === updates) activeUpdates = undefined
-            }),
-        )
+        hydrateActive(0)
         refresh(() =>
           api()
             .location.get({ location: locationQuery(defaultLocation()) })

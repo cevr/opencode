@@ -1470,6 +1470,76 @@ test("ignores activity snapshots from an older connection", async () => {
   }
 })
 
+// The owner's report (2026-11-10): a service restart ended two subagents' turns after the TUIs' event streams
+// dropped; a reconnected TUI kept both running for hours.
+test("retries a failed activity read after a reconnect, so a turn that ended unheard stops running", async () => {
+  let reads = 0
+  const setup = activityFixture(
+    () => {
+      reads++
+      return reads === 1 ? Response.json({ code: "internal" }, { status: 500 }) : Response.json({ data: {} })
+    },
+    [],
+    { activeRecheckMs: 50 },
+  )
+  try {
+    setup.data.session.setStatus("ses_cut", "running")
+    setup.emit({ type: "server.connected", data: {} })
+    await wait(() => setup.data.session.status("ses_cut") === "idle")
+    expect(reads).toBe(2)
+  } finally {
+    setup.dispose()
+  }
+})
+
+test("reads the activity snapshot again while a session runs, so a missed end does not keep it running", async () => {
+  let running: Record<string, { type: "running" }> = { ses_cut: { type: "running" } }
+  let reads = 0
+  const setup = activityFixture(
+    () => {
+      reads++
+      return Response.json({ data: running })
+    },
+    [],
+    { activeRecheckMs: 50 },
+  )
+  try {
+    setup.emit({ type: "server.connected", data: {} })
+    await wait(() => setup.data.session.status("ses_cut") === "running")
+    // The turn ends; its event never arrives.
+    running = {}
+    await wait(() => setup.data.session.status("ses_cut") === "idle")
+    // With nothing running, nothing is read again.
+    const settled = reads
+    await Bun.sleep(200)
+    expect(reads).toBe(settled)
+  } finally {
+    setup.dispose()
+  }
+})
+
+test("reads again the info of a session whose turn ended unheard", async () => {
+  const before = { ...session(0), id: "ses_cut", outcome: undefined, time: { created: 0, updated: 1, busy: 1 } }
+  const after = {
+    ...session(0),
+    id: "ses_cut",
+    outcome: "failed" as const,
+    time: { created: 0, updated: 3, busy: 1, idle: 3 },
+  }
+  const known = [before]
+  const setup = activityFixture(() => Response.json({ data: {} }), known, { activeRecheckMs: 50 })
+  try {
+    setup.data.session.remember(before)
+    setup.data.session.setStatus("ses_cut", "running")
+    known[0] = after
+    setup.emit({ type: "server.connected", data: {} })
+    await wait(() => setup.data.session.get("ses_cut")?.outcome === "failed")
+    expect(setup.data.session.status("ses_cut")).toBe("idle")
+  } finally {
+    setup.dispose()
+  }
+})
+
 test("projects background user shell metadata from durable shell data", () => {
   const setup = activityFixture(() => Response.json({ data: {} }))
   try {
@@ -1516,7 +1586,11 @@ function modelInfo(name: string): ModelInfo {
   }
 }
 
-function activityFixture(read: () => Response | Promise<Response>, sessions: SessionInfo[] = []) {
+function activityFixture(
+  read: () => Response | Promise<Response>,
+  sessions: SessionInfo[] = [],
+  options: Pick<CreateDataInput, "activeRecheckMs"> = {},
+) {
   const listeners = new Set<Parameters<CreateDataInput["event"]["listen"]>[0]>()
   const api = OpenCode.make({
     baseUrl: "http://opencode.local",
@@ -1533,6 +1607,7 @@ function activityFixture(read: () => Response | Promise<Response>, sessions: Ses
   })
   return createRoot((dispose) => ({
     data: createData({
+      ...options,
       api: () => api,
       directory: "/project",
       event: {
