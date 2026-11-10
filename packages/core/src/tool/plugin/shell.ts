@@ -133,6 +133,7 @@ const stateFields = {
   state: State,
   exitCode: Schema.optionalKey(Schema.Number),
   signal: Schema.optionalKey(Schema.String),
+  pid: Schema.optionalKey(NonNegativeInt),
   timedOut: Schema.optionalKey(Schema.Boolean),
   runtimeMs: Schema.Number.annotate({ description: "Milliseconds it ran, or has run so far" }),
 }
@@ -192,6 +193,7 @@ const lastLines = (text: string, count: number) => {
 const shellState = (info: ShellSchema.Info) => ({
   id: info.id,
   state: stateOf(info),
+  ...(info.pid !== undefined ? { pid: info.pid } : {}),
   ...(info.exit !== undefined ? { exitCode: info.exit } : {}),
   ...(info.signal !== undefined ? { signal: info.signal } : {}),
   ...(info.status === "timeout" ? { timedOut: true } : {}),
@@ -218,8 +220,10 @@ const handleMetadata = (handle: Handle) => {
 }
 
 // What the agent is told once its command runs in the background.
-const guidance = (id: string, file: string) =>
+const guidance = (id: string, file: string, pid?: number, by?: Backgrounded) =>
   [
+    ...(pid === undefined ? [] : [`PID: ${pid}`]),
+    ...(by === "limit" ? ["Do not start another copy while it is running."] : []),
     `It keeps running, and you will be notified when it ends. shell({ action: "check", id: "${id}" }) checks it, shell({ action: "wait", id: "${id}", ms: <ms> }) waits for it to end, shell({ action: "kill", id: "${id}" }) stops it. Output is streaming to: ${file}`,
     NO_POLLING,
   ].join("\n\n")
@@ -535,7 +539,7 @@ export const Plugin = {
           content: [
             text(header(handle, [where, ...seen.notes])),
             text(handle.output.trimEnd() || (ran ? "(no output yet)" : "(no output)")),
-            ...(ran ? [text(guidance(info.id, info.file))] : []),
+            ...(ran ? [text(guidance(info.id, info.file, seen.info.pid, by))] : []),
           ],
         }
       })
