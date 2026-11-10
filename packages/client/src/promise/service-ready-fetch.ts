@@ -45,5 +45,6 @@ export function serviceReadyFetch(fetch: typeof globalThis.fetch): typeof global
       await wait(delay)
     }
   }
-  return Object.assign(request, { preconnect: fetch.preconnect })
+  // Bun's fetch has preconnect; the DOM's (the desktop app) does not.
+  return Object.assign(request, "preconnect" in fetch ? { preconnect: fetch.preconnect } : {}) as typeof globalThis.fetch
 }
