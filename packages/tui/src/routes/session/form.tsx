@@ -6,6 +6,7 @@ import {
   stripAnsiSequences,
   TextAttributes,
   type BoxRenderable,
+  type Renderable,
   type ScrollBoxRenderable,
   type TextareaRenderable,
 } from "@opentui/core"
@@ -111,6 +112,10 @@ export function FormPrompt(props: { form: FormWithLocation }) {
   const [inputTarget, setInputTarget] = createSignal<TextareaRenderable>()
   let review: ScrollBoxRenderable | undefined
   let body: ScrollBoxRenderable | undefined
+  const inside = (node: Renderable, ancestor: Renderable) => {
+    for (let at: Renderable | null = node.parent; at; at = at.parent) if (at === ancestor) return true
+    return false
+  }
   // The option rows by value, and the custom answer's row, to keep the highlighted one in view.
   const optionRows = new Map<string, BoxRenderable>()
   let customRow: BoxRenderable | undefined
@@ -291,7 +296,9 @@ export function FormPrompt(props: { form: FormWithLocation }) {
       (selected) => {
         const option = rows()[selected]
         const row = option ? optionRows.get(String(option.value)) : customRow
-        if (body && row && !row.isDestroyed) body.scrollChildIntoView(row, { align: "nearest" })
+        // The row map outlives a tab switch and the review: only a row mounted inside the body can be
+        // scrolled to (the scene refuses any other node and the TUI would crash on it).
+        if (body && row && !row.isDestroyed && inside(row, body)) body.scrollChildIntoView(row, { align: "nearest" })
       },
       { defer: true },
     ),
