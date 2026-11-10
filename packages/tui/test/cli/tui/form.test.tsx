@@ -5,7 +5,7 @@ import { testRender } from "@opentui/solid"
 import { expect, test } from "bun:test"
 import { mkdir } from "node:fs/promises"
 import path from "node:path"
-import { onMount, Show } from "solid-js"
+import { onMount, Show, type JSX } from "solid-js"
 import { CommandPaletteDialog } from "../../../src/component/command-palette"
 import { DialogSessionRename } from "../../../src/component/dialog-session-rename"
 import { DataProvider, useData, type FormWithLocation } from "../../../src/context/data"
@@ -20,6 +20,24 @@ import { TestTuiContexts } from "../../fixture/tui-environment"
 import { createTuiResolvedConfig } from "../../fixture/tui-runtime"
 import { createApi, createEventStream, createFetch, directory, json } from "../../fixture/tui-client"
 
+/** The form where the session route docks it (routes/session/index.tsx): below a transcript that shrinks, in a box that does not. */
+function Docked(props: { children: JSX.Element }) {
+  return (
+    <box height="100%" paddingBottom={1}>
+      <box flexGrow={1} minHeight={0}>
+        <text>transcript</text>
+      </box>
+      <box height={1} flexShrink={0} />
+      <box flexShrink={0}>{props.children}</box>
+    </box>
+  )
+}
+
+/** A form docked as the session docks it, in a `width` by `height` terminal. */
+function mountDocked(root: string, width: number, height: number, fields: FormWithLocation["fields"]) {
+  return mountForm(root, width, fields, height, undefined, undefined, undefined, true)
+}
+
 async function mountForm(
   root: string,
   width = 80,
@@ -28,6 +46,7 @@ async function mountForm(
   clipboardText?: string,
   response?: { reply?: 404 | 409; cancel?: 404 | 409; syncFailure?: boolean },
   actions?: FormWithLocation["actions"],
+  docked = false,
 ) {
   const state = path.join(root, "state")
   await mkdir(state, { recursive: true })
@@ -116,7 +135,17 @@ async function mountForm(
               <DataProvider directory={process.cwd()}>
                 <ThemeProvider mode="dark" source={emptyThemeSource}>
                   <ToastProvider>
-                    <DialogProvider>{response ? <CurrentForm /> : <FormPrompt form={form} />}</DialogProvider>
+                    <DialogProvider>
+                      {docked ? (
+                        <Docked>
+                          <FormPrompt form={form} />
+                        </Docked>
+                      ) : response ? (
+                        <CurrentForm />
+                      ) : (
+                        <FormPrompt form={form} />
+                      )}
+                    </DialogProvider>
                   </ToastProvider>
                 </ThemeProvider>
               </DataProvider>
@@ -938,8 +967,22 @@ test("space does not select a single-choice option", async () => {
 
 const dismiss = [{ key: "ctrl+x", label: "dismiss", value: "test:dismiss", mark: "dismissed" }]
 const twoQuestions: FormWithLocation["fields"] = [
-  { key: "first", type: "string", title: "First", description: "Which target first?", options: twoTargets, custom: true },
-  { key: "second", type: "string", title: "Second", description: "Which target next?", options: twoTargets, custom: true },
+  {
+    key: "first",
+    type: "string",
+    title: "First",
+    description: "Which target first?",
+    options: twoTargets,
+    custom: true,
+  },
+  {
+    key: "second",
+    type: "string",
+    title: "Second",
+    description: "Which target next?",
+    options: twoTargets,
+    custom: true,
+  },
 ]
 
 test("a form action answers the field on screen with its value and moves on; pressed again it undoes", async () => {
@@ -1008,6 +1051,91 @@ test("a form without actions shows no action key", async () => {
   try {
     await prompt.app.waitForFrame((frame) => frame.includes("Which target first?"))
     expect(prompt.app.captureCharFrame()).not.toContain("ctrl+x")
+  } finally {
+    prompt.app.renderer.destroy()
+  }
+})
+
+// A question taller than the terminal: a phone-sized pane must still reach all of it.
+const sixtyLines = Array.from({ length: 60 }, (_, index) => `line ${index + 1} of the question`).join("\n")
+/** The PageDown key as a terminal sends it. */
+const PAGE_DOWN = "\u001b[6~"
+
+test("a question taller than the screen scrolls, from its first line to its options", async () => {
+  await using tmp = await tmpdir()
+  const prompt = await mountDocked(tmp.path, 40, 20, [
+    { key: "target", type: "string", description: sixtyLines, options: twoTargets, custom: true },
+  ])
+  try {
+    await prompt.app.waitForFrame((frame) => frame.includes("line 1 of the question"))
+    const first = prompt.app.captureCharFrame()
+    expect(first).not.toContain("line 60 of the question")
+    // The keys stay on screen while the question scrolls.
+    expect(first).toContain("esc dismiss")
+    for (let page = 0; page < 20 && !prompt.app.captureCharFrame().includes("Type your own answer"); page++) {
+      prompt.app.mockInput.pressKey(PAGE_DOWN)
+      await prompt.app.renderOnce()
+    }
+    const end = prompt.app.captureCharFrame()
+    expect(end).toContain("line 60 of the question")
+    expect(end).toContain("Type your own answer")
+    expect(end).toContain("esc dismiss")
+
+    prompt.app.mockInput.pressArrow("down")
+    prompt.app.mockInput.pressEnter()
+    await prompt.app.waitFor(() => prompt.replies.length === 1)
+    expect(prompt.replies).toEqual([{ answer: { target: "production" } }])
+  } finally {
+    prompt.app.renderer.destroy()
+  }
+})
+
+test("the mouse wheel scrolls a tall question", async () => {
+  await using tmp = await tmpdir()
+  const prompt = await mountDocked(tmp.path, 40, 20, [
+    { key: "target", type: "string", description: sixtyLines, options: twoTargets },
+  ])
+  try {
+    await prompt.app.waitForFrame((frame) => frame.includes("line 1 of the question"))
+    for (let step = 0; step < 100 && !prompt.app.captureCharFrame().includes("Production"); step++) {
+      await prompt.app.mockMouse.scroll(10, 5, "down")
+      await prompt.app.renderOnce()
+    }
+    expect(prompt.app.captureCharFrame()).toContain("line 60 of the question")
+    expect(prompt.app.captureCharFrame()).toContain("Production")
+  } finally {
+    prompt.app.renderer.destroy()
+  }
+})
+
+test("the highlighted option stays in view in a long list", async () => {
+  await using tmp = await tmpdir()
+  const options = Array.from({ length: 30 }, (_, index) => ({
+    value: `option-${index + 1}`,
+    label: `Option ${index + 1}`,
+  }))
+  const prompt = await mountDocked(tmp.path, 40, 20, [
+    { key: "target", type: "string", description: "Pick one", options, custom: true },
+  ])
+  try {
+    await prompt.app.waitForFrame((frame) => frame.includes("Pick one"))
+    expect(prompt.app.captureCharFrame()).not.toContain("Type your own answer")
+    // Up from the first option wraps to the custom answer, the last row.
+    prompt.app.mockInput.pressArrow("up")
+    await prompt.app.waitForFrame((frame) => frame.includes("Type your own answer"))
+    prompt.app.mockInput.pressArrow("down")
+    await prompt.app.waitForFrame((frame) => frame.includes("1. Option 1"))
+  } finally {
+    prompt.app.renderer.destroy()
+  }
+})
+
+test("a question that fits shows no scroll hint", async () => {
+  await using tmp = await tmpdir()
+  const prompt = await mountForm(tmp.path, 80, [{ key: "target", type: "string", options: twoTargets, custom: true }])
+  try {
+    await prompt.app.waitForFrame((frame) => frame.includes("Production"))
+    expect(prompt.app.captureCharFrame()).not.toContain("scroll")
   } finally {
     prompt.app.renderer.destroy()
   }
