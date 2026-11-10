@@ -1,17 +1,31 @@
 import { expect, test } from "bun:test"
-import { isSessionNotFoundError, isUnauthorizedError, OpenCode } from "../src/promise/index"
+import { isSessionNotFoundError, isUnauthorizedError, OpenCode, serviceReadyFetch } from "../src/promise/index"
+
+test("a read waits through the socket gap while the service restarts", async () => {
+  let requests = 0
+  const client = OpenCode.make({
+    baseUrl: "http://localhost:3000",
+    fetch: serviceReadyFetch(async () => {
+      requests++
+      if (requests === 1) throw new TypeError("Failed to fetch")
+      return Response.json({ version: "ready" })
+    }),
+  })
+  expect(await client.server.info()).toEqual({ version: "ready" })
+  expect(requests).toBe(2)
+})
 
 test.each(["service_starting", "service_stopping"])("requests wait through %s before delivering a prompt once", async (code) => {
   const requests: Request[] = []
   const client = OpenCode.make({
     baseUrl: "http://localhost:3000",
-    fetch: async (input, init) => {
+    fetch: serviceReadyFetch(async (input, init) => {
       const request = new Request(input, init)
       requests.push(request)
       return requests.length < 3
         ? Response.json({ code }, { status: 503, headers: { "retry-after": "0" } })
         : Response.json({ data: { id: "msg_ready" } })
-    },
+    }),
   })
   expect(await client.session.prompt({ sessionID: "ses_test", text: "hello after restart" })).toEqual({ id: "msg_ready" })
   expect(requests).toHaveLength(3)
@@ -27,11 +41,11 @@ test("a canceled startup wait does not submit after the service becomes ready", 
   let requests = 0
   const client = OpenCode.make({
     baseUrl: "http://localhost:3000",
-    fetch: async () => {
+    fetch: serviceReadyFetch(async () => {
       requests++
       setTimeout(() => abort.abort(), 10)
       return Response.json({ code: "service_starting" }, { status: 503, headers: { "retry-after": "1" } })
-    },
+    }),
   })
   await expect(
     client.session.prompt({ sessionID: "ses_test", text: "do not send" }, { signal: abort.signal }),
@@ -51,10 +65,10 @@ test("startup retries do not replay an ambiguous failed prompt or a failed servi
     let requests = 0
     const client = OpenCode.make({
       baseUrl: "http://localhost:3000",
-      fetch: async () => {
+      fetch: serviceReadyFetch(async () => {
         requests++
         return response()
-      },
+      }),
     })
     await expect(client.session.prompt({ sessionID: "ses_test", text: "once" })).rejects.toBeInstanceOf(Error)
     expect(requests).toBe(1)
