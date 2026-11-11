@@ -3515,9 +3515,15 @@ function sessionInfo(id: string, parentID: string | undefined, cost = 0) {
 // Mounts a DataProvider whose `/api/session/:id` responses are driven by the
 // given parent map (sessionID -> parentID). Roots omit the entry. Reused across
 // the family-index tests below.
-async function mountData(parents: Record<string, string>, costs: Record<string, number> = {}) {
-  const calls = createFetch((url) => {
+async function mountData(
+  parents: Record<string, string>,
+  costs: Record<string, number> = {},
+  // Holds the children list back until it settles.
+  childrenRead?: Promise<void>,
+) {
+  const calls = createFetch(async (url) => {
     if (url.pathname === "/api/session") {
+      await childrenRead
       const parentID = url.searchParams.get("parentID")
       return json({
         data: Object.entries(parents)
@@ -3564,6 +3570,22 @@ test("syncs direct child session info with a navigated root", async () => {
     expect(data.session.get("grandchild")).toBeUndefined()
     expect(data.session.family("root")).toEqual(["root", "child", "sibling"])
   } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("a family read shows the session's own info before its children's pages arrive", async () => {
+  const children = Promise.withResolvers<void>()
+  const { data, app } = await mountData({ child: "root", sibling: "root" }, {}, children.promise)
+  try {
+    const family = data.session.sync("root", { children: true })
+    await wait(() => data.session.get("root") !== undefined)
+    expect(data.session.get("child")).toBeUndefined()
+    children.resolve()
+    await family
+    expect(data.session.family("root")).toEqual(["root", "child", "sibling"])
+  } finally {
+    children.resolve()
     app.renderer.destroy()
   }
 })

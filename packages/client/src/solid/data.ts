@@ -1838,25 +1838,33 @@ export function createData(config: CreateDataInput) {
       sync(sessionID: string, options?: { children?: boolean }) {
         return sync.run(options?.children ? `session.family:${sessionID}` : `session:${sessionID}`, async () => {
           const started = deletionEpoch
-          const [info, children] = await Promise.all([
-            api().session.get({ sessionID }).catch(evictMissing),
-            options?.children ? listChildren({ parentID: sessionID, order: "desc", limit: CHILD_PAGE }) : [],
-          ])
-          const sessions = [info, ...children].filter((session) => (deletedAt.get(session.id) ?? 0) <= started)
-          batch(() => {
-            setStore(
-              "session",
-              "info",
-              produce((draft) => {
-                for (const session of sessions) draft[session.id] = session
-              }),
-            )
-            for (const session of sessions) {
-              clearDeleted(session.id)
-              sync.complete(`session:${session.id}`)
-              registerSession(session.id)
-            }
-          })
+          const write = (read: ReadonlyArray<SessionInfo>) => {
+            const sessions = read.filter((session) => (deletedAt.get(session.id) ?? 0) <= started)
+            batch(() => {
+              setStore(
+                "session",
+                "info",
+                produce((draft) => {
+                  for (const session of sessions) draft[session.id] = session
+                }),
+              )
+              for (const session of sessions) {
+                clearDeleted(session.id)
+                sync.complete(`session:${session.id}`)
+                registerSession(session.id)
+              }
+            })
+          }
+          const info = api().session.get({ sessionID }).catch(evictMissing)
+          const children = options?.children
+            ? listChildren({ parentID: sessionID, order: "desc", limit: CHILD_PAGE })
+            : Promise.resolve([])
+          // Settled here as well, so a failed children read is not reported before it is awaited below.
+          children.catch(() => undefined)
+          // The session's own info is written as soon as it is read: a family of hundreds of children
+          // takes several pages, and the session's view must not wait for them.
+          write([await info])
+          write(await children)
         })
       },
       invalidate(sessionID: string) {
