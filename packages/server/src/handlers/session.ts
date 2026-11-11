@@ -5,6 +5,7 @@ import { SessionTitle } from "@opencode/core/session/title"
 import { SessionTransfer } from "@opencode/core/session/transfer"
 import { InstructionEntry } from "@opencode/core/session/instruction-entry"
 import { Form } from "@opencode/core/form"
+import { Permission } from "@opencode/core/permission"
 import { DateTime, Effect, Stream } from "effect"
 import { HttpServerResponse } from "effect/http"
 import { HttpApiBuilder, HttpApiSchema } from "effect/http-api"
@@ -649,6 +650,43 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
         Effect.fn(function* (ctx) {
           const form = yield* Form.Service
           return { data: yield* form.list({ sessionID: ctx.params.sessionID }) }
+        }),
+      )
+      .handle(
+        "session.family.request.list",
+        Effect.fn(function* (ctx) {
+          const root = yield* requireSession(ctx.params.sessionID)
+          // Every session under the root, a page of children at a time.
+          const members: Session.Info[] = [root]
+          for (let index = 0; index < members.length; index++) {
+            let page = yield* session.list({ parentID: members[index]!.id, limit: 200 }).pipe(Effect.orDie)
+            members.push(...page.data)
+            while (page.cursor.next) {
+              page = yield* session.list({ cursor: page.cursor.next, limit: 200 }).pipe(Effect.orDie)
+              members.push(...page.data)
+            }
+          }
+          // Requests live in memory: a session whose capabilities are not live has none, and reading
+          // it must not boot its Location (a family can hold deleted worktrees).
+          const pending = yield* Effect.forEach(
+            members,
+            (member) =>
+              Effect.gen(function* () {
+                if (instances.live && !(yield* instances.live(member))) return { permissions: [], forms: [] }
+                return yield* Effect.all({
+                  permissions: Permission.Service.use((permission) => permission.forSession(member.id)),
+                  forms: Form.Service.use((form) => form.list({ sessionID: member.id })),
+                }).pipe(instances.provide(member))
+              }).pipe(Effect.orElseSucceed(() => ({ permissions: [], forms: [] }))),
+            { concurrency: 8 },
+          )
+          return {
+            data: {
+              sessions: members.map((member) => member.id),
+              permissions: pending.flatMap((item) => item.permissions),
+              forms: pending.flatMap((item) => item.forms),
+            },
+          }
         }),
       )
       .handle(

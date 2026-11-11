@@ -2706,6 +2706,61 @@ test("syncing a family whose members have nothing pending leaves the readers of 
   }
 })
 
+test("one family read fills every member's pending requests, and a member it covered is not read again", async () => {
+  const events = createEventStream()
+  const members = ["ses_root", "ses_child_a", "ses_child_b", "ses_child_c"]
+  const reads: string[] = []
+  const calls = createFetch((url) => {
+    if (url.pathname === "/api/session/ses_root/family/request") {
+      reads.push("family")
+      return json({
+        data: {
+          sessions: members.slice(0, 3),
+          permissions: [{ id: "per_a", sessionID: "ses_child_a", action: "read", resources: ["a.txt"] }],
+          forms: [{ id: "frm_b", sessionID: "ses_child_b", title: "Input requested", fields: [] }],
+        },
+      })
+    }
+    const match = /^\/api\/session\/([^/]+)\/(permission|form)$/.exec(url.pathname)
+    if (!match) return
+    reads.push(`${match[1]}:${match[2]}`)
+    return json({ data: [] })
+  }, events)
+  let data!: ReturnType<typeof useData>
+  let client!: ReturnType<typeof useClient>
+
+  function Probe() {
+    data = useData()
+    client = useClient()
+    return <box />
+  }
+
+  const app = await testRender(() => (
+    <TestTuiContexts>
+      <ClientProvider api={createApi(calls.fetch)}>
+        <ProjectProvider>
+          <DataProvider>
+            <Probe />
+          </DataProvider>
+        </ProjectProvider>
+      </ClientProvider>
+    </TestTuiContexts>
+  ))
+
+  try {
+    await wait(() => client.connection.status() === "connected")
+    await data.session.requests.sync("ses_root")
+    expect(data.session.permission.list("ses_child_a")?.map((request) => request.id)).toEqual(["per_a"])
+    expect(data.session.form.list("ses_child_b")?.map((form) => form.id)).toEqual(["frm_b"])
+    expect(data.session.permission.list("ses_root")).toBeUndefined()
+    // The members the read covered count as synced; one it did not cover is read on its own.
+    await Promise.all(members.flatMap((id) => [data.session.permission.sync(id), data.session.form.sync(id)]))
+    expect(reads).toEqual(["family", "ses_child_c:permission", "ses_child_c:form"])
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
 test("dismisses a permission that expired before its reply", async () => {
   const events = createEventStream()
   const request = { id: "per_stale", sessionID: "ses_active", action: "read", resources: ["old.txt"] }

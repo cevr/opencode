@@ -73,6 +73,8 @@ import type {
   SessionMessageGetOutput,
   SessionFormListInput,
   SessionFormListOutput,
+  SessionFamilyRequestListInput,
+  SessionFamilyRequestListOutput,
   SessionFormCreateInput,
   SessionFormCreateOutput,
   SessionFormGetInput,
@@ -1034,6 +1036,21 @@ export function make(options: ClientOptions) {
             },
             requestOptions,
           ),
+      },
+      family: {
+        request: {
+          list: (input: SessionFamilyRequestListInput, requestOptions?: RequestOptions) =>
+            request<{ readonly data: SessionFamilyRequestListOutput }>(
+              {
+                method: "GET",
+                path: `/api/session/${encodeURIComponent(input.sessionID)}/family/request`,
+                successStatus: 200,
+                declaredStatuses: [400, 401, 404],
+                empty: false,
+              },
+              requestOptions,
+            ).then((value) => value.data),
+        },
       },
       environment: (input: SessionEnvironmentInput, requestOptions?: RequestOptions) =>
         request<SessionEnvironmentOutput>(

@@ -361,6 +361,16 @@ export type SessionFormListOperation<E = never> = (
   input: SessionFormListInput,
 ) => Effect.Effect<SessionFormListOutput, E>
 
+export type SessionFamilyRequestListInput = { readonly sessionID: Session.ID }
+export type SessionFamilyRequestListOutput = {
+  readonly sessions: ReadonlyArray<Session.ID>
+  readonly permissions: ReadonlyArray<Permission.Request>
+  readonly forms: ReadonlyArray<Form.Info>
+}
+export type SessionFamilyRequestListOperation<E = never> = (
+  input: SessionFamilyRequestListInput,
+) => Effect.Effect<SessionFamilyRequestListOutput, E>
+
 export type SessionFormCreateInput = {
   readonly sessionID: string
   readonly id?: Form.ID | undefined
@@ -450,6 +460,7 @@ export interface SessionApi<E = never> {
     readonly reply: SessionFormReplyOperation<E>
     readonly cancel: SessionFormCancelOperation<E>
   }
+  readonly family: { readonly request: { readonly list: SessionFamilyRequestListOperation<E> } }
   readonly environment: SessionEnvironmentOperation<E>
   readonly view: SessionViewOperation<E>
 

@@ -567,6 +567,13 @@ export interface Layout {
   /** Horizontal padding of the transcript and the dock, in cells. The host default is 2. */
   readonly inset?: number
   /**
+   * Cells from the inset to where a transcript row starts: the glyph of a tool
+   * call, a group or a notice, and the first letter of prose. Every row the
+   * host draws starts there, so a plugin that draws its own rows at another
+   * column sets this to keep the host's rows in line. The host default is 3.
+   */
+  readonly gutter?: number
+  /**
    * The composer's chrome. "bar" is the host default: a left accent bar and a
    * metadata row. "rail" is a bare
    * left rail in the text colour (the warning colour in shell mode) with no

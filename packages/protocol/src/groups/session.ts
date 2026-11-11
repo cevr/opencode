@@ -737,6 +737,26 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
         ),
     )
     .add(
+      HttpApiEndpoint.get("session.family.request.list", "/api/session/:sessionID/family/request", {
+        params: { sessionID: Session.ID },
+        success: Schema.Struct({
+          data: Schema.Struct({
+            sessions: Schema.Array(Session.ID),
+            permissions: Schema.Array(Permission.Request),
+            forms: Schema.Array(Form.Info),
+          }),
+        }),
+        error: SessionNotFoundError,
+      }).annotateMerge(
+        OpenApi.annotations({
+          identifier: "session.family.request.list",
+          summary: "List a session family's pending requests",
+          description:
+            "Retrieve the pending permission requests and forms of a session and every session under it, in one read. `sessions` names every session the answer covers.",
+        }),
+      ),
+    )
+    .add(
       HttpApiEndpoint.post("session.form.create", "/api/session/:sessionID/form", {
         params: { sessionID: Schema.String },
         payload: FormCreatePayload,

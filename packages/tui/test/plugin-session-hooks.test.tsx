@@ -253,6 +253,20 @@ test("a plugin claims completion notices, and layout rules see notices as their 
   expect(frame).not.toContain("Worker finished")
 })
 
+test("a layout gutter starts every host row, a notice's glyph and prose alike, in one column", async () => {
+  const goal = { type: "synthetic", id: "msg_goal", text: "Notice", description: "Goal updated", metadata: { source: "goal" }, time: { created: 6 } }
+  await using app = await openSession("row-gutter", [goal, ...messages])
+  await app.ready
+  const frame = await waitForHighlightedFrame(app, (frame) => frame.includes("Goal updated") && frame.includes("is fixed"))
+  const start = (needle: string) => {
+    const line = frame.split("\n").find((item) => item.includes(needle)) ?? ""
+    return line.length - line.trimStart().length
+  }
+  // inset 1 and gutter 1: each row starts two cells in, where the host's own gutter (3) would put it five in.
+  expect(start("◎ Goal updated")).toBe(2)
+  expect(start("is fixed")).toBe(2)
+})
+
 test("a plugin follows whether the session's sidebar is visible", async () => {
   const fixture = await copyPlugin("sidebar-visible")
   try {

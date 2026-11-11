@@ -139,6 +139,10 @@ export type FormOption = { value: string; label: string; description?: string }
 
 export type FormExternalField = { key: string; type: "external"; url: string; title?: string; description?: string }
 
+export type PermissionID = string
+
+export type PermissionSource = { type: "tool"; messageID: string; id: string }
+
 export type FormValue = string | number | "Infinity" | "-Infinity" | "NaN" | boolean | Array<string>
 
 export type SessionStatsToolTotals = { calls: number; succeeded: number; failed: number; unfinished: number }
@@ -287,10 +291,6 @@ export type ProjectIcon = { url?: string; override?: string; color?: string }
 export type ProjectCommands = { start?: string }
 
 export type ProjectTime = { created: number; updated: number; active: number; archived?: number }
-
-export type PermissionID = string
-
-export type PermissionSource = { type: "tool"; messageID: string; id: string }
 
 export type PermissionSavedID = string
 
@@ -663,6 +663,17 @@ export type FormMultiselectField = {
   default?: Array<string>
 }
 
+export type PermissionRequest = {
+  id: PermissionID
+  sessionID: SessionID
+  action: string
+  resources: Array<string>
+  save?: Array<string>
+  metadata?: { [x: string]: JsonValue }
+  source?: PermissionSource
+  message?: string
+}
+
 export type FormAnswer = { [x: string]: FormValue }
 
 export type SessionStatsTools =
@@ -803,17 +814,6 @@ export type Project = {
   commands?: ProjectCommands
   time: ProjectTime
   sandboxes: Array<string>
-}
-
-export type PermissionRequest = {
-  id: PermissionID
-  sessionID: SessionID
-  action: string
-  resources: Array<string>
-  save?: Array<string>
-  metadata?: { [x: string]: JsonValue }
-  source?: PermissionSource
-  message?: string
 }
 
 export type PermissionSavedInfo = {
@@ -3582,6 +3582,12 @@ export type SessionMessageGetOutput = { data: SessionMessageInfo }["data"]
 export type SessionFormListInput = { readonly sessionID: string }
 
 export type SessionFormListOutput = { data: Array<FormInfo> }["data"]
+
+export type SessionFamilyRequestListInput = { readonly sessionID: string }
+
+export type SessionFamilyRequestListOutput = {
+  data: { sessions: Array<SessionID>; permissions: Array<PermissionRequest>; forms: Array<FormInfo> }
+}["data"]
 
 export type SessionFormCreateInput = {
   readonly sessionID: string
