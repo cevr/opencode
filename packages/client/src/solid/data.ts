@@ -1988,6 +1988,45 @@ export function createData(config: CreateDataInput) {
           evictSession(sessionID)
         },
       },
+      /**
+       * A session family's pending permissions and forms in one read, in place of each member's own
+       * `permission.sync` and `form.sync`: the members it covers count as synced until invalidated.
+       */
+      requests: {
+        sync(sessionID: string) {
+          return sync.run(`session.family.request:${sessionID}`, async () => {
+            const started = deletionEpoch
+            const response = await api().session.family.request.list({ sessionID }).catch(evictMissing)
+            // Grouped by hand: the GUI packages that bundle this file target a library without Map.groupBy.
+            const bySession = <T extends { readonly sessionID: string }>(items: ReadonlyArray<T>) => {
+              const groups = new Map<string, T[]>()
+              for (const item of items) {
+                const group = groups.get(item.sessionID)
+                if (group) group.push(item)
+                else groups.set(item.sessionID, [item])
+              }
+              return groups
+            }
+            const permissions = bySession(response.permissions)
+            const forms = bySession(response.forms)
+            batch(() => {
+              for (const id of response.sessions) {
+                if ((deletedAt.get(id) ?? 0) > started) continue
+                const nextPermissions = permissions.get(id) ?? []
+                if (nextPermissions.length > 0 || store.session.permission[id]?.length)
+                  setStore("session", "permission", id, nextPermissions)
+                const nextForms = forms.get(id) ?? []
+                if (nextForms.length > 0 || store.session.form[id]?.length) setStore("session", "form", id, nextForms)
+                sync.complete(`session.permission:${id}`)
+                sync.complete(`session.form:${id}:`)
+              }
+            })
+          })
+        },
+        invalidate(sessionID: string) {
+          sync.invalidate(`session.family.request:${sessionID}`)
+        },
+      },
       permission: {
         list(sessionID: string) {
           return store.session.permission[sessionID]

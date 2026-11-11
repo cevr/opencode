@@ -356,8 +356,11 @@ export function Session(props: {
   )
 
   createEffect(
-    on([descendantSessionIDs, () => client.connection.status()], ([sessionIDs, status]) => {
-      if (status !== "connected") return
+    on([descendantSessionIDs, () => client.connection.status()], async ([sessionIDs, status]) => {
+      if (status !== "connected" || sessionIDs.length === 0) return
+      // One read covers the family as the server knows it; a member it did not cover (a subagent
+      // started since, or a server without the family read) is then read on its own.
+      await data.session.requests.sync(route.sessionID).catch(() => undefined)
       void Promise.allSettled(
         sessionIDs.flatMap((sessionID) => [data.session.permission.sync(sessionID), data.session.form.sync(sessionID)]),
       )
