@@ -78,6 +78,38 @@ test("service options only require a matching version when requested", async () 
   }
 })
 
+test("a client of a build an install superseded starts and accepts the service on the installed build only", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-service-installed-"))
+  const state = path.join(root, "state")
+  const layer = Global.layerWith({ config: path.join(root, "config"), state })
+  const runPromise = <A, E>(effect: Effect.Effect<A, E, Global.Service | FileSystem.FileSystem | Scope.Scope>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.provide(NodeFileSystem.layer), Effect.scoped))
+  const installed = path.join(root, "opencode-2.2.9")
+  const record = (value: unknown) => fs.writeFile(path.join(state, "installed.json"), JSON.stringify(value))
+
+  try {
+    await fs.mkdir(state, { recursive: true })
+    await fs.writeFile(installed, "#!/bin/sh\n", { mode: 0o755 })
+    await record({ version: "2.2.9", command: [installed], previous: ["2.2.8", OPENCODE_VERSION] })
+    const superseded = await runPromise(ServiceConfig.options({ checkVersion: true }))
+    expect(superseded.command).toEqual([installed, "serve", "--service"])
+    expect(superseded.version).toBe("2.2.9")
+    expect((await runPromise(ServiceConfig.options())).command).toEqual([installed, "serve", "--service"])
+
+    // A build the install never replaced (another build, a newer one run by hand) keeps its own.
+    await record({ version: "2.2.9", command: [installed], previous: ["2.2.8"] })
+    const own = await runPromise(ServiceConfig.options({ checkVersion: true }))
+    expect(own.command).not.toContain(installed)
+    expect(own.version).toBe(OPENCODE_VERSION)
+
+    // An installed build that no longer runs is no reason to leave the client's own.
+    await record({ version: "2.2.9", command: [path.join(root, "gone")], previous: [OPENCODE_VERSION] })
+    expect((await runPromise(ServiceConfig.options())).command).not.toContain(path.join(root, "gone"))
+  } finally {
+    await fs.rm(root, { recursive: true, force: true })
+  }
+})
+
 test("global --server and --standalone flags parse in any position for server-connecting commands and reject on local-only commands", async () => {
   const captured: Array<{
     readonly path: string

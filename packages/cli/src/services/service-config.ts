@@ -1,4 +1,5 @@
 import { Global } from "@opencode/util/global"
+import { InstalledBuild } from "@opencode/util/installed-build"
 import { OPENCODE_CHANNEL, OPENCODE_VERSION } from "../version"
 import { Hash } from "@opencode/util/hash"
 import { Service } from "@opencode/client/effect/service"
@@ -143,11 +144,17 @@ export function processEnv(env: Info["env"]) {
 export const options = Effect.fnUntraced(function* (input: { readonly checkVersion?: boolean } = {}) {
   const { file, legacyRegistrationFiles } = yield* paths
   yield* Effect.forEach(legacyRegistrationFiles, (legacy) => migrateRegistration(legacy, file))
+  // A client of a build an install has since replaced starts, and accepts, the service on the installed build: its
+  // own would undo the install for every client of the machine.
+  const installed = InstalledBuild.read((yield* Global.Service).state)
+  const build = InstalledBuild.supersedes(installed, OPENCODE_VERSION)
+    ? { version: installed.version, command: installed.command }
+    : { version: OPENCODE_VERSION, command: selfCommand() }
   return {
     file,
-    version: input.checkVersion ? OPENCODE_VERSION : undefined,
+    version: input.checkVersion ? build.version : undefined,
     env: processEnv((yield* read()).env),
-    command: [...selfCommand(), "serve", "--service"],
+    command: [...build.command, "serve", "--service"],
   }
 })
 
