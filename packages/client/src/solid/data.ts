@@ -374,13 +374,32 @@ export function createData(config: CreateDataInput) {
     return true
   }
 
+  // A reply or cancel takes the form away as it is sent, not when the server answers: the
+  // view drops it on the next frame however busy the server is. A refusal other than "already
+  // gone" puts it back where it was, unless the server listed it again meanwhile.
   function settleForm(input: SessionFormCancelInput, ref: LocationRef | undefined, request: Promise<void>) {
+    const before = store.session.form[input.sessionID] ?? []
+    const removed = removeForm(input.sessionID, input.formID, ref)
+    const taken = removed ? before.filter((form) => !store.session.form[input.sessionID]?.includes(form)) : []
     return request
       .catch((error: unknown) => {
-        if ((!isFormNotFoundError(error) && !isFormAlreadySettledError(error)) || error.id !== input.formID) throw error
+        if ((!isFormNotFoundError(error) && !isFormAlreadySettledError(error)) || error.id !== input.formID) {
+          const current = store.session.form[input.sessionID] ?? []
+          const back = taken.filter((form) => !current.some((item) => item.id === form.id))
+          if (back.length > 0)
+            setStore(
+              "session",
+              "form",
+              input.sessionID,
+              before.filter((form) => back.includes(form) || current.includes(form)).concat(
+                current.filter((form) => !before.includes(form)),
+              ),
+            )
+          throw error
+        }
       })
       .then(() => {
-        if (!removeForm(input.sessionID, input.formID, ref)) return
+        if (!removed) return
         result.session.form.invalidate(input.sessionID, ref)
         void result.session.form.sync(input.sessionID, ref).catch(() => undefined)
       })
@@ -1838,13 +1857,10 @@ export function createData(config: CreateDataInput) {
           ])
           const sessions = [info, ...children].filter((session) => (deletedAt.get(session.id) ?? 0) <= started)
           batch(() => {
-            setStore(
-              "session",
-              "info",
-              produce((draft) => {
-                for (const session of sessions) draft[session.id] = session
-              }),
-            )
+            // Reconciled, not replaced: a refresh on each run start, end and view mostly changes a time
+            // or two, and replacing the info would wake every reader of every field of the session,
+            // which in a large family is every subagent row, tab and status (hundreds of ms).
+            for (const session of sessions) setStore("session", "info", session.id, reconcile(session))
             for (const session of sessions) {
               clearDeleted(session.id)
               sync.complete(`session:${session.id}`)
