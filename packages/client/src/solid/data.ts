@@ -574,12 +574,17 @@ export function createData(config: CreateDataInput) {
 
   // Every direct subagent, not only the server's default first page, so a root's family cost
   // counts all of them. Pages stay newest first, the order the family index has always used.
-  async function listChildren(input: SessionListInput): Promise<SessionInfo[]> {
+  // `onPage` hears each page as it arrives.
+  async function listChildren(
+    input: SessionListInput,
+    onPage?: (page: ReadonlyArray<SessionInfo>) => void,
+  ): Promise<SessionInfo[]> {
     const page = await api().session.list(input)
+    onPage?.(page.data)
 
     if (page.data.length < CHILD_PAGE || !page.cursor.next) return page.data
 
-    return [...page.data, ...(await listChildren({ cursor: page.cursor.next, limit: CHILD_PAGE }))]
+    return [...page.data, ...(await listChildren({ cursor: page.cursor.next, limit: CHILD_PAGE }, onPage))]
   }
 
   // Walk parentID upward through loaded session info to the family root. When a
@@ -1855,16 +1860,23 @@ export function createData(config: CreateDataInput) {
               }
             })
           }
+          // The session's own info is written as soon as it is read, and its children a page at a time
+          // as each arrives: a family of hundreds takes several pages, and neither the session's view
+          // nor the frames between the pages wait for all of them.
+          // A page that arrives before the session's own info waits for it: the family lists the root first.
+          let early: Array<ReadonlyArray<SessionInfo>> | undefined = []
+          const page = (sessions: ReadonlyArray<SessionInfo>) => (early ? early.push(sessions) : write(sessions))
           const info = api().session.get({ sessionID }).catch(evictMissing)
           const children = options?.children
-            ? listChildren({ parentID: sessionID, order: "desc", limit: CHILD_PAGE })
+            ? listChildren({ parentID: sessionID, order: "desc", limit: CHILD_PAGE }, page)
             : Promise.resolve([])
           // Settled here as well, so a failed children read is not reported before it is awaited below.
           children.catch(() => undefined)
-          // The session's own info is written as soon as it is read: a family of hundreds of children
-          // takes several pages, and the session's view must not wait for them.
           write([await info])
-          write(await children)
+          const waiting = early
+          early = undefined
+          waiting.forEach(write)
+          await children
         })
       },
       invalidate(sessionID: string) {
