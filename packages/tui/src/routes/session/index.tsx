@@ -151,6 +151,9 @@ const NAVIGATION_SLACK_ID = "session-navigation-slack"
 const BACKGROUND_TOOL_HINT_DELAY = 3_000
 // A failed session reload is tried again after 500 ms, doubling to 10 s; the fourth failure is a toast.
 const RELOAD_RETRY_MS = 500
+// How long after the first frame past a session's synced transcript its children are read: hundreds of
+// them cost the subagent views a few hundred ms, which then lands after the transcript shows.
+const CHILDREN_AFTER_FRAME_MS = 750
 const RELOAD_RETRY_MAX_MS = 10_000
 const RELOAD_RETRY_NOTICE = 3
 
@@ -332,10 +335,20 @@ export function Session(props: {
   createEffect(() => {
     if (!rowsSynced() || client.connection.status() !== "connected") return
     const sessionID = route.sessionID
-    const read = () => void data.session.sync(sessionID, { children: true }).catch(() => undefined)
-    renderer.once(CliRenderEvents.FRAME, read)
+    let timer: ReturnType<typeof setTimeout> | undefined
+    // Plugins draw the transcript over a few frames after its rows are synced; the children wait past them.
+    const drawn = () => {
+      timer = setTimeout(
+        () => void data.session.sync(sessionID, { children: true }).catch(() => undefined),
+        CHILDREN_AFTER_FRAME_MS,
+      )
+    }
+    renderer.once(CliRenderEvents.FRAME, drawn)
     renderer.requestRender()
-    onCleanup(() => renderer.off(CliRenderEvents.FRAME, read))
+    onCleanup(() => {
+      renderer.off(CliRenderEvents.FRAME, drawn)
+      clearTimeout(timer)
+    })
   })
   const boundaries = createMemo(() => messageBoundaryIDs(rows, messages()))
   const anchors = createTimelineAnchors()
