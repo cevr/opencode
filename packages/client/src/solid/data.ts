@@ -2002,6 +2002,9 @@ export function createData(config: CreateDataInput) {
             const started = deletionEpoch
             const list = await api().permission.list({ sessionID }).catch(evictMissing)
             if ((deletedAt.get(sessionID) ?? 0) > started) return
+            // A family's sync asks every member at once; most have nothing pending, and writing their
+            // empty lists would re-run each reader of the family once per member.
+            if (list.length === 0 && !store.session.permission[sessionID]?.length) return
             setStore("session", "permission", sessionID, list)
           })
         },
@@ -2052,6 +2055,7 @@ export function createData(config: CreateDataInput) {
             const started = deletionEpoch
             const list = await api().session.form.list({ sessionID }).catch(evictMissing)
             if ((deletedAt.get(sessionID) ?? 0) > started) return
+            if (list.length === 0 && !store.session.form[sessionID]?.length) return
             setStore("session", "form", sessionID, list)
           })
         },

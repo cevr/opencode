@@ -1073,6 +1073,83 @@ test("a fresh read of the session that moves no revert boundary, or an answer st
   }
 })
 
+test("a message that only adds rows at the end appends them and leaves the transcript's rows as they were", async () => {
+  const events = createEventStream()
+  const sessionID = "session-rows-append"
+  const model = { id: "model", providerID: "provider" }
+  const user = { id: "msg_1", type: "user", text: "Start", time: { created: 1 } }
+  const answer = {
+    id: "msg_2",
+    type: "assistant",
+    agent: "build",
+    model,
+    time: { created: 2, completed: 2 },
+    finish: "tool-calls",
+    content: [{ type: "text", text: "Working" }],
+  }
+  // A finished subagent's report, as its parent receives it.
+  const report = { id: "msg_3", type: "synthetic", text: "Report", description: "Subagent finished", time: { created: 3 } }
+  let history: unknown[] = [user]
+  const calls = createFetch((url) => {
+    if (url.pathname === `/api/session/${sessionID}/message`)
+      return json({ data: history.toReversed(), cursor: {} })
+  }, events)
+  let data!: ReturnType<typeof useData>
+  let rows!: ReturnType<typeof createSessionRows>
+  let client!: ReturnType<typeof useClient>
+
+  function Probe() {
+    client = useClient()
+    data = useData()
+    rows = createSessionRows(() => sessionID)
+    return <box />
+  }
+
+  const app = await testRender(() => (
+    <TestTuiContexts>
+      <ClientProvider api={createApi(calls.fetch)}>
+        <ProjectProvider>
+          <DataProvider>
+            <Probe />
+          </DataProvider>
+        </ProjectProvider>
+      </ClientProvider>
+    </TestTuiContexts>
+  ))
+
+  try {
+    await wait(() => client.connection.status() === "connected")
+    await wait(() => rows.length === 1)
+    // The answer streams in: its row is placed live, before any rebuild has keyed it.
+    emitEvent(events, {
+      id: "evt_append_delta",
+      created: 2,
+      type: "session.text.delta",
+      data: { sessionID, assistantMessageID: "msg_2", ordinal: 0, delta: "Working" },
+    })
+    await wait(() => rows.length === 2)
+    const before = [...rows]
+    // A full rebuild re-keys every row and reconciles the whole transcript; an append does neither.
+    const keys = rows.map((row) => row.key)
+    expect(keys[1]).toBeUndefined()
+    history = [user, answer, report]
+    data.session.message.invalidate(sessionID)
+    await data.session.message.sync(sessionID)
+    await wait(() => rows.length === 3)
+    expect(unwrap(rows).map((row) => (row.type === "message" ? row.messageID : row.type))).toEqual([
+      "msg_1",
+      "part",
+      "msg_3",
+    ])
+    expect(rows.slice(0, 2)).toEqual(before)
+    expect(rows[0]).toBe(before[0])
+    expect(rows[1]).toBe(before[1])
+    expect(rows.slice(0, 2).map((row) => row.key)).toEqual(keys)
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
 test("updates and removes queued inputs from durable lifecycle events", async () => {
   const events = createEventStream()
   const sessionID = "session-queue-management"
@@ -2547,6 +2624,83 @@ test("reconciles active session permissions when the event stream reconnects", a
     events.disconnect()
 
     await wait(() => calls === 2 && data.session.permission.list("ses_active")?.[0]?.id === "per_new")
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("syncing a family whose members have nothing pending leaves the readers of the family unrun", async () => {
+  const events = createEventStream()
+  const members = Array.from({ length: 20 }, (_, index) => `ses_member_${index}`)
+  let permissions: Record<string, unknown[]> = {}
+  let forms: Record<string, unknown[]> = {}
+  const calls = createFetch((url) => {
+    const match = /^\/api\/session\/([^/]+)\/(permission|form)$/.exec(url.pathname)
+    if (!match) return
+    const [, sessionID, kind] = match
+    return json({ data: (kind === "permission" ? permissions : forms)[sessionID!] ?? [] })
+  }, events)
+  let data!: ReturnType<typeof useData>
+  let client!: ReturnType<typeof useClient>
+  // How often a reader of every member's pending requests ran, as the session tabs' attention does.
+  let runs = 0
+  let attention = false
+
+  function Probe() {
+    data = useData()
+    client = useClient()
+    createEffect(() => {
+      runs++
+      attention = members.some(
+        (id) => (data.session.permission.list(id)?.length ?? 0) > 0 || (data.session.form.list(id)?.length ?? 0) > 0,
+      )
+    })
+    return <box />
+  }
+
+  const app = await testRender(() => (
+    <TestTuiContexts>
+      <ClientProvider api={createApi(calls.fetch)}>
+        <ProjectProvider>
+          <DataProvider>
+            <Probe />
+          </DataProvider>
+        </ProjectProvider>
+      </ClientProvider>
+    </TestTuiContexts>
+  ))
+
+  const syncAll = () =>
+    Promise.all(members.flatMap((id) => [data.session.permission.sync(id), data.session.form.sync(id)]))
+  const invalidateAll = () =>
+    members.forEach((id) => {
+      data.session.permission.invalidate(id)
+      data.session.form.invalidate(id)
+    })
+
+  try {
+    await wait(() => client.connection.status() === "connected")
+    const before = runs
+    await syncAll()
+    expect(runs).toBe(before)
+    expect(attention).toBe(false)
+
+    // A member with something pending still reaches its readers, and so does its clearing.
+    permissions = { [members[3]!]: [{ id: "per_1", sessionID: members[3], action: "read", resources: ["a.txt"] }] }
+    forms = { [members[7]!]: [{ id: "frm_1", sessionID: members[7], title: "Input requested", fields: [] }] }
+    invalidateAll()
+    await syncAll()
+    expect(attention).toBe(true)
+    expect(data.session.permission.list(members[3]!)?.map((request) => request.id)).toEqual(["per_1"])
+    expect(data.session.form.list(members[7]!)?.map((form) => form.id)).toEqual(["frm_1"])
+
+    permissions = {}
+    forms = {}
+    invalidateAll()
+    await syncAll()
+    expect(attention).toBe(false)
+    expect(data.session.permission.list(members[3]!)).toEqual([])
+    expect(data.session.form.list(members[7]!)).toEqual([])
   } finally {
     app.renderer.destroy()
   }
