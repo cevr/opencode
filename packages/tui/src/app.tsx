@@ -239,8 +239,8 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
   const directory = location.directory
   const pluginDirectories = yield* Effect.promise(() => localPluginDirectories(process.cwd(), global.config))
   BootTrace.mark("tui plugin directories")
-  // A TUI that replaced an older build's process takes the drafts it left.
-  arrive()
+  // A TUI that replaced an older build's process, or stayed on its build when a move failed, takes the drafts it left.
+  arrive(process.env, global.state)
   const handoff = input.terminalHandoff ? yield* Effect.promise(input.terminalHandoff) : undefined
   BootTrace.mark("tui terminal handoff")
   const managed = input.server.service

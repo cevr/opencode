@@ -20,15 +20,15 @@ export function saveDraft(sessionID: string | undefined, entry: DraftEntry) {
 }
 
 /**
- * Every draft this process holds, by tab: each mounted composer's current prompt (its cursor at the end), and each
- * stashed one. A restart onto a new build (context/update-restart.tsx) carries them to the next process.
+ * Every draft this process holds, by tab: each mounted composer's current prompt and cursor, and each stashed one. A
+ * restart onto a new build (context/update-restart.tsx) carries them to the next process, and watches them for edits.
  */
 export function allDrafts(): Array<[string | undefined, DraftEntry]> {
   const drafts = new Map(byTab)
   for (const [sessionID, composer] of composers) {
     const prompt = composer.current
     // Through JSON: the composer's prompt is a store proxy, which structuredClone refuses.
-    if (prompt.text) drafts.set(sessionID, { prompt: JSON.parse(JSON.stringify(prompt)), cursor: Infinity })
+    if (prompt.text) drafts.set(sessionID, { prompt: JSON.parse(JSON.stringify(prompt)), cursor: composer.cursor })
   }
   return [...drafts]
 }

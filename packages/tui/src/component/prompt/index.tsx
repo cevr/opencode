@@ -102,6 +102,8 @@ export type PromptProps = {
 export type PromptRef = {
   focused: boolean
   current: PromptInfo
+  /** The cursor's offset in the text. */
+  cursor: number
   mode: "normal" | "shell"
   setMode(mode: "normal" | "shell"): void
   set(prompt: PromptInfo): void
@@ -689,6 +691,9 @@ export function Prompt(props: PromptProps) {
     },
     get current() {
       return store.prompt
+    },
+    get cursor() {
+      return input.cursorOffset
     },
     get mode() {
       return store.mode
