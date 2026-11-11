@@ -967,6 +967,112 @@ test("completes exploration and keeps live rows when a queued prompt is promoted
   }
 })
 
+test("a fresh read of the session that moves no revert boundary, or an answer streaming in, leaves its transcript rows unreduced", async () => {
+  const events = createEventStream()
+  const sessionID = "session-rows-resync"
+  let title = 0
+  const calls = createFetch((url) => {
+    if (url.pathname === `/api/session/${sessionID}`)
+      return json({
+        data: {
+          id: sessionID,
+          projectID: "proj_test",
+          cost: 0,
+          tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+          time: { created: 0, updated: title },
+          title: `Read ${title++}`,
+          location: { directory },
+        },
+      })
+    if (url.pathname === `/api/session/${sessionID}/message`)
+      return json({
+        data: [
+          { id: "msg_second", type: "user", text: "Second", time: { created: 2 } },
+          { id: "msg_first", type: "user", text: "First", time: { created: 1 } },
+        ],
+        cursor: {},
+      })
+  }, events)
+  let data!: ReturnType<typeof useData>
+  let client!: ReturnType<typeof useClient>
+  // Only a full reduce reads the session's inputs as a list.
+  let reduced = 0
+
+  function Probe() {
+    client = useClient()
+    data = useData()
+    const list = data.session.input.list
+    data.session.input.list = (id) => {
+      reduced++
+      return list(id)
+    }
+    createSessionRows(() => sessionID)
+    return <box />
+  }
+
+  const app = await testRender(() => (
+    <TestTuiContexts>
+      <ClientProvider api={createApi(calls.fetch)}>
+        <ProjectProvider>
+          <DataProvider>
+            <Probe />
+          </DataProvider>
+        </ProjectProvider>
+      </ClientProvider>
+    </TestTuiContexts>
+  ))
+
+  try {
+    await wait(() => client.connection.status() === "connected")
+    await data.session.sync(sessionID)
+    await wait(() => reduced >= 2)
+    await Bun.sleep(50)
+    const before = reduced
+    // Each read replaces the session's info, as a running session's refresh does on every status change.
+    for (let read = 0; read < 5; read++) {
+      data.session.invalidate(sessionID)
+      await data.session.sync(sessionID)
+    }
+    await wait(() => data.session.get(sessionID)?.title === `Read ${title - 1}`)
+    expect(reduced).toBe(before)
+    // Nor does an answer streaming in: its message and parts are appended live.
+    emitEvent(events, {
+      id: "evt_rows_step",
+      created: 1,
+      type: "session.step.started",
+      durable: durable(sessionID),
+      data: {
+        started: 1,
+        sessionID,
+        assistantMessageID: "message-assistant",
+        agent: "build",
+        model: { id: "model", providerID: "provider" },
+      },
+    })
+    await wait(() => data.session.message.get(sessionID, "message-assistant") !== undefined)
+    emitEvent(events, {
+      id: "evt_rows_text",
+      created: 1,
+      type: "session.text.started",
+      durable: durable(sessionID, 1),
+      data: { sessionID, assistantMessageID: "message-assistant", ordinal: 0 },
+    })
+    for (let token = 0; token < 5; token++) {
+      emitEvent(events, {
+        id: `evt_rows_delta_${token}`,
+        created: 2,
+        type: "session.text.delta",
+        data: { sessionID, assistantMessageID: "message-assistant", ordinal: 0, delta: `word${token} ` },
+      })
+      await Bun.sleep(20)
+    }
+    await Bun.sleep(50)
+    expect(reduced).toBe(before)
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
 test("updates and removes queued inputs from durable lifecycle events", async () => {
   const events = createEventStream()
   const sessionID = "session-queue-management"

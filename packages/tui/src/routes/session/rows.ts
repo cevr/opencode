@@ -1,5 +1,5 @@
 import type { SessionInboxEnqueued, SessionMessageAssistant, SessionMessageInfo } from "@opencode/client"
-import { createEffect, on, onCleanup, type Accessor } from "solid-js"
+import { createEffect, createMemo, on, onCleanup, type Accessor } from "solid-js"
 import { createStore, produce, reconcile } from "solid-js/store"
 import { useConfig } from "../../config"
 import { useData } from "../../context/data"
@@ -146,46 +146,36 @@ export function createSessionRows(
 
   // Re-reduce when the revert boundary changes (stage/clear/commit). These reactions defer
   // their first run: the mount effect above has already reduced the same state.
-  createEffect(on(revertBoundary, rebuild, { defer: true }))
+  // Each trigger is a memo that notifies only when its value changes: the store calls that feed
+  // them run again on every write to the session's info, pending list or message list (a token,
+  // a subagent's status), and a full re-reduce costs the whole transcript each time.
+  createEffect(on(createMemo(revertBoundary), rebuild, { defer: true }))
 
-  createEffect(
-    on(
-      () =>
-        data.session.pending.list(sessionID()).flatMap((item) => {
-          if (item.type === "compaction") return [`${item.id}:compaction`]
-          if (item.type === "user" && item.delivery === "queue") return [`${item.id}:queue`]
-          return []
-        }),
-      rebuild,
-      { defer: true },
-    ),
+  const queuedKeys = createMemo(
+    () =>
+      data.session.pending.list(sessionID()).flatMap((item) => {
+        if (item.type === "compaction") return [`${item.id}:compaction`]
+        if (item.type === "user" && item.delivery === "queue") return [`${item.id}:queue`]
+        return []
+      }),
+    [],
+    { equals: sameKeys },
   )
+  createEffect(on(queuedKeys, rebuild, { defer: true }))
 
-  createEffect(
-    on(
-      () =>
-        data.session.message.list(sessionID()).flatMap((message) =>
-          message.type === "user" || message.type === "synthetic"
-            ? [
-                {
-                  id: message.id,
-                  created: message.time.created,
-                  input: data.session.input.has(sessionID(), message.id),
-                },
-              ]
-            : message.type === "compaction" || message.type === "idle"
-              ? [
-                  {
-                    id: message.id,
-                    created: message.time.created,
-                  },
-                ]
-              : [],
-        ),
-      rebuild,
-      { defer: true },
-    ),
+  const messageKeys = createMemo(
+    () =>
+      data.session.message.list(sessionID()).flatMap((message) =>
+        message.type === "user" || message.type === "synthetic"
+          ? [`${message.id}:${message.time.created}:${data.session.input.has(sessionID(), message.id)}`]
+          : message.type === "compaction" || message.type === "idle"
+            ? [`${message.id}:${message.time.created}`]
+            : [],
+      ),
+    [],
+    { equals: sameKeys },
   )
+  createEffect(on(messageKeys, rebuild, { defer: true }))
 
   createEffect(on([turnTokens, verbosity], rebuild, { defer: true }))
 
@@ -324,6 +314,10 @@ export function createSessionRows(
   onCleanup(() => subscriptions.forEach((unsubscribe) => unsubscribe()))
 
   return rows
+}
+
+function sameKeys(a: readonly string[], b: readonly string[]) {
+  return a.length === b.length && a.every((key, index) => key === b[index])
 }
 
 function rowKey(row: SessionRow) {
