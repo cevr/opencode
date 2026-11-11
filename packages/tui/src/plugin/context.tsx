@@ -27,7 +27,7 @@ import { useTuiLifecycle } from "../context/runtime"
 import { useClient } from "../context/client"
 import { useData } from "../context/data"
 import { errorMessage } from "../util/error"
-import * as BootTrace from "@opencode/util/boot-trace"
+import { BootTrace } from "@opencode/util/boot-trace"
 import {
   createPluginContext,
   usePluginHost,

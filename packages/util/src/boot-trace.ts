@@ -3,6 +3,8 @@
 // profile runs from the first import. Both are written to <dir> (`boot-<pid>.json`,
 // `boot-<pid>.cpuprofile`) once `finish()` runs or OPENCODE_BOOT_TRACE_MS (default 15000) passes.
 // Without the variable every call does nothing.
+export * as BootTrace from "./boot-trace.js"
+
 import { Session } from "node:inspector"
 import { mkdirSync, writeFileSync } from "node:fs"
 import path from "node:path"

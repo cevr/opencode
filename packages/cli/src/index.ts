@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import "./boot-start"
-import * as BootTrace from "@opencode/util/boot-trace"
+import { BootTrace } from "@opencode/util/boot-trace"
 import { ensurePluginRuntime } from "@opencode/plugin/runtime"
 import { NodeRuntime, NodeServices } from "@effect/platform-node"
 import { Cause, Effect } from "effect"

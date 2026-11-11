@@ -15,7 +15,7 @@ import { Service } from "@opencode/client/effect/service"
 import { OpenCode } from "@opencode/client/promise"
 import { findSession } from "../../session-target"
 import { errorMessage } from "../../util/error"
-import * as BootTrace from "@opencode/util/boot-trace"
+import { BootTrace } from "@opencode/util/boot-trace"
 
 export default Runtime.handler(Commands, (input) =>
   Effect.gen(function* () {
