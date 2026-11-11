@@ -16,6 +16,7 @@ import { OpenCode } from "@opencode/client/promise"
 import { findSession } from "../../session-target"
 import { errorMessage } from "../../util/error"
 import { BootTrace } from "@opencode/util/boot-trace"
+import { Reexec } from "../../reexec"
 
 export default Runtime.handler(Commands, (input) =>
   Effect.gen(function* () {
@@ -98,7 +99,7 @@ export default Runtime.handler(Commands, (input) =>
     const runPromise = Effect.runPromiseWith(context)
     const service = server.service
     BootTrace.mark("tui run")
-    yield* run({
+    const result = yield* run({
       app: {
         name: process.env.OPENCODE_CLIENT ?? OPENCODE_ARTIFACT,
         version: OPENCODE_VERSION,
@@ -161,5 +162,7 @@ export default Runtime.handler(Commands, (input) =>
         runFork(effect)
       },
     }).pipe(Effect.provide(LayerNode.compile(Global.node)))
+    // The TUI moves onto the service's newer build: the process is replaced once it has shut down.
+    if ("restart" in result && result.restart) Reexec.schedule(result.restart)
   }),
 )
