@@ -217,8 +217,12 @@ const infoResponse = Effect.fnUntraced(function* (
   tmp: string,
 ) {
   const state = yield* status.current
+  // While it starts or stops, its info carries the same code as every other route's refusal, so a
+  // client that waits for the service (serviceReadyFetch) waits on its info too.
+  const code =
+    state.type === "starting" ? "service_starting" : state.type === "stopping" ? "service_stopping" : undefined
   return HttpServerResponse.jsonUnsafe(
-    { version, pid: process.pid, urls: urls(), paths: { tmp } },
+    { version, pid: process.pid, urls: urls(), paths: { tmp }, ...(code ? { code } : {}) },
     {
       status: state.type === "ready" ? 200 : state.type === "failed" ? 500 : 503,
       headers: state.type === "starting" || state.type === "stopping" ? { "retry-after": "1" } : undefined,
