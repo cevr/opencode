@@ -253,6 +253,11 @@ export function Session(props: {
     if (props.promptMuted && composer.open) setComposer("open", false)
   })
   const disabled = createMemo(() => promptedPermissions().length > 0 || forms().length > 0)
+  const locationMissing = createMemo(
+    () => !!session() && currentLocation.error?.location.directory === session()!.location.directory,
+  )
+  // What hides the prompt: the picker, a permission or a form shows in its place.
+  const covered = createMemo(() => picker() || disabled())
   // A form in the dock: the dock gives way to the terminal's height and the form scrolls its question.
   const formDocked = createMemo(() => !picker() && promptedPermissions().length === 0 && forms().length > 0)
 
@@ -1205,7 +1210,7 @@ export function Session(props: {
       title: "Redo",
       id: "session.redo",
       group: "Session",
-      enabled: !!session()?.revert?.messageID,
+      enabled: () => !!session()?.revert?.messageID,
       slash: { name: "redo" },
       run: () => {
         void (async () => {
@@ -1468,7 +1473,7 @@ export function Session(props: {
       title: "View queued prompts",
       id: "session.queued_prompts",
       group: "Prompt",
-      enabled: queuedPrompts().length > 0,
+      enabled: () => queuedPrompts().length > 0,
       run: openQueuedPrompts,
     },
     {
@@ -1476,7 +1481,7 @@ export function Session(props: {
       id: "session.parent",
       group: "Session",
       palette: undefined,
-      enabled: !!session()?.parentID,
+      enabled: () => !!session()?.parentID,
       run: () => {
         const parentID = session()?.parentID
         if (parentID) {
@@ -1715,35 +1720,33 @@ export function Session(props: {
                     }}
                   </Show>
                 </Match>
-                <Match
-                  when={
-                    session() &&
-                    currentLocation.error?.location.directory === session()!.location.directory
-                  }
-                >
+                <Match when={locationMissing()}>
                   <SessionLocationMissing
                     directory={session()!.location.directory}
                     projectID={session()!.projectID}
                     sessionID={route.sessionID}
                   />
                 </Match>
-                <Match when={!disabled()}>
-                  <Prompt
-                    visible={true}
-                    ref={bind}
-                    muted={props.promptMuted}
-                    onSubmit={() => {
-                      if (config.session?.submit_scroll !== "keep") toBottom()
-                    }}
-                    onEmptySubmit={async () => {
-                      const next = queuedPrompts()[0]
-                      if (!next) return false
-                      return mutatePending("steer", next.id)
-                    }}
-                    sessionID={route.sessionID}
-                  />
-                </Match>
               </Switch>
+              {/* The prompt stays mounted, hidden, under a picker, a permission or a form: mounting it
+                  again when a form closes costs tens of ms, and the form would wait on that to close. */}
+              <Show when={!locationMissing()}>
+                <Prompt
+                  visible={!covered()}
+                  disabled={covered()}
+                  ref={bind}
+                  muted={props.promptMuted}
+                  onSubmit={() => {
+                    if (config.session?.submit_scroll !== "keep") toBottom()
+                  }}
+                  onEmptySubmit={async () => {
+                    const next = queuedPrompts()[0]
+                    if (!next) return false
+                    return mutatePending("steer", next.id)
+                  }}
+                  sessionID={route.sessionID}
+                />
+              </Show>
             </box>
           </Show>
         </box>
