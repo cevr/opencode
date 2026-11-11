@@ -23049,6 +23049,19 @@
               "type": "string"
             }
           },
+          "command": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "paths": {
             "type": "object",
             "properties": {

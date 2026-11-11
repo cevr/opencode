@@ -23,6 +23,8 @@ export const ServerHandler = HttpApiBuilder.group(Api, "server.server", (handler
             pid: process.pid ?? 0,
             hostname: hostname() || undefined,
             urls: info.urls(),
+            // Left out, not sent as null, where the runtime has none.
+            ...(info.app.command === undefined ? {} : { command: info.app.command }),
             paths: info.paths,
             capabilities: { persistentPty: PersistentPty.available },
           }
