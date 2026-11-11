@@ -360,6 +360,22 @@ export function createData(config: CreateDataInput) {
     )
   }
 
+  // Forms whose reply or cancel went out and was not refused. A read of the forms that the server
+  // answered before it took the reply still lists them; they stay out of the store, so a refresh in
+  // flight cannot bring a sent form back. A refusal takes the id out again, so the form stays listed
+  // through every later read. A form id names one form for good, so the set only grows, by one id
+  // per answer.
+  const sentForms = new Set<string>()
+
+  // The only writer of a session's form list: every read, event and settle goes through it, so the
+  // sent and refused rule above holds on every path. An empty list is not stored for a session that
+  // has none.
+  function setForms(sessionID: string, forms: ReadonlyArray<FormWithLocation>) {
+    const next = forms.filter((form) => !sentForms.has(form.id))
+    if (next.length === 0 && !store.session.form[sessionID]?.length) return
+    setStore("session", "form", sessionID, next)
+  }
+
   function removeForm(sessionID: string, formID: string, ref?: LocationRef) {
     const forms = store.session.form[sessionID]
     if (!forms) return false
@@ -370,17 +386,9 @@ export function createData(config: CreateDataInput) {
       return !form.location || locationKey(form.location) !== location
     })
     if (next.length === forms.length) return false
-    setStore("session", "form", sessionID, next)
+    setForms(sessionID, next)
     return true
   }
-
-  // Forms whose reply or cancel went out and was not refused. A read of the forms that the server
-  // answered before it took the reply still lists them; they stay out of the store, so a refresh in
-  // flight cannot bring a sent form back. A form id names one form for good, so the set only grows,
-  // by one id per answer.
-  const sentForms = new Set<string>()
-  const unsent = <T extends { readonly id: string }>(forms: ReadonlyArray<T>) =>
-    sentForms.size === 0 ? [...forms] : forms.filter((form) => !sentForms.has(form.id))
 
   // A reply or cancel takes the form away as it is sent, not when the server answers: the
   // view drops it on the next frame however busy the server is. A refusal other than "already
@@ -397,9 +405,7 @@ export function createData(config: CreateDataInput) {
           const current = store.session.form[input.sessionID] ?? []
           const back = taken.filter((form) => !current.some((item) => item.id === form.id))
           if (back.length > 0)
-            setStore(
-              "session",
-              "form",
+            setForms(
               input.sessionID,
               before.filter((form) => back.includes(form) || current.includes(form)).concat(
                 current.filter((form) => !before.includes(form)),
@@ -1453,9 +1459,8 @@ export function createData(config: CreateDataInput) {
         refreshLocation("vcs", result.location.vcs, location)
         break
       case "form.created":
-        if (sentForms.has(event.data.form.id)) break
         if (store.session.form[event.data.form.sessionID]?.some((form) => form.id === event.data.form.id)) break
-        setStore("session", "form", event.data.form.sessionID, [
+        setForms(event.data.form.sessionID, [
           ...(store.session.form[event.data.form.sessionID] ?? []),
           event.data.form.sessionID === "global" ? { ...event.data.form, location } : event.data.form,
         ])
@@ -2042,8 +2047,7 @@ export function createData(config: CreateDataInput) {
                 const nextPermissions = permissions.get(id) ?? []
                 if (nextPermissions.length > 0 || store.session.permission[id]?.length)
                   setStore("session", "permission", id, nextPermissions)
-                const nextForms = unsent(forms.get(id) ?? [])
-                if (nextForms.length > 0 || store.session.form[id]?.length) setStore("session", "form", id, nextForms)
+                setForms(id, forms.get(id) ?? [])
                 sync.complete(`session.permission:${id}`)
                 sync.complete(`session.form:${id}:`)
               }
@@ -2110,20 +2114,18 @@ export function createData(config: CreateDataInput) {
                 directory: response.location.directory,
               }
               const locationID = locationKey(location)
-              setStore("session", "form", sessionID, [
+              setForms(sessionID, [
                 ...(store.session.form[sessionID] ?? []).filter(
                   (form) => form.location && locationKey(form.location) !== locationID,
                 ),
-                ...unsent(response.data.filter((form) => form.sessionID === "global")).map((form) => ({ ...form, location })),
+                ...response.data.filter((form) => form.sessionID === "global").map((form) => ({ ...form, location })),
               ])
               return
             }
             const started = deletionEpoch
             const list = await api().session.form.list({ sessionID }).catch(evictMissing)
             if ((deletedAt.get(sessionID) ?? 0) > started) return
-            const forms = unsent(list)
-            if (forms.length === 0 && !store.session.form[sessionID]?.length) return
-            setStore("session", "form", sessionID, forms)
+            setForms(sessionID, list)
           })
         },
         invalidate(sessionID: string, ref?: LocationRef) {
