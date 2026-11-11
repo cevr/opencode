@@ -412,7 +412,11 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                                                     type: "session",
                                                     sessionID: "dummy",
                                                   }
-                                                : undefined
+                                                : // `-s` starts on its session, not on home until the app mounts: what
+                                                  // reads the route at connect (the tabs' reads) sees the session shown.
+                                                  input.args.sessionID && !input.args.fork
+                                                  ? { type: "session", sessionID: input.args.sessionID }
+                                                  : undefined
                                             }
                                           >
                                             <ClientProvider
