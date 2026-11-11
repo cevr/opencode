@@ -133,7 +133,7 @@ import { isRecord } from "../../util/record"
 import { parseTodos } from "../../util/todo"
 import { createHistoryPrepend } from "./history"
 import { context, use, type PendingAction } from "./render-context"
-import { INLINE_TOOL_ICON_WIDTH, InlineToolRow, ReasoningPart, TextPart, toolDisplay } from "./message-parts"
+import { INLINE_TOOL_ICON_WIDTH, InlineToolRow, ReasoningPart, TextPart, toolDisplay, useRowGutter } from "./message-parts"
 import { defaultVerbosity, type GroupKind, type SessionEntry } from "./grouping/session"
 import { SessionGroupView } from "./group-view"
 import { useEntryAnchor } from "./anchor-view"
@@ -1870,6 +1870,7 @@ function TurnTokenUsage(props: {
   previousCache?: CacheUsage
   message: (messageID: string) => SessionMessageInfo | undefined
 }) {
+  const gutter = useRowGutter()
   const config = useConfig()
   const theme = useTheme()
   const renderer = useRenderer()
@@ -1925,7 +1926,7 @@ function TurnTokenUsage(props: {
   })
   return (
     <Show when={Boolean(config.data.debug?.turn_tokens) && steps().length > 0}>
-      <box paddingLeft={3} flexDirection="column">
+      <box paddingLeft={gutter()} flexDirection="column">
         <box
           flexDirection="row"
           onMouseOver={() => setHover(true)}
@@ -2026,6 +2027,7 @@ function turnTokenToolSummary(tool: SessionMessageAssistantTool) {
 }
 
 function BackgroundToolHint(props: { messages: SessionMessageInfo[] }) {
+  const gutter = useRowGutter()
   const theme = useTheme()
   const shortcut = Keymap.useShortcut("session.background")
   const running = createMemo(() => {
@@ -2049,7 +2051,7 @@ function BackgroundToolHint(props: { messages: SessionMessageInfo[] }) {
   return (
     <Show when={visible() && shortcut()}>
       {(value) => (
-        <box marginTop={1} paddingLeft={3} flexShrink={0}>
+        <box marginTop={1} paddingLeft={gutter()} flexShrink={0}>
           <text fg={theme.text.muted}>
             Press <span style={{ fg: theme.text.base }}>{value()}</span> to move running work to the background
           </text>
@@ -2100,9 +2102,10 @@ function SessionMessageView(props: { message: SessionMessageInfo }) {
 }
 
 function ExecutionError(props: { error: NonNullable<Extract<SessionMessageInfo, { type: "idle" }>["error"]> }) {
+  const gutter = useRowGutter()
   const theme = useTheme()
   return (
-    <box paddingLeft={3}>
+    <box paddingLeft={gutter()}>
       <text fg={theme.text.feedback.error.base}>Error: {errorMessage(props.error)}</text>
     </box>
   )
@@ -2159,6 +2162,7 @@ function SessionPartView(props: {
 }
 
 function AssistantFooter(props: { message: SessionMessageAssistant }) {
+  const gutter = useRowGutter()
   const ctx = use()
   const config = useConfig()
   const data = useData()
@@ -2184,7 +2188,7 @@ function AssistantFooter(props: { message: SessionMessageAssistant }) {
       <Show when={props.message.error && !interrupted() && !props.message.retry}>
         <Switch
           fallback={
-            <box paddingLeft={3}>
+            <box paddingLeft={gutter()}>
               <text fg={theme.text.feedback.error.base}>Error: {errorMessage(props.message.error)}</text>
             </box>
           }
@@ -2196,7 +2200,7 @@ function AssistantFooter(props: { message: SessionMessageAssistant }) {
         </Switch>
       </Show>
       <AssistantRetry retry={props.message.retry} />
-      <box paddingLeft={3} marginTop={props.message.retry || (props.message.error && !interrupted()) ? 1 : 0}>
+      <box paddingLeft={gutter()} marginTop={props.message.retry || (props.message.error && !interrupted()) ? 1 : 0}>
         <text>
           <span style={{ fg: props.message.error ? theme.text.muted : local.agent.color(props.message.agent) }}>
             {Locale.titlecase(props.message.agent)}
@@ -2223,11 +2227,12 @@ function AssistantFooter(props: { message: SessionMessageAssistant }) {
 }
 
 function SessionSwitchMessageV2(props: { message: SessionMessageInfo }) {
+  const gutter = useRowGutter()
   const ctx = use()
   const theme = useTheme()
   if (props.message.type === "location-switched")
     return (
-      <box paddingLeft={3}>
+      <box paddingLeft={gutter()}>
         <text>
           <span style={{ fg: theme.text.muted }}>↳ Moved to </span>
           <span style={{ fg: theme.text.feedback.info.base }}>{props.message.location.directory}</span>
@@ -2246,13 +2251,14 @@ function SessionSwitchMessageV2(props: { message: SessionMessageInfo }) {
     return ""
   }
   return (
-    <box paddingLeft={3}>
+    <box paddingLeft={gutter()}>
       <text fg={theme.text.muted}>{text()}</text>
     </box>
   )
 }
 
 function SessionNoticeMessageV2(props: { message: SessionMessageInfo }) {
+  const gutter = useRowGutter()
   const ctx = use()
   const theme = useTheme()
   const renderer = useRenderer()
@@ -2276,7 +2282,7 @@ function SessionNoticeMessageV2(props: { message: SessionMessageInfo }) {
     return state() ?? "finished"
   }
   const heading = () => `${state() === "completed" ? "↳" : "!"} ${actor()} ${status()}`
-  const suffix = () => Locale.truncateWidth(` · ${description()}`, Math.max(0, ctx.width - 3 - stringWidth(heading())))
+  const suffix = () => Locale.truncateWidth(` · ${description()}`, Math.max(0, ctx.width - gutter() - stringWidth(heading())))
   const color = () => {
     if (state() === "error") return theme.text.feedback.error.base
     if (state() === "cancelled") return theme.text.feedback.warning.base
@@ -2294,7 +2300,7 @@ function SessionNoticeMessageV2(props: { message: SessionMessageInfo }) {
     >
       <Slot path="session.message.completion" input={{ sessionID: ctx.sessionID, messageID: props.message.id }}>
         <box
-          marginLeft={3}
+          marginLeft={gutter()}
           onMouseOver={() => childID() && setHover(true)}
           onMouseOut={() => setHover(false)}
           onMouseUp={() => {
@@ -2323,6 +2329,7 @@ function SessionSkillMessage(props: { message: Extract<SessionMessageInfo, { typ
 }
 
 function CompactionMessage(props: { message: Extract<SessionMessageInfo, { type: "compaction" }> }) {
+  const gutter = useRowGutter()
   const ctx = use()
   const theme = useTheme()
   const { currentMarkdownSyntax: syntax } = useThemes()
@@ -2374,7 +2381,7 @@ function CompactionMessage(props: { message: Extract<SessionMessageInfo, { type:
         <box border={["top"]} borderColor={color()} flexGrow={1} />
       </box>
       <Show when={content()}>
-        <box paddingTop={1} paddingLeft={3}>
+        <box paddingTop={1} paddingLeft={gutter()}>
           <markdown
             ref={useSessionLinks()}
             syntaxStyle={syntax()}
@@ -2682,12 +2689,13 @@ function freeLimitReset(delay: number | undefined, base: number) {
 }
 
 function FreeLimitNotice(props: { message: Pick<SessionMessageAssistant, "error" | "time"> }) {
+  const gutter = useRowGutter()
   const theme = useTheme()
   const reset = createMemo(() =>
     freeLimitReset(props.message.error?.retryAfterMs, props.message.time.completed ?? props.message.time.created),
   )
   return (
-    <box paddingLeft={3} flexDirection="column">
+    <box paddingLeft={gutter()} flexDirection="column">
       <text fg={theme.text.muted}>You've used today's free messages.{reset() ? ` They reset at ${reset()}.` : ""}</text>
       <text fg={theme.text.muted}>
         Upgrade to OpenCode Go → <span style={{ fg: theme.text.base }}>/connect</span> · Switch model →{" "}
@@ -2698,6 +2706,7 @@ function FreeLimitNotice(props: { message: Pick<SessionMessageAssistant, "error"
 }
 
 function AssistantRetry(props: { retry: SessionMessageAssistant["retry"] }) {
+  const gutter = useRowGutter()
   const theme = useTheme()
   const [seconds, setSeconds] = createSignal(0)
   createEffect(() => {
@@ -2713,7 +2722,7 @@ function AssistantRetry(props: { retry: SessionMessageAssistant["retry"] }) {
   return (
     <Show when={props.retry}>
       {(retry) => (
-        <box paddingLeft={3}>
+        <box paddingLeft={gutter()}>
           <text fg={theme.text.feedback.warning.base}>
             ⚠ {seconds() > 0 ? `Retrying in ${seconds()}s` : "Retry due"} · attempt {retry().attempt} ·{" "}
             {retry().error.message}
@@ -3384,6 +3393,7 @@ function Glob(props: ToolProps) {
 }
 
 function Read(props: ToolProps) {
+  const gutter = useRowGutter()
   const theme = useTheme()
   const pathFormatter = usePathFormatter()
   const isRunning = createMemo(() => props.part.state.status === "running")
@@ -3410,7 +3420,7 @@ function Read(props: ToolProps) {
       </InlineTool>
       <For each={loaded()}>
         {(filepath) => (
-          <box paddingLeft={3}>
+          <box paddingLeft={gutter()}>
             <text paddingLeft={3} fg={theme.text.muted}>
               ↳ Loaded {pathFormatter.format(filepath)}
             </text>
@@ -3531,6 +3541,7 @@ export function isBackgroundSubagent(
 export { executeCallSummary }
 
 function ExecuteCallView(props: { call: Accessor<ExecuteCall> }) {
+  const gutter = useRowGutter()
   const theme = useTheme()
   const renderer = useRenderer()
   const [expanded, setExpanded] = createSignal(false)
@@ -3546,7 +3557,7 @@ function ExecuteCallView(props: { call: Accessor<ExecuteCall> }) {
 
   return (
     <box
-      paddingLeft={3}
+      paddingLeft={gutter()}
       onMouseOver={() => expandable() && setHover(true)}
       onMouseOut={() => setHover(false)}
       onMouseUp={() => {
@@ -3584,6 +3595,7 @@ function ExecuteCallView(props: { call: Accessor<ExecuteCall> }) {
 
 // The `execute` tool streams child tool calls through metadata, not a child session like Task.
 function Execute(props: ToolProps) {
+  const gutter = useRowGutter()
   const ctx = use()
   const theme = useTheme()
   const dialog = useDialog()
@@ -3615,7 +3627,7 @@ function Execute(props: ToolProps) {
       </InlineTool>
       <Index each={calls()}>{(call) => <ExecuteCallView call={call} />}</Index>
       <Show when={showOutput()}>
-        <box paddingLeft={3}>
+        <box paddingLeft={gutter()}>
           <For each={outputPreview().split("\n")}>
             {(line, index) => (
               <text paddingLeft={3} fg={theme.text.feedback.error.base}>

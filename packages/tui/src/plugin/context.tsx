@@ -805,6 +805,12 @@ function isPlugin(value: unknown): value is Plugin.Definition {
   )
 }
 
+/** The plugins' merged layout; none outside a PluginProvider, as for a row a test renders on its own. */
+export function useLayout(): () => Layout {
+  const value = useContext(PluginContext)
+  return value ? value.layout : () => ({})
+}
+
 export function usePlugin() {
   const value = useContext(PluginContext)
   if (!value) throw new Error("PluginProvider is missing")
