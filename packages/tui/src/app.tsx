@@ -7,6 +7,7 @@ import { Service, type Endpoint } from "@opencode/client/effect/service"
 import { OpenCode, serviceReadyFetch, type SessionInfo } from "@opencode/client"
 import { Global } from "@opencode/util/global"
 import { noTimeoutFetch } from "@opencode/util/no-timeout-fetch"
+import * as BootTrace from "@opencode/util/boot-trace"
 import { ClipboardProvider, useClipboard } from "./context/clipboard"
 import { LogProvider, type LogSink } from "./context/log"
 import { ExitProvider, useExit } from "./context/exit"
@@ -213,9 +214,11 @@ export type TuiInput = {
 export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
   const log = input.log ?? (() => {})
   const global = yield* Global.Service
+  BootTrace.mark("tui run entered")
   const config = Config.resolve(yield* Effect.tryPromise(() => input.config.get()), {
     terminalSuspend: process.platform !== "win32",
   })
+  BootTrace.mark("tui config read")
   const headers = Service.headers(input.server.endpoint)
   const options = {
     baseUrl: input.server.endpoint.url,
@@ -227,9 +230,12 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
     Effect.map((response) => response.location),
     Effect.catch(() => Effect.tryPromise(() => api.location.get())),
   )
+  BootTrace.mark("tui location read")
   const directory = location.directory
   const pluginDirectories = yield* Effect.promise(() => localPluginDirectories(process.cwd(), global.config))
+  BootTrace.mark("tui plugin directories")
   const handoff = input.terminalHandoff ? yield* Effect.promise(input.terminalHandoff) : undefined
+  BootTrace.mark("tui terminal handoff")
   const managed = input.server.service
   const service = managed
     ? {
@@ -288,7 +294,9 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
             }),
         )
       })
+      BootTrace.mark("renderer created")
       renderer.setMaxListeners(15)
+      if (BootTrace.enabled) renderer.once(CliRenderEvents.FRAME, () => BootTrace.mark("first frame"))
       const clipboard = yield* Effect.acquireRelease(
         Effect.sync(() => createTuiClipboard(renderer)),
         (clipboard) =>
@@ -314,6 +322,7 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
       renderer.once("destroy", () => shutdown.openUnsafe())
       yield* Effect.tryPromise(async () => {
         const mode = handoff?.mode ?? (await renderer.waitForThemeMode(1000)) ?? "dark"
+        BootTrace.mark("theme mode")
         if (renderer.isDestroyed) return
 
         await render(() => {
@@ -472,6 +481,7 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
             </LogProvider>
           )
         }, renderer)
+        BootTrace.mark("app rendered")
         if (handoff) {
           renderer.once(CliRenderEvents.FRAME, handoff.complete)
           renderer.requestRender()
@@ -525,6 +535,15 @@ function App() {
     renderer.off(CliRenderEvents.FRAME, afterFrame)
     if (paletteTimer) clearTimeout(paletteTimer)
   })
+  if (BootTrace.enabled) {
+    createEffect(() => BootTrace.mark(`connection ${client.connection.status()}`))
+    createEffect(() => {
+      if (plugins.ready()) BootTrace.mark("plugins ready")
+    })
+    createEffect(() => {
+      if (route.data.type === "session" && data.session.get(route.data.sessionID)) BootTrace.mark("session info")
+    })
+  }
   createEffect(() => {
     if (client.connection.status() !== "connected") return
     if (route.data.type !== "session") return

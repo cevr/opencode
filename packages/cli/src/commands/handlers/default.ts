@@ -15,9 +15,11 @@ import { Service } from "@opencode/client/effect/service"
 import { OpenCode } from "@opencode/client/promise"
 import { findSession } from "../../session-target"
 import { errorMessage } from "../../util/error"
+import * as BootTrace from "@opencode/util/boot-trace"
 
 export default Runtime.handler(Commands, (input) =>
   Effect.gen(function* () {
+    BootTrace.mark("default handler")
     const requestedDirectory = Option.getOrUndefined(input.directory)
     const requestedServer = Option.getOrUndefined(input.server)
     if (requestedDirectory !== undefined) process.chdir(requestedDirectory)
@@ -50,6 +52,7 @@ export default Runtime.handler(Commands, (input) =>
         Effect.promise(() => preflight.fail("OpenCode update could not start the new background service")),
       ),
     )
+    BootTrace.mark("server resolved")
     const session = Option.getOrUndefined(input.session)
     // A missing --session ID becomes the ID of the session the first prompt creates.
     const sessionExists =
@@ -59,6 +62,7 @@ export default Runtime.handler(Commands, (input) =>
           findSession(OpenCode.make({ baseUrl: server.endpoint.url, headers: Service.headers(server.endpoint) }), session),
         catch: (cause) => new Error(errorMessage(cause)),
       })) !== undefined
+    BootTrace.mark("session looked up")
     const updater = yield* Updater.Service
     let installing: string | undefined
     let latest: Updater.RunResult | undefined
@@ -93,6 +97,7 @@ export default Runtime.handler(Commands, (input) =>
     const runFork = Effect.runForkWith(context)
     const runPromise = Effect.runPromiseWith(context)
     const service = server.service
+    BootTrace.mark("tui run")
     yield* run({
       app: {
         name: process.env.OPENCODE_CLIENT ?? OPENCODE_ARTIFACT,

@@ -27,6 +27,7 @@ import { useTuiLifecycle } from "../context/runtime"
 import { useClient } from "../context/client"
 import { useData } from "../context/data"
 import { errorMessage } from "../util/error"
+import * as BootTrace from "@opencode/util/boot-trace"
 import {
   createPluginContext,
   usePluginHost,
@@ -331,6 +332,7 @@ export function PluginProvider(props: ParentProps<{ packages: PackageSource; dir
     const id = ++reconciliationID
     const started = Date.now()
     log.info("plugin reconciliation started", { id })
+    BootTrace.mark(`plugins reconcile ${id}`)
     await trace("watch", { reconciliation: id, directories: props.directories }, () =>
       Promise.all(props.directories.map(watcher.wait)).then(() => undefined),
     )
@@ -534,6 +536,7 @@ export function PluginProvider(props: ParentProps<{ packages: PackageSource; dir
         })
     setStore("states", reconcileStore(states))
     log.info("plugin reconciliation completed", { id, durationMs: Date.now() - started, plugins: desired.size })
+    BootTrace.mark(`plugins reconciled ${id}`)
   }
   const slotItems = new WeakMap<SlotRender, Claim<SlotRender>>()
   // The mounted slot tree: path -> live <Slot> instance count. Reference

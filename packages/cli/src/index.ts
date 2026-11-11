@@ -1,5 +1,7 @@
 #!/usr/bin/env bun
 
+import "./boot-start"
+import * as BootTrace from "@opencode/util/boot-trace"
 import { ensurePluginRuntime } from "@opencode/plugin/runtime"
 import { NodeRuntime, NodeServices } from "@effect/platform-node"
 import { Cause, Effect } from "effect"
@@ -18,6 +20,8 @@ import { EffectFlock } from "@opencode/util/effect-flock"
 import { Heap } from "./heap"
 import { CpuProfile } from "./cpu-profile"
 import { ShutdownDeadline } from "./shutdown-deadline"
+
+BootTrace.mark("cli imports evaluated")
 
 // Keep requests to the local service off any proxy. Bun reads lowercase `no_proxy` alone whenever it is set, so both
 // spellings get the same merged list.
@@ -99,6 +103,7 @@ const Handlers = Runtime.handlers(Commands, {
 })
 
 Effect.gen(function* () {
+  BootTrace.mark("cli layers built")
   yield* Heap.listen
   yield* CpuProfile.listen
   yield* ShutdownDeadline.install()
@@ -121,6 +126,7 @@ Effect.gen(function* () {
       process.off("unhandledRejection", unhandledRejection)
     }),
   )
+  BootTrace.mark("cli starting")
   yield* Effect.logInfo("cli starting", {
     version: OPENCODE_VERSION,
     channel: OPENCODE_CHANNEL,
