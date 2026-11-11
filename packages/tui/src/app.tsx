@@ -101,6 +101,7 @@ import { newSessionLocation } from "./config/new-session-location"
 import { UpdateNotificationProvider, useUpdateNotification, type UpdateSource } from "./context/update-notification"
 import { PluginProvider, usePlugin, type PackageSource } from "./plugin/context"
 import { localPluginDirectories } from "./plugin/discovery"
+import { prewarmPlugins } from "./plugin/prewarm"
 import { PluginRoute, Slot } from "./plugin/render"
 import { CommandPaletteDialog } from "./component/command-palette"
 import { COMMAND_PALETTE_COMMAND, Keymap, type KeymapCommand } from "./context/keymap"
@@ -220,6 +221,8 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
     terminalSuspend: process.platform !== "win32",
   })
   BootTrace.mark("tui config read")
+  // The plugins' imports overlap the location read and the renderer's creation below.
+  prewarmPlugins(config.plugins ?? [], process.cwd())
   const headers = Service.headers(input.server.endpoint)
   const options = {
     baseUrl: input.server.endpoint.url,
