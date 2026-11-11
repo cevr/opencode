@@ -4359,6 +4359,96 @@
         }
       }
     },
+    "/api/session/{sessionID}/family/request": {
+      "get": {
+        "tags": ["session"],
+        "operationId": "session.family.request.list",
+        "parameters": [
+          {
+            "name": "sessionID",
+            "in": "path",
+            "schema": {
+              "$ref": "#/components/schemas/Session.ID"
+            },
+            "required": true
+          }
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "sessions": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/Session.ID"
+                          }
+                        },
+                        "permissions": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/Permission.Request"
+                          }
+                        },
+                        "forms": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/Form.Info"
+                          }
+                        }
+                      },
+                      "required": ["sessions", "permissions", "forms"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": ["data"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "InvalidRequestError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvalidRequestErrorEncoded"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedErrorEncoded"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "SessionNotFoundError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionNotFoundErrorEncoded"
+                }
+              }
+            }
+          }
+        },
+        "description": "Retrieve the pending permission requests and forms of a session and every session under it, in one read. `sessions` names every session the answer covers.",
+        "summary": "List a session family's pending requests"
+      }
+    },
     "/api/session/{sessionID}/form/{formID}": {
       "get": {
         "tags": ["session"],
@@ -17788,6 +17878,28 @@
         "required": ["_tag", "message"],
         "additionalProperties": false
       },
+      "Form.Action": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "The key that runs it, in keybind form, e.g. `ctrl+x`"
+          },
+          "label": {
+            "type": "string",
+            "description": "What the footer names it, e.g. `dismiss`"
+          },
+          "value": {
+            "type": "string",
+            "description": "The answer a field takes when it runs"
+          },
+          "mark": {
+            "type": "string"
+          }
+        },
+        "required": ["key", "label", "value"],
+        "additionalProperties": false
+      },
       "Form.Answer": {
         "type": "object",
         "additionalProperties": {
@@ -17889,6 +18001,12 @@
           "metadata": {
             "$ref": "#/components/schemas/Form.Metadata"
           },
+          "actions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Form.Action"
+            }
+          },
           "fields": {
             "$ref": "#/components/schemas/Form.Fields"
           }
@@ -17910,6 +18028,12 @@
           },
           "metadata": {
             "$ref": "#/components/schemas/Form.Metadata"
+          },
+          "actions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Form.Action"
+            }
           },
           "fields": {
             "$ref": "#/components/schemas/Form.Fields"
@@ -18031,6 +18155,12 @@
           "metadata": {
             "$ref": "#/components/schemas/Form.Metadata"
           },
+          "actions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Form.Action"
+            }
+          },
           "fields": {
             "$ref": "#/components/schemas/Form.Fields"
           }
@@ -18052,6 +18182,12 @@
           },
           "metadata": {
             "$ref": "#/components/schemas/Form.Metadata"
+          },
+          "actions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Form.Action"
+            }
           },
           "fields": {
             "$ref": "#/components/schemas/Form.Fields_1"
