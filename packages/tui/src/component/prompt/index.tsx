@@ -9,7 +9,19 @@ import {
   stripAnsiSequences,
   type KeyEvent,
 } from "@opentui/core"
-import { createEffect, createMemo, onMount, createSignal, onCleanup, on, Show, Switch, Match, For } from "solid-js"
+import {
+  createEffect,
+  createMemo,
+  onMount,
+  createSignal,
+  onCleanup,
+  on,
+  Show,
+  Switch,
+  Match,
+  For,
+  untrack,
+} from "solid-js"
 import path from "path"
 import { useLocal } from "../../context/local"
 import { useTheme, useThemes } from "../../context/theme"
@@ -1096,27 +1108,59 @@ export function Prompt(props: PromptProps) {
     }
   })
 
-  // A session in another directory loads its location's agents and models after it opens, and
-  // after a service restart they wait through the boot. The composer takes input meanwhile, so
-  // a submit waits for them instead of finding no agent or an unavailable model and doing nothing.
-  const catalogPending = createMemo(() => {
-    const location = currentLocation.ref ?? data.location.default()
-    if (data.location.agent.list(location) !== undefined && local.model.catalogReady) return false
+  // A session in another directory loads its location's agents and models after it opens. After a
+  // service restart its location is cold: the server lists what has loaded so far (no agents, not
+  // the configured providers' models) and the rest arrives through `*.updated` refreshes as its
+  // plugins activate. The composer takes input meanwhile, so a submit waits until the composer's
+  // agent and model resolve, instead of finding neither and doing nothing. A loaded catalog that
+  // stops changing for the server's own activation bound (`awaitPlugins`) is complete: the checks
+  // below then report what is really missing.
+  const CATALOG_SETTLE_MS = 5_000
+  const catalogLocation = () => currentLocation.ref ?? data.location.default()
+  const catalogFailed = () => {
     const error = currentLocation.error
-    return !(error && locationKey(error.location) === locationKey(location))
+    return Boolean(error && locationKey(error.location) === locationKey(catalogLocation()))
+  }
+  const catalogLoading = () => data.location.agent.list(catalogLocation()) === undefined || !local.model.catalogReady
+  const selectionResolved = createMemo(() => {
+    if (catalogLoading()) return false
+    const selection = local.model.selection()
+    return local.agent.current() !== undefined && selection !== undefined && local.model.available(selection)
   })
   let catalogWaiters: Array<() => void> = []
+  let catalogSettle: ReturnType<typeof setTimeout> | undefined
   const releaseCatalogWaiters = () => {
+    clearTimeout(catalogSettle)
+    catalogSettle = undefined
     const waiters = catalogWaiters
     catalogWaiters = []
     for (const resolve of waiters) resolve()
   }
+  const watchCatalog = () => {
+    if (catalogWaiters.length === 0) return
+    if (selectionResolved() || catalogFailed()) return releaseCatalogWaiters()
+    clearTimeout(catalogSettle)
+    catalogSettle = undefined
+    // A load waits as long as it takes; a loaded catalog waits until it stops changing.
+    if (!catalogLoading()) catalogSettle = setTimeout(releaseCatalogWaiters, CATALOG_SETTLE_MS)
+  }
   createEffect(() => {
-    if (!catalogPending()) releaseCatalogWaiters()
+    const location = catalogLocation()
+    data.location.agent.list(location)
+    data.location.model.list(location)
+    data.location.provider.list(location)
+    selectionResolved()
+    catalogFailed()
+    catalogLoading()
+    untrack(watchCatalog)
   })
   onCleanup(releaseCatalogWaiters)
-  const catalogLoaded = () =>
-    catalogPending() ? new Promise<void>((resolve) => catalogWaiters.push(resolve)) : Promise.resolve()
+  const catalogResolved = () => {
+    if (selectionResolved() || catalogFailed()) return Promise.resolve()
+    const resolved = new Promise<void>((resolve) => catalogWaiters.push(resolve))
+    watchCatalog()
+    return resolved
+  }
 
   let submitting = false
   async function submit(delivery: SessionInbox.Delivery = "steer") {
@@ -1137,7 +1181,7 @@ export function Prompt(props: PromptProps) {
   }
 
   async function submitInner(delivery: SessionInbox.Delivery) {
-    await catalogLoaded()
+    await catalogResolved()
     if (disposed || input.isDestroyed) return false
     // IME: double-defer may fire before onContentChange flushes the last
     // composed character (e.g. Korean hangul) to the store, so read
