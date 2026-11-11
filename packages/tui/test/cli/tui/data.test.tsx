@@ -1,5 +1,5 @@
 /** @jsxImportSource @opentui/solid */
-import { expect, test } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import { testRender } from "@opentui/solid"
 import type { OpenCodeEvent } from "@opencode/client"
 import { SessionMessage } from "@opencode/core/session/message"
@@ -2817,6 +2817,122 @@ test("dismisses a permission that expired before its reply", async () => {
   } finally {
     app.renderer.destroy()
   }
+})
+
+// Every way a form list is written (a session's read, its family's read, the global read, a
+// `form.created` event, and a read after the event stream reconnects), against a form whose reply
+// is in flight (sent), was refused, or was never answered. The server lists the form throughout:
+// a sent form stays out, a refused or untouched one stays listed.
+describe("a form list write keeps a sent form out and a refused one listed", () => {
+  const paths = ["session", "family", "global", "created", "reconnect"] as const
+  const states = ["sent", "refused", "untouched"] as const
+  for (const path of paths)
+    for (const state of states)
+      test(`${path} read, ${state} form`, async () => {
+        const events = createEventStream()
+        const sessionID = path === "global" ? "global" : "ses_1"
+        const form = { id: "frm_case", sessionID, title: "Input requested", fields: formFields }
+        const held = Promise.withResolvers<void>()
+        let reads = 0
+        const calls = createFetch(async (url, request) => {
+          if (url.pathname.endsWith("/form/frm_case/reply")) {
+            if (state === "refused") return json({ message: "refused" }, { status: 500 })
+            await held.promise
+            return new Response(null, { status: 204 })
+          }
+          if (request.method !== "GET") return
+          if (url.pathname === "/api/form")
+            return json({
+              location: { directory, project: { id: "proj_test", directory } },
+              data: path === "global" ? [form] : [],
+            })
+          if (path === "global") return
+          if (url.pathname === "/api/session/ses_1/form") {
+            reads++
+            return json({ data: [form] })
+          }
+          if (url.pathname === "/api/session/ses_1/family/request")
+            return json({ data: { sessions: ["ses_1"], permissions: [], forms: [form] } })
+        }, events)
+        let data!: ReturnType<typeof useData>
+        let client!: ReturnType<typeof useClient>
+
+        function Probe() {
+          data = useData()
+          client = useClient()
+          if (path === "reconnect")
+            createEffect(() => {
+              if (client.connection.status() !== "connected") return
+              void data.session.form.sync("ses_1")
+            })
+          return <box />
+        }
+
+        const app = await testRender(() => (
+          <TestTuiContexts>
+            <ClientProvider api={createApi(calls.fetch)}>
+              <ProjectProvider>
+                <DataProvider>
+                  <Probe />
+                </DataProvider>
+              </ProjectProvider>
+            </ClientProvider>
+          </TestTuiContexts>
+        ))
+        const ref = path === "global" ? { directory } : undefined
+        const listed = () => (data.session.form.list(sessionID, ref) ?? []).some((item) => item.id === "frm_case")
+        try {
+          await wait(() => client.connection.status() === "connected")
+          if (path === "global") await wait(listed)
+          else await data.session.form.sync("ses_1")
+          expect(listed()).toBe(true)
+
+          if (state !== "untouched") {
+            const reply = data.session.form.reply({ sessionID, formID: "frm_case", answer: {} }, ref)
+            expect(listed()).toBe(false)
+            if (state === "refused") {
+              expect(await reply.then(() => "taken", () => "refused")).toBe("refused")
+              expect(listed()).toBe(true)
+            }
+          }
+
+          if (path === "session") {
+            data.session.form.invalidate("ses_1")
+            await data.session.form.sync("ses_1")
+          }
+          if (path === "family") await data.session.requests.sync("ses_1")
+          if (path === "global") {
+            data.session.form.invalidate("global", ref)
+            await data.session.form.sync("global", ref)
+          }
+          if (path === "created") {
+            events.emit({
+              id: "evt_form_created_case",
+              created: 1,
+              location: { directory },
+              type: "form.created",
+              data: { form },
+            })
+            await Bun.sleep(50)
+          }
+          if (path === "reconnect") {
+            const before = reads
+            events.disconnect()
+            await wait(() => reads > before && client.connection.status() === "connected", 4000)
+            await Bun.sleep(20)
+          }
+          expect(listed()).toBe(state !== "sent")
+        } finally {
+          held.resolve()
+          app.renderer.destroy()
+        }
+      })
+})
+
+test("one function writes every form list", async () => {
+  // The rule of the table above lives in `setForms`; a direct write of a form list would skip it.
+  const source = await Bun.file(new URL("../../../../client/src/solid/data.ts", import.meta.url)).text()
+  expect(source.match(/setStore\(\s*"session",\s*"form"/g)).toHaveLength(1)
 })
 
 test("a read of the forms in flight when a form's reply goes out does not bring the form back", async () => {
