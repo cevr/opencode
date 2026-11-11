@@ -2552,6 +2552,83 @@ test("reconciles active session permissions when the event stream reconnects", a
   }
 })
 
+test("syncing a family whose members have nothing pending leaves the readers of the family unrun", async () => {
+  const events = createEventStream()
+  const members = Array.from({ length: 20 }, (_, index) => `ses_member_${index}`)
+  let permissions: Record<string, unknown[]> = {}
+  let forms: Record<string, unknown[]> = {}
+  const calls = createFetch((url) => {
+    const match = /^\/api\/session\/([^/]+)\/(permission|form)$/.exec(url.pathname)
+    if (!match) return
+    const [, sessionID, kind] = match
+    return json({ data: (kind === "permission" ? permissions : forms)[sessionID!] ?? [] })
+  }, events)
+  let data!: ReturnType<typeof useData>
+  let client!: ReturnType<typeof useClient>
+  // How often a reader of every member's pending requests ran, as the session tabs' attention does.
+  let runs = 0
+  let attention = false
+
+  function Probe() {
+    data = useData()
+    client = useClient()
+    createEffect(() => {
+      runs++
+      attention = members.some(
+        (id) => (data.session.permission.list(id)?.length ?? 0) > 0 || (data.session.form.list(id)?.length ?? 0) > 0,
+      )
+    })
+    return <box />
+  }
+
+  const app = await testRender(() => (
+    <TestTuiContexts>
+      <ClientProvider api={createApi(calls.fetch)}>
+        <ProjectProvider>
+          <DataProvider>
+            <Probe />
+          </DataProvider>
+        </ProjectProvider>
+      </ClientProvider>
+    </TestTuiContexts>
+  ))
+
+  const syncAll = () =>
+    Promise.all(members.flatMap((id) => [data.session.permission.sync(id), data.session.form.sync(id)]))
+  const invalidateAll = () =>
+    members.forEach((id) => {
+      data.session.permission.invalidate(id)
+      data.session.form.invalidate(id)
+    })
+
+  try {
+    await wait(() => client.connection.status() === "connected")
+    const before = runs
+    await syncAll()
+    expect(runs).toBe(before)
+    expect(attention).toBe(false)
+
+    // A member with something pending still reaches its readers, and so does its clearing.
+    permissions = { [members[3]!]: [{ id: "per_1", sessionID: members[3], action: "read", resources: ["a.txt"] }] }
+    forms = { [members[7]!]: [{ id: "frm_1", sessionID: members[7], title: "Input requested", fields: [] }] }
+    invalidateAll()
+    await syncAll()
+    expect(attention).toBe(true)
+    expect(data.session.permission.list(members[3]!)?.map((request) => request.id)).toEqual(["per_1"])
+    expect(data.session.form.list(members[7]!)?.map((form) => form.id)).toEqual(["frm_1"])
+
+    permissions = {}
+    forms = {}
+    invalidateAll()
+    await syncAll()
+    expect(attention).toBe(false)
+    expect(data.session.permission.list(members[3]!)).toEqual([])
+    expect(data.session.form.list(members[7]!)).toEqual([])
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
 test("dismisses a permission that expired before its reply", async () => {
   const events = createEventStream()
   const request = { id: "per_stale", sessionID: "ses_active", action: "read", resources: ["old.txt"] }
