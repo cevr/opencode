@@ -92,7 +92,7 @@ import { FrecencyProvider } from "./prompt/frecency"
 import { PromptStashProvider } from "./prompt/stash"
 import { Toast, ToastProvider, useToast } from "./ui/toast"
 import { isFallbackTitle } from "@opencode/util/session-title-fallback"
-import * as Model from "./util/model"
+import { parse } from "./util/model"
 import { ArgsProvider, useArgs, type Args } from "./context/args"
 import { openUrl } from "@opencode/util/open"
 import { PromptRefProvider, usePromptRef } from "./context/prompt"
@@ -707,7 +707,7 @@ function App() {
     batch(() => {
       if (args.agent) local.agent.set(args.agent)
       if (args.model) {
-        const { providerID, modelID } = Model.parse(args.model)
+        const { providerID, modelID } = parse(args.model)
         if (!providerID || !modelID)
           return toast.show({
             variant: "warning",
