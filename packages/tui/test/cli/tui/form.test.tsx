@@ -530,7 +530,8 @@ const twoTargets = [
 test("a form on screen counts as answered only once its answer has begun, for a restart onto a new build to wait", async () => {
   await using tmp = await tmpdir()
   const { formAnswerBegun } = await import("../../../src/routes/session/form")
-  const asked = () => true
+  // Only this test's form is still asked: a form another test file left stashed in this process is not.
+  const asked = (form: FormWithLocation) => form.id === "frm_test"
   const prompt = await mountForm(tmp.path, 80, [
     { key: "targets", type: "multiselect", options: [{ value: "staging", label: "Staging" }], custom: true },
   ])
