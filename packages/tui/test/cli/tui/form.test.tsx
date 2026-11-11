@@ -527,6 +527,40 @@ const twoTargets = [
   { value: "production", label: "Production" },
 ]
 
+test("a refused reply brings the form back with the typed answer and its error", async () => {
+  await using tmp = await tmpdir()
+  const held = Promise.withResolvers<void>()
+  const prompt = await mountForm(
+    tmp.path,
+    80,
+    [{ key: "target", type: "string", options: twoTargets, custom: true }],
+    20,
+    undefined,
+    { reply: 500, held: held.promise },
+  )
+  try {
+    prompt.app.mockInput.pressArrow("down")
+    prompt.app.mockInput.pressArrow("down")
+    await prompt.app.mockInput.typeText("west 2")
+    await prompt.app.waitFor(() => prompt.app.renderer.currentFocusedEditor?.plainText === "west 2")
+    prompt.app.mockInput.pressEnter()
+    await prompt.app.waitFor(() => prompt.replies.length === 1)
+    expect(prompt.replies).toEqual([{ answer: { target: "west 2" } }])
+    await prompt.app.waitForFrame((frame) => frame.includes("Composer ready"))
+    held.resolve()
+    const frame = await prompt.app.waitForFrame(
+      (frame) => frame.includes("Authorization required") && frame.includes("UnexpectedStatus: 500"),
+    )
+    expect(frame).toContain("west 2")
+    // Settled, so its draft does not outlive the test (drafts are kept by form id across mounts).
+    prompt.app.mockInput.pressEscape()
+    await prompt.app.waitFor(() => prompt.cancellations.length === 1)
+    await prompt.app.waitForFrame((frame) => frame.includes("Composer ready"))
+  } finally {
+    prompt.app.renderer.destroy()
+  }
+})
+
 test("letters on an option row do nothing, and on the custom row they start the custom answer", async () => {
   await using tmp = await tmpdir()
   const prompt = await mountForm(tmp.path, 80, [{ key: "target", type: "string", options: twoTargets, custom: true }])

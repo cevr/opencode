@@ -2819,6 +2819,70 @@ test("dismisses a permission that expired before its reply", async () => {
   }
 })
 
+test("a read of the forms in flight when a form's reply goes out does not bring the form back", async () => {
+  const events = createEventStream()
+  const form = { id: "frm_sent", sessionID: "ses_1", title: "Input requested", fields: formFields }
+  const lists: Array<PromiseWithResolvers<void>> = []
+  const replied = Promise.withResolvers<void>()
+  const calls = createFetch(async (url, request) => {
+    if (url.pathname === "/api/session/ses_1/form" && request.method === "GET") {
+      const held = Promise.withResolvers<void>()
+      lists.push(held)
+      if (lists.length > 1) await held.promise
+      return json({ data: lists.length > 2 ? [] : [form] })
+    }
+    if (url.pathname === "/api/session/ses_1/form/frm_sent/reply") {
+      await replied.promise
+      return new Response(null, { status: 204 })
+    }
+  }, events)
+  let data!: ReturnType<typeof useData>
+  let client!: ReturnType<typeof useClient>
+
+  function Probe() {
+    data = useData()
+    client = useClient()
+    return <box />
+  }
+
+  const app = await testRender(() => (
+    <TestTuiContexts>
+      <ClientProvider api={createApi(calls.fetch)}>
+        <ProjectProvider>
+          <DataProvider>
+            <Probe />
+          </DataProvider>
+        </ProjectProvider>
+      </ClientProvider>
+    </TestTuiContexts>
+  ))
+
+  try {
+    await wait(() => client.connection.status() === "connected")
+    await data.session.form.sync("ses_1")
+    expect(data.session.form.list("ses_1")?.map((item) => item.id)).toEqual(["frm_sent"])
+
+    // A refresh asks the server, which still lists the form, and answers only after the reply went out.
+    data.session.form.invalidate("ses_1")
+    const refresh = data.session.form.sync("ses_1")
+    await wait(() => lists.length === 2)
+    const reply = data.session.form.reply({ sessionID: "ses_1", formID: "frm_sent", answer: {} })
+    expect(data.session.form.list("ses_1") ?? []).toEqual([])
+    lists[1]!.resolve()
+    await refresh
+    expect(data.session.form.list("ses_1") ?? []).toEqual([])
+
+    replied.resolve()
+    await reply
+    for (const held of lists) held.resolve()
+    expect(data.session.form.list("ses_1") ?? []).toEqual([])
+  } finally {
+    replied.resolve()
+    for (const held of lists) held.resolve()
+    app.renderer.destroy()
+  }
+})
+
 test("adds, dismisses, and refreshes form requests", async () => {
   const events = createEventStream()
   const calls = createFetch((url) => {

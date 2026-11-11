@@ -68,6 +68,10 @@ export const FORM_NOTE_KEY = "n"
 // session route is keyed by sessionID and unmounts on tab switch. Mirrors
 // component/prompt/draft-stash.ts: a draft is consumed on take.
 const drafts = new Map<string, FormDraft>()
+// The mounted FormPrompt of each form, by form id, told of a refused reply or cancel. A reply takes
+// the form out of view as it is sent; a refusal brings it back as a new FormPrompt, which shows the
+// error in place of the one that sent it.
+const refused = new Map<string, (message: string) => void>()
 
 export function FormPrompt(props: { form: FormWithLocation }) {
   const data = useData()
@@ -248,17 +252,12 @@ export function FormPrompt(props: { form: FormWithLocation }) {
     return "confirm"
   })
 
-  onCleanup(() => {
-    // A reply or cancel removes the form from data before this unmount runs, so a
-    // form still listed here is only hidden by navigation and worth restoring.
-    const pending = data.session.form
-      .list(props.form.sessionID, props.form.location)
-      ?.some((item) => item.id === props.form.id)
-    if (!pending) return
+  /** The answers so far, to restore on a later mount of this form. */
+  function capture(): FormDraft {
     // Textual answers live in the editor until committed, so capture them here.
     const current = answerField()
-    const snapshot = unwrap(store)
-    drafts.set(props.form.id, {
+    const snapshot = structuredClone(unwrap(store))
+    return {
       ...snapshot,
       noting: false,
       noteDraft: "",
@@ -266,7 +265,20 @@ export function FormPrompt(props: { form: FormWithLocation }) {
         current && textarea && !textarea.isDestroyed
           ? { ...snapshot.custom, [current.key]: textarea.plainText }
           : snapshot.custom,
-    })
+    }
+  }
+
+  const showRefusal = (message: string) => setStore("error", message)
+  refused.set(props.form.id, showRefusal)
+  onCleanup(() => {
+    if (refused.get(props.form.id) === showRefusal) refused.delete(props.form.id)
+    // A reply or cancel removes the form from data before this unmount runs (and keeps its own
+    // draft for a refusal), so a form still listed here is only hidden by navigation and worth restoring.
+    const pending = data.session.form
+      .list(props.form.sessionID, props.form.location)
+      ?.some((item) => item.id === props.form.id)
+    if (!pending) return
+    drafts.set(props.form.id, capture())
   })
 
   // Refs publish after initialization so burst typing stays with the interceptor until the editor is ready.
@@ -342,9 +354,32 @@ export function FormPrompt(props: { form: FormWithLocation }) {
   }
 
   function reply(answer: FormAnswer) {
-    void data.session.form
-      .reply({ sessionID: props.form.sessionID, formID: props.form.id, answer }, props.form.location)
-      .catch(showError)
+    settle(() =>
+      data.session.form.reply(
+        { sessionID: props.form.sessionID, formID: props.form.id, answer },
+        props.form.location,
+      ),
+    )
+  }
+
+  // A reply or cancel takes the form out of view as it goes. Its answers wait in `drafts` until the
+  // server takes it; a refusal brings the form back with them and its error, on whichever FormPrompt
+  // shows it then.
+  function settle(send: () => Promise<void>) {
+    const id = props.form.id
+    const draft = capture()
+    drafts.set(id, { ...draft, error: "" })
+    void send().then(
+      () => {
+        drafts.delete(id)
+      },
+      (error: unknown) => {
+        const message = errorMessage(error)
+        const show = refused.get(id)
+        if (show) return show(message)
+        drafts.set(id, { ...(drafts.get(id) ?? draft), error: message })
+      },
+    )
   }
 
   function replySingle(field: FormAnswerField, value: FormValue) {
@@ -607,13 +642,9 @@ export function FormPrompt(props: { form: FormWithLocation }) {
   }
 
   function cancel() {
-    void data.session.form
-      .cancel({ sessionID: props.form.sessionID, formID: props.form.id }, props.form.location)
-      .catch(showError)
-  }
-
-  function showError(error: unknown) {
-    setStore("error", errorMessage(error))
+    settle(() =>
+      data.session.form.cancel({ sessionID: props.form.sessionID, formID: props.form.id }, props.form.location),
+    )
   }
 
   function openExternal() {
