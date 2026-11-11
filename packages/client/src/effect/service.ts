@@ -57,6 +57,13 @@ export const ensure = Effect.fn("service.ensure")(function* (options: EnsureOpti
       announced = true
       options.onStart?.(reason, previousVersion)
     })
+  let waited = false
+  const waiting = (url: string) =>
+    Effect.sync(() => {
+      if (waited) return
+      waited = true
+      options.onWait?.(url)
+    })
   const spawnContender = Effect.gen(function* () {
     const [command, ...args] = options.command ?? ["opencode", "serve", "--service"]
     if (command === undefined) return yield* Effect.fail(new Error("Missing service command"))
@@ -95,6 +102,7 @@ export const ensure = Effect.fn("service.ensure")(function* (options: EnsureOpti
         yield* Effect.tryPromise(() => PtyHandoff.complete(options.file ?? fallback(), service.info))
         return Option.some(service)
       }
+      if (decision._tag === "wait") yield* waiting(service.info.url)
       if (decision._tag === "replace") {
         yield* announce("version-mismatch", service.version)
         if (service.state !== "ready")
@@ -105,6 +113,7 @@ export const ensure = Effect.fn("service.ensure")(function* (options: EnsureOpti
       return Option.none()
     }
 
+    if (info !== undefined) yield* waiting(info.url)
     const failed = pool.reap()
     if (failed !== undefined) return yield* Effect.fail(failed)
     if (pool.shouldRecruit(info !== undefined)) {

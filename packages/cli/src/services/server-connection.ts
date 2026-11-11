@@ -1,6 +1,5 @@
 import { Service, type Endpoint, type EnsureOptions } from "@opencode/client/effect/service"
 import { ClientError, isUnauthorizedError, OpenCode, serviceReadyFetch } from "@opencode/client/promise"
-import { noTimeoutFetch } from "@opencode/util/no-timeout-fetch"
 import { OPENCODE_VERSION } from "../version"
 import { Effect, Option, Redacted } from "effect"
 import { Server as ServerFlag, Standalone as StandaloneFlag } from "../commands/commands"
@@ -16,6 +15,8 @@ export type Args = {
   /** Start the background service when none is running. When false, use a standalone server instead. */
   readonly autostart?: boolean
   readonly onStart?: EnsureOptions["onStart"]
+  /** Called once when the server is there but cannot serve yet (down for a restart, or booting). */
+  readonly onWait?: (url: string) => void
 }
 
 export type Resolved = {
@@ -38,20 +39,16 @@ export const resolve = Effect.fn("cli.server-connection.resolve")(function* (arg
       url: server,
       auth: password ? { type: "basic" as const, username: "opencode", password: Redacted.value(password) } : undefined,
     } satisfies Endpoint
-    const info = (timeout: number, fetch?: typeof globalThis.fetch) =>
-      OpenCode.make({ baseUrl: endpoint.url, headers: Service.headers(endpoint), fetch }).server.info({
-        signal: AbortSignal.timeout(timeout),
-      })
-    // A server that answers 503 is there: a restarted service refuses requests with service_starting
-    // until its routes are built, so the check waits for it as the TUI's own client does. Anything
-    // else (no answer, an application's own 503) still fails within 5 s.
+    // A restarting server refuses connections for a moment, then answers 503 service_starting until
+    // its routes are built: the check waits through both (a minute at most, each try 5 s at most), as
+    // the TUI's own client does, and says once that it waits. Anything else fails at once.
     const health = yield* Effect.tryPromise({
       try: () =>
-        info(5_000).catch((error: unknown) => {
-          if (!(error instanceof ClientError && error.reason === "UnexpectedStatus" && statusOf(error) === 503))
-            throw error
-          return info(60_000, serviceReadyFetch(noTimeoutFetch))
-        }),
+        OpenCode.make({
+          baseUrl: endpoint.url,
+          headers: Service.headers(endpoint),
+          fetch: serviceReadyFetch(attemptTimeout(5_000), { onWait: () => args.onWait?.(endpoint.url) }),
+        }).server.info(),
       catch: (cause) => connectError(endpoint, cause),
     })
     if (health.version !== OPENCODE_VERSION)
@@ -72,7 +69,7 @@ export const resolve = Effect.fn("cli.server-connection.resolve")(function* (arg
     return { endpoint, service: managedService(options) } satisfies Resolved
   }
   return {
-    endpoint: yield* resolveManaged({ ...options, onStart: args.onStart }, mismatch),
+    endpoint: yield* resolveManaged({ ...options, onStart: args.onStart, onWait: args.onWait }, mismatch),
     service: managedService(options),
   } satisfies Resolved
 })
@@ -110,9 +107,13 @@ const resolveManaged = Effect.fnUntraced(function* (options: EnsureOptions, mism
   return yield* Service.ensure(options)
 })
 
-function statusOf(error: ClientError) {
-  const cause: unknown = error.cause
-  return typeof cause === "object" && cause !== null && "status" in cause ? cause.status : undefined
+/** fetch with each request bounded on its own: a server that never answers fails the try, not the wait. */
+function attemptTimeout(ms: number): typeof globalThis.fetch {
+  const attempt = (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+    const timeout = AbortSignal.timeout(ms)
+    return fetch(input, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout })
+  }
+  return Object.assign(attempt, { preconnect: fetch.preconnect })
 }
 
 function connectError(endpoint: Endpoint, cause: unknown) {

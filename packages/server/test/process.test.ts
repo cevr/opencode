@@ -259,3 +259,33 @@ it.live("server info lists remote URLs alongside local addresses while they are 
     expect((yield* info()).urls).toEqual([base])
   }),
 )
+
+it.live("a starting service's info refuses with service_starting, as its other routes do, so clients wait on it", () =>
+  Effect.gen(function* () {
+    const seen: Array<{ status: number; retryAfter: string | null; body: Record<string, unknown> }> = []
+    // onListen runs once the socket listens and before the routes are built: the service is starting.
+    yield* ServerProcess.start<never, never>(
+      { hostname: "127.0.0.1", port: 0, password: "secret", database: { path: ":memory:" } },
+      {
+        onListen: (address) =>
+          Effect.promise(async () => {
+            const response = await fetch(new URL("/api/info", HttpServer.formatAddress(address)), {
+              headers: { authorization: `Basic ${btoa("opencode:secret")}` },
+            })
+            seen.push({
+              status: response.status,
+              retryAfter: response.headers.get("retry-after"),
+              body: (await response.json()) as Record<string, unknown>,
+            })
+            return Effect.void
+          }),
+      },
+    )
+    expect(seen).toHaveLength(1)
+    expect(seen[0]).toMatchObject({
+      status: 503,
+      retryAfter: "1",
+      body: { code: "service_starting", pid: process.pid },
+    })
+  }),
+)

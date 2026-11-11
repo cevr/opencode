@@ -748,7 +748,11 @@ function App() {
       })
       .then((response) => {
         const match = response.data[0]?.id
-        if (!match) return
+        // --continue starts on a placeholder session route; with nothing to continue here, home, not a blank screen.
+        if (!match) {
+          route.navigate({ type: "home", prompt: startupPrompt })
+          return
+        }
         if (!args.fork) {
           route.navigate({ type: "session", sessionID: match, prompt: startupPrompt })
           return
@@ -758,7 +762,11 @@ function App() {
           .then((result) => route.navigate({ type: "session", sessionID: result.id, prompt: startupPrompt }))
           .catch(toast.error)
       })
-      .catch(toast.error)
+      .catch((error: unknown) => {
+        // The list waited for the service and still failed: say so, from home rather than the placeholder.
+        toast.error(error)
+        route.navigate({ type: "home", prompt: startupPrompt })
+      })
   })
 
   // Handle --session with --fork once.
