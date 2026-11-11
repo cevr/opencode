@@ -527,6 +527,25 @@ const twoTargets = [
   { value: "production", label: "Production" },
 ]
 
+test("a form on screen counts as answered only once its answer has begun, for a restart onto a new build to wait", async () => {
+  await using tmp = await tmpdir()
+  const { formAnswerBegun } = await import("../../../src/routes/session/form")
+  const asked = () => true
+  const prompt = await mountForm(tmp.path, 80, [
+    { key: "targets", type: "multiselect", options: [{ value: "staging", label: "Staging" }], custom: true },
+  ])
+  try {
+    expect(formAnswerBegun(asked)).toBe(false)
+    prompt.app.mockInput.pressArrow("down")
+    await prompt.app.mockInput.typeText("prod")
+    await prompt.app.waitForFrame((frame) => frame.includes("[✓] prod"))
+    expect(formAnswerBegun(asked)).toBe(true)
+  } finally {
+    prompt.app.renderer.destroy()
+  }
+  expect(formAnswerBegun(asked)).toBe(false)
+})
+
 test("a refused reply brings the form back with the typed answer and its error", async () => {
   await using tmp = await tmpdir()
   const held = Promise.withResolvers<void>()

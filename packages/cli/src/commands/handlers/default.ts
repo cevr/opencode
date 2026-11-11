@@ -12,10 +12,12 @@ import { Npm } from "@opencode/util/npm"
 import { OPENCODE_ARTIFACT, OPENCODE_CHANNEL, OPENCODE_HIGHLIGHTS, OPENCODE_VERSION } from "../../version"
 import { Env } from "../../env"
 import { Service } from "@opencode/client/effect/service"
-import { OpenCode } from "@opencode/client/promise"
+import { OpenCode, serviceReadyFetch } from "@opencode/client/promise"
+import { noTimeoutFetch } from "@opencode/util/no-timeout-fetch"
 import { findSession } from "../../session-target"
 import { errorMessage } from "../../util/error"
 import { BootTrace } from "@opencode/util/boot-trace"
+import { Reexec } from "../../reexec"
 
 export default Runtime.handler(Commands, (input) =>
   Effect.gen(function* () {
@@ -55,11 +57,20 @@ export default Runtime.handler(Commands, (input) =>
     BootTrace.mark("server resolved")
     const session = Option.getOrUndefined(input.session)
     // A missing --session ID becomes the ID of the session the first prompt creates.
+    // The lookup waits, as the TUI's own client does, while a service restarted meanwhile (an install)
+    // still answers 503 service_starting: a TUI opened then would otherwise exit on the refusal.
     const sessionExists =
       session !== undefined &&
       (yield* Effect.tryPromise({
         try: () =>
-          findSession(OpenCode.make({ baseUrl: server.endpoint.url, headers: Service.headers(server.endpoint) }), session),
+          findSession(
+            OpenCode.make({
+              baseUrl: server.endpoint.url,
+              headers: Service.headers(server.endpoint),
+              fetch: serviceReadyFetch(noTimeoutFetch),
+            }),
+            session,
+          ),
         catch: (cause) => new Error(errorMessage(cause)),
       })) !== undefined
     BootTrace.mark("session looked up")
@@ -98,7 +109,7 @@ export default Runtime.handler(Commands, (input) =>
     const runPromise = Effect.runPromiseWith(context)
     const service = server.service
     BootTrace.mark("tui run")
-    yield* run({
+    const result = yield* run({
       app: {
         name: process.env.OPENCODE_CLIENT ?? OPENCODE_ARTIFACT,
         version: OPENCODE_VERSION,
@@ -161,5 +172,7 @@ export default Runtime.handler(Commands, (input) =>
         runFork(effect)
       },
     }).pipe(Effect.provide(LayerNode.compile(Global.node)))
+    // The TUI moves onto the service's newer build: the process is replaced once it has shut down.
+    if ("restart" in result && result.restart) Reexec.schedule(result.restart)
   }),
 )

@@ -20,6 +20,7 @@ import { EffectFlock } from "@opencode/util/effect-flock"
 import { Heap } from "./heap"
 import { CpuProfile } from "./cpu-profile"
 import { ShutdownDeadline } from "./shutdown-deadline"
+import { Reexec } from "./reexec"
 
 BootTrace.mark("cli imports evaluated")
 
@@ -180,6 +181,19 @@ Effect.gen(function* () {
       defaultTeardown(exit, (code) => {
         // Commands report failures through process.exitCode.
         const status = code === 0 ? (process.exitCode ?? 0) : code === 130 && terminated ? 143 : code
+        // A TUI moving onto the service's newer build replaces this process once everything above has shut down.
+        // Its output is flushed, not ended: the next program writes to the same terminal.
+        const plan = Reexec.take()
+        if (plan && status === 0) {
+          void Promise.all(
+            [process.stdout, process.stderr].map(
+              (stream) => new Promise<void>((resolve) => stream.write("", () => resolve())),
+            ),
+          )
+            .then(() => Reexec.replace(plan))
+            .then((child) => process.exit(child))
+          return
+        }
         // process.exit drops output still queued for a pipe; ending the streams waits for it.
         void Promise.all(
           [process.stdout, process.stderr].map((stream) => new Promise<void>((resolve) => stream.end(() => resolve()))),

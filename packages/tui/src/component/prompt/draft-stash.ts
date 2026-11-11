@@ -19,6 +19,20 @@ export function saveDraft(sessionID: string | undefined, entry: DraftEntry) {
   byTab.set(sessionID, entry)
 }
 
+/**
+ * Every draft this process holds, by tab: each mounted composer's current prompt (its cursor at the end), and each
+ * stashed one. A restart onto a new build (context/update-restart.tsx) carries them to the next process.
+ */
+export function allDrafts(): Array<[string | undefined, DraftEntry]> {
+  const drafts = new Map(byTab)
+  for (const [sessionID, composer] of composers) {
+    const prompt = composer.current
+    // Through JSON: the composer's prompt is a store proxy, which structuredClone refuses.
+    if (prompt.text) drafts.set(sessionID, { prompt: JSON.parse(JSON.stringify(prompt)), cursor: Infinity })
+  }
+  return [...drafts]
+}
+
 const composers = new Map<string | undefined, PromptRef>()
 
 /** Marks a tab's mounted composer as the one {@link appendToSessionPrompt} writes to; returns its unregister. */

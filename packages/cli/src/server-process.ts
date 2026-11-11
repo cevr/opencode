@@ -19,6 +19,7 @@ import { ServiceRegistration } from "./services/service-registration"
 import { RemoteTunnel } from "./services/remote-tunnel"
 import { WebUi } from "./services/web-ui"
 import { databasePath } from "./database-path"
+import { selfCommand } from "./util/process"
 
 export type Mode = "default" | "service" | "stdio"
 
@@ -104,6 +105,7 @@ const processEffect = Effect.fnUntraced(function* (options: Options) {
             name: process.env.OPENCODE_CLIENT ?? OPENCODE_ARTIFACT,
             version: OPENCODE_VERSION,
             channel: OPENCODE_CHANNEL,
+            command: selfCommand(),
           },
           hostname,
           port,

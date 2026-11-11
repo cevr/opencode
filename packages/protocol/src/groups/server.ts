@@ -9,6 +9,9 @@ export const ServerInfo = Schema.Struct({
   // The machine's name, absent where the runtime has none (e.g. workerd).
   hostname: Schema.optional(Schema.String),
   urls: Schema.Array(Schema.String),
+  // How this machine starts the server's build: its executable, and its entry script when it runs from source. A
+  // client on the same machine runs it to move onto the build the server runs. Absent where the runtime has no command.
+  command: Schema.optional(Schema.Array(Schema.String)),
   paths: Schema.Struct({
     tmp: Schema.String,
   }),

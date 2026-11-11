@@ -256,6 +256,17 @@ export const Info = Schema.Struct({
   }),
   mouse: Schema.optional(Schema.Boolean).annotate({ description: "Enable terminal mouse capture" }),
   cursor: Schema.optional(Cursor),
+  update: Schema.optional(
+    Schema.Struct({
+      restart: Schema.optional(Schema.Boolean).annotate({
+        description:
+          "Restart onto the background service's build once an install moves it past this TUI's, on the same session with the composer's draft (default true)",
+      }),
+      idle: Schema.optional(Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))).annotate({
+        description: "Seconds without a key pressed before that restart (default 10)",
+      }),
+    }),
+  ).annotate({ description: "What the TUI does when the background service runs a newer build" }),
 })
 export type Info = Schema.Schema.Type<typeof Info>
 

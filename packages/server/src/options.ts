@@ -10,6 +10,8 @@ export const ServerOptions = Schema.Struct({
       name: Schema.optional(Schema.String),
       version: Schema.optional(Schema.String),
       channel: Schema.optional(Schema.String),
+      /** The command that starts this build on this machine, reported by `/api/info`. */
+      command: Schema.optional(Schema.Array(Schema.String)),
     }),
   ),
   hostname: Schema.optional(Schema.String),

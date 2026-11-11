@@ -52,6 +52,7 @@ export type ServerInfoOutput = {
   readonly pid: number
   readonly hostname?: string | undefined
   readonly urls: ReadonlyArray<string>
+  readonly command?: ReadonlyArray<string> | undefined
   readonly paths: { readonly tmp: string }
   readonly capabilities?: { readonly persistentPty?: boolean | undefined } | undefined
 }
