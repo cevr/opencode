@@ -19,6 +19,7 @@ import { useRoute, useRouteData } from "../../context/route"
 import { createStore } from "solid-js/store"
 import { useData } from "../../context/data"
 import { SplitBorder } from "../../ui/border"
+import { useSessionLinks } from "../../ui/session-link"
 import { useTuiPaths, useTuiTerminalEnvironment } from "../../context/runtime"
 import { Spinner, SPINNER_FRAMES } from "../../component/spinner"
 import { PatchDiff } from "../../component/patch-diff"
@@ -1458,8 +1459,9 @@ export function Session(props: {
       title: "Toggle subagent picker",
       id: "session.child.first",
       group: "Session",
-      run: () => {
-        if (picker()) setComposer({ open: false, dismissed: true })
+      run: (tab?: string) => {
+        if (tab === "shell" || tab === "subagents") setComposer({ open: true, tab })
+        else if (picker()) setComposer({ open: false, dismissed: true })
         else setComposer({ open: true, tab: "subagents" })
         dialog.clear()
       },
@@ -2173,6 +2175,7 @@ function AssistantFooter(props: { message: SessionMessageAssistant }) {
   const turn = () => ({ index: ctx.messageIndex(props.message.id), legacy: ctx.legacyTurns() })
   const duration = createMemo(() => SessionTurn.duration(messages(), props.message, turn()))
   const tokensPerSecond = createMemo(() => SessionTurn.tokensPerSecond(messages(), props.message, turn()))
+  const timeToFirstToken = createMemo(() => SessionTurn.timeToFirstToken(messages(), props.message, turn()))
   const interrupted = createMemo(() => props.message.error?.message === "Step interrupted")
   const freeLimit = createMemo(() => props.message.error?.type === "provider.free-limit")
   const limitNotice = useLimitNotice(() => props.message)
@@ -2206,6 +2209,9 @@ function AssistantFooter(props: { message: SessionMessageAssistant }) {
           </Show>
           <Show when={config.data.session.tps && tokensPerSecond()}>
             {(value) => <span style={{ fg: theme.text.muted }}> · {value().toFixed(1)} tok/s</span>}
+          </Show>
+          <Show when={config.data.session.tps && ctx.terminal.width >= 36 && timeToFirstToken()}>
+            {(value) => <span style={{ fg: theme.text.muted }}> · {Locale.duration(value())} ttft</span>}
           </Show>
           <Show when={interrupted()}>
             <span style={{ fg: theme.text.muted }}> · interrupted</span>
@@ -2370,6 +2376,7 @@ function CompactionMessage(props: { message: Extract<SessionMessageInfo, { type:
       <Show when={content()}>
         <box paddingTop={1} paddingLeft={3}>
           <markdown
+            ref={useSessionLinks()}
             syntaxStyle={syntax()}
             renderNode={plugins.markdown()}
             streaming={true}
@@ -3135,6 +3142,7 @@ const SHELL_DISPLAY_LIMIT = 1024 * 1024
 function Shell(props: ToolProps) {
   const action = createMemo(() => shellActionSummary(props.input))
   const output = createMemo(() => shellOutputText(props.part.state, props.metadata))
+  const stopped = createMemo(() => stoppedShell(props.part, props.metadata))
   return (
     <Show
       when={action()}
@@ -3146,13 +3154,24 @@ function Shell(props: ToolProps) {
           workdir={stringValue(props.input.workdir)}
           status={props.part.state.status}
           background={props.part.state.status === "completed" && props.metadata.status === "running"}
-          output={stringValue(props.metadata.shellID) ? undefined : output()}
+          output={stopped()?.output ?? (stringValue(props.metadata.shellID) ? undefined : output())}
+          error={stopped()?.notice}
         />
       }
     >
       {(summary) => <GenericTool {...props} tool={summary()} input={{}} />}
     </Show>
   )
+}
+
+// A call the user stopped fails with its output followed by a notice, which its metadata names. Its output shows like
+// a finished call's and only the notice as the error. A plugin that rewrote the error gets it shown as is.
+function stoppedShell(part: SessionMessageAssistantTool, metadata: Record<string, unknown>) {
+  if (part.state.status !== "error" || metadata.interrupted !== true) return
+  const notice = stringValue(metadata.notice)
+  const message = part.state.error.message
+  if (!notice || !message.endsWith(notice)) return
+  return { output: message.slice(0, -notice.length).replace(/\n+$/, ""), notice }
 }
 
 function ShellDisplay(props: {

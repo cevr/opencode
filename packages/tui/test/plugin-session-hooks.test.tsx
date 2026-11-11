@@ -55,7 +55,13 @@ async function openSession(
   const setup = await createAppFixture({
     width: 100,
     height: 30,
-    config: { animations: false, tabs: { enabled: false }, plugins: [fixture.directory] },
+    // Medium keeps each tool call its own row; the default (low) folds a turn's calls into one activity row.
+    config: {
+      animations: false,
+      tabs: { enabled: false },
+      plugins: [fixture.directory],
+      session: { verbosity: "medium" },
+    },
     args: { sessionID: session.id },
     fetch: (url) => {
       if (url.pathname === "/api/session") return json({ data: [session], cursor: {} })
@@ -116,7 +122,7 @@ test("the user's transcript config wins over a plugin's defaults", async () => {
         animations: false,
         tabs: { enabled: false },
         plugins: [fixture.directory],
-        session: { thinking: "hide" },
+        session: { thinking: "hide", verbosity: "medium" },
       },
       args: { sessionID: session.id },
       fetch: (url) => {

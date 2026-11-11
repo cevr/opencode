@@ -49,6 +49,7 @@ type Active = {
   isBackgrounded: boolean
   consumed: boolean
   recovery?: Recovery
+  cancel?: Effect.Effect<void>
 }
 
 type Notice = {
@@ -66,6 +67,7 @@ type State = {
 type FinishResult = {
   info?: Info
   done?: Deferred.Deferred<Info>
+  cancel?: Effect.Effect<void>
   scope?: Scope.Closeable
   generation?: Scope.Closeable
 }
@@ -97,6 +99,9 @@ export type StartInput = {
   recovery?: Recovery
   notificationID?: SessionMessage.ID
   run: Effect.Effect<string, unknown>
+  // Runs when the job is cancelled (`cancel`, `cancelSession`), before its work is interrupted. Teardown, such as
+  // a server shutdown, interrupts the work without it.
+  cancel?: Effect.Effect<void>
 }
 
 export type WaitInput = {
@@ -270,6 +275,11 @@ export const make = Effect.gen(function* () {
         if (!job) return [{}, jobs]
         if (job.scope !== scope) return [{}, jobs]
         if (job.info.status !== "running") return [{ info: snapshot(job) }, jobs]
+        // Teardown (this registry closing) is not a terminal outcome: leave the job and its durable row running for
+        // the next server. The scope's own finalizer interrupts its observers. A cancel has already settled the job
+        // as cancelled before interrupting its work.
+        if (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause) && scope.state._tag === "Closed")
+          return [{}, jobs]
         const status: Exclude<Status, "running"> = Exit.isSuccess(exit)
           ? "completed"
           : Cause.hasInterruptsOnly(exit.cause)
@@ -317,6 +327,8 @@ export const make = Effect.gen(function* () {
               return [{ info: snapshot(existing) }, jobs]
             }
             const scope = yield* Scope.fork(state.scope, "parallel")
+            // Closing the registry interrupts the work without settling it; interrupt its observers too.
+            yield* Scope.addFinalizer(scope, Deferred.interrupt(done))
             const job = {
               info: {
                 id: input.id,
@@ -334,6 +346,7 @@ export const make = Effect.gen(function* () {
               isBackgrounded: false,
               consumed: false,
               recovery: input.recovery,
+              cancel: input.cancel,
             }
             return [{ info: snapshot(job), scope }, new Map(jobs).set(input.id, job)]
           }),
@@ -484,11 +497,12 @@ export const make = Effect.gen(function* () {
         }
         if (persist) yield* persistBackground(next)
         return [
-          { info: snapshot(next), done: job.done, scope: job.scope, generation: job.scope },
+          { info: snapshot(next), done: job.done, scope: job.scope, generation: job.scope, cancel: job.cancel },
           new Map(jobs).set(id, next),
         ]
       }),
     )
+    if (result.cancel) yield* result.cancel
     if (result.info && result.done) yield* Deferred.succeed(result.done, result.info)
     if (result.scope) yield* Scope.close(result.scope, Exit.void)
     if (result.generation) yield* consume(id, result.generation)
