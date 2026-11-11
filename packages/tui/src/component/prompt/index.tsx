@@ -1096,6 +1096,28 @@ export function Prompt(props: PromptProps) {
     }
   })
 
+  // A session in another directory loads its location's agents and models after it opens, and
+  // after a service restart they wait through the boot. The composer takes input meanwhile, so
+  // a submit waits for them instead of finding no agent or an unavailable model and doing nothing.
+  const catalogPending = createMemo(() => {
+    const location = currentLocation.ref ?? data.location.default()
+    if (data.location.agent.list(location) !== undefined && local.model.catalogReady) return false
+    const error = currentLocation.error
+    return !(error && locationKey(error.location) === locationKey(location))
+  })
+  let catalogWaiters: Array<() => void> = []
+  const releaseCatalogWaiters = () => {
+    const waiters = catalogWaiters
+    catalogWaiters = []
+    for (const resolve of waiters) resolve()
+  }
+  createEffect(() => {
+    if (!catalogPending()) releaseCatalogWaiters()
+  })
+  onCleanup(releaseCatalogWaiters)
+  const catalogLoaded = () =>
+    catalogPending() ? new Promise<void>((resolve) => catalogWaiters.push(resolve)) : Promise.resolve()
+
   let submitting = false
   async function submit(delivery: SessionInbox.Delivery = "steer") {
     if (disabled()) return false
@@ -1115,6 +1137,8 @@ export function Prompt(props: PromptProps) {
   }
 
   async function submitInner(delivery: SessionInbox.Delivery) {
+    await catalogLoaded()
+    if (disposed || input.isDestroyed) return false
     // IME: double-defer may fire before onContentChange flushes the last
     // composed character (e.g. Korean hangul) to the store, so read
     // plainText directly and sync before any downstream reads.
