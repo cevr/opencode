@@ -1,6 +1,6 @@
 import type { SessionInboxEnqueued, SessionMessageAssistant, SessionMessageInfo } from "@opencode/client"
 import { createEffect, createMemo, on, onCleanup, type Accessor } from "solid-js"
-import { createStore, produce, reconcile } from "solid-js/store"
+import { createStore, produce, reconcile, unwrap } from "solid-js/store"
 import { useConfig } from "../../config"
 import { useData } from "../../context/data"
 import { useClient } from "../../context/client"
@@ -87,7 +87,17 @@ export function createSessionRows(
   // Rows have no `id`, Solid's default reconcile key. Matching by position instead would move every
   // row into another store object whenever older history is prepended, remounting the whole transcript.
   // Rows inserted live carry no key, so key the current rows too before matching.
+  // Most rebuilds follow a message that only adds rows at the end (a finished subagent's report, an
+  // idle marker) or changes none; those skip the keyed reconcile, the bulk of a rebuild's cost.
   function rebuild() {
+    const next = reduce()
+    const current = unwrap(rows)
+    let same = 0
+    while (same < current.length && same < next.length && sameRow(current[same]!, next[same]!)) same++
+    if (same === current.length) {
+      if (same < next.length) setRows(produce((draft) => draft.push(...next.slice(same).map(keyed))))
+      return
+    }
     setRows(
       produce((draft) => {
         draft.forEach((row) => {
@@ -95,12 +105,7 @@ export function createSessionRows(
         })
       }),
     )
-    setRows(
-      reconcile(
-        reduce().map((row) => ({ ...row, key: rowKey(row) })),
-        { key: "key" },
-      ),
-    )
+    setRows(reconcile(next.map(keyed), { key: "key" }))
   }
 
   function pendingPermissions() {
@@ -318,6 +323,27 @@ export function createSessionRows(
 
 function sameKeys(a: readonly string[], b: readonly string[]) {
   return a.length === b.length && a.every((key, index) => key === b[index])
+}
+
+function keyed(row: SessionRow) {
+  return { ...row, key: rowKey(row) }
+}
+
+/** The same row, by value; the reconcile key a row may carry is not part of it. */
+function sameRow(a: SessionRow & { key?: string }, b: SessionRow) {
+  return sameValue({ ...a, key: undefined }, { ...b, key: undefined })
+}
+
+function sameValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false
+  if (Array.isArray(a) !== Array.isArray(b)) return false
+  const keys = Object.keys(a).filter((key) => (a as Record<string, unknown>)[key] !== undefined)
+  const other = Object.keys(b).filter((key) => (b as Record<string, unknown>)[key] !== undefined)
+  return (
+    keys.length === other.length &&
+    keys.every((key) => sameValue((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key]))
+  )
 }
 
 function rowKey(row: SessionRow) {

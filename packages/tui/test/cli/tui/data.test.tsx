@@ -1073,6 +1073,83 @@ test("a fresh read of the session that moves no revert boundary, or an answer st
   }
 })
 
+test("a message that only adds rows at the end appends them and leaves the transcript's rows as they were", async () => {
+  const events = createEventStream()
+  const sessionID = "session-rows-append"
+  const model = { id: "model", providerID: "provider" }
+  const user = { id: "msg_1", type: "user", text: "Start", time: { created: 1 } }
+  const answer = {
+    id: "msg_2",
+    type: "assistant",
+    agent: "build",
+    model,
+    time: { created: 2, completed: 2 },
+    finish: "tool-calls",
+    content: [{ type: "text", text: "Working" }],
+  }
+  // A finished subagent's report, as its parent receives it.
+  const report = { id: "msg_3", type: "synthetic", text: "Report", description: "Subagent finished", time: { created: 3 } }
+  let history: unknown[] = [user]
+  const calls = createFetch((url) => {
+    if (url.pathname === `/api/session/${sessionID}/message`)
+      return json({ data: history.toReversed(), cursor: {} })
+  }, events)
+  let data!: ReturnType<typeof useData>
+  let rows!: ReturnType<typeof createSessionRows>
+  let client!: ReturnType<typeof useClient>
+
+  function Probe() {
+    client = useClient()
+    data = useData()
+    rows = createSessionRows(() => sessionID)
+    return <box />
+  }
+
+  const app = await testRender(() => (
+    <TestTuiContexts>
+      <ClientProvider api={createApi(calls.fetch)}>
+        <ProjectProvider>
+          <DataProvider>
+            <Probe />
+          </DataProvider>
+        </ProjectProvider>
+      </ClientProvider>
+    </TestTuiContexts>
+  ))
+
+  try {
+    await wait(() => client.connection.status() === "connected")
+    await wait(() => rows.length === 1)
+    // The answer streams in: its row is placed live, before any rebuild has keyed it.
+    emitEvent(events, {
+      id: "evt_append_delta",
+      created: 2,
+      type: "session.text.delta",
+      data: { sessionID, assistantMessageID: "msg_2", ordinal: 0, delta: "Working" },
+    })
+    await wait(() => rows.length === 2)
+    const before = [...rows]
+    // A full rebuild re-keys every row and reconciles the whole transcript; an append does neither.
+    const keys = rows.map((row) => row.key)
+    expect(keys[1]).toBeUndefined()
+    history = [user, answer, report]
+    data.session.message.invalidate(sessionID)
+    await data.session.message.sync(sessionID)
+    await wait(() => rows.length === 3)
+    expect(unwrap(rows).map((row) => (row.type === "message" ? row.messageID : row.type))).toEqual([
+      "msg_1",
+      "part",
+      "msg_3",
+    ])
+    expect(rows.slice(0, 2)).toEqual(before)
+    expect(rows[0]).toBe(before[0])
+    expect(rows[1]).toBe(before[1])
+    expect(rows.slice(0, 2).map((row) => row.key)).toEqual(keys)
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
 test("updates and removes queued inputs from durable lifecycle events", async () => {
   const events = createEventStream()
   const sessionID = "session-queue-management"
