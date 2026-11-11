@@ -19,6 +19,10 @@ export async function createAppFixture(
     setup?: TestRendererSetup
     // Theme documents by name, discovered from the config directory as the user's themes are.
     themes?: Record<string, unknown>
+    // The TUI's own build.
+    version?: string
+    // Attached to a managed background service (this fake server), as `opencode` without --server is.
+    managed?: boolean
   } = {},
 ) {
   const { run } = await import("../../src/app")
@@ -42,8 +46,13 @@ export async function createAppFixture(
   const server = Bun.serve({ port: 0, fetch: (request) => calls.fetch(request) })
   const task = Effect.runPromise(
     run({
-      app: { name: "test", version: "test", channel: "test" },
-      server: { endpoint: { url: server.url.toString() } },
+      app: { name: "test", version: input.version ?? "test", channel: "test" },
+      server: {
+        endpoint: { url: server.url.toString() },
+        service: input.managed
+          ? { reconnect: async () => ({ url: server.url.toString() }), restart: async () => {} }
+          : undefined,
+      },
       config: {
         get: async () => config,
         update: async (mutate) => {
@@ -79,6 +88,8 @@ export async function createAppFixture(
     events,
     config: () => config,
     ready: ready.promise,
+    // What `run` returned, once the TUI has shut down.
+    task,
     async [Symbol.asyncDispose]() {
       try {
         if (!setup.renderer.isDestroyed) setup.renderer.destroy()

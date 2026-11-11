@@ -73,6 +73,35 @@ const drafts = new Map<string, FormDraft>()
 // error in place of the one that sent it.
 const refused = new Map<string, (message: string) => void>()
 
+// The answers someone has begun, which a restart onto a new build (context/update-restart.tsx) waits for: each form on
+// screen with whether its answer has begun, the forms navigation stashed with a begun answer, and the replies on
+// their way to the server.
+const shown = new Map<string, { readonly form: FormWithLocation; readonly begun: () => boolean }>()
+const stashedBegun = new Map<string, FormWithLocation>()
+const sending = new Set<string>()
+
+/** Whether an answer to a form has begun and is not yet taken by the server; `pending` tells a stashed form still asked. */
+export function formAnswerBegun(pending: (form: FormWithLocation) => boolean) {
+  if (sending.size > 0) return true
+  for (const entry of shown.values()) if (entry.begun()) return true
+  for (const form of stashedBegun.values()) if (pending(form)) return true
+  return false
+}
+
+// What a form's answer holds, without the empty values an untouched form's editor and notes leave.
+function answerKey(draft: Pick<FormDraft, "answers" | "custom" | "notes" | "noteDraft">) {
+  const kept = (record: Record<string, unknown>) =>
+    Object.fromEntries(
+      Object.entries(record).filter(
+        ([, value]) =>
+          value !== undefined &&
+          value !== "" &&
+          !(typeof value === "object" && value !== null && !Array.isArray(value) && Object.keys(value).length === 0),
+      ),
+    )
+  return JSON.stringify([kept(draft.answers), kept(draft.custom), kept(draft.notes), draft.noteDraft])
+}
+
 export function FormPrompt(props: { form: FormWithLocation }) {
   const data = useData()
   const theme = useTheme()
@@ -93,6 +122,8 @@ export function FormPrompt(props: { form: FormWithLocation }) {
   const initial = formInitialValues(props.form.fields)
   const draft = drafts.get(props.form.id)
   drafts.delete(props.form.id)
+  stashedBegun.delete(props.form.id)
+  const pristine = answerKey({ answers: initial.answers, custom: initial.custom, notes: {}, noteDraft: "" })
 
   const [tabHover, setTabHover] = createSignal<number | "confirm" | null>(null)
   const [reviewContentHeight, setReviewContentHeight] = createSignal(0)
@@ -270,7 +301,11 @@ export function FormPrompt(props: { form: FormWithLocation }) {
 
   const showRefusal = (message: string) => setStore("error", message)
   refused.set(props.form.id, showRefusal)
+  // A note being typed counts too: capture() leaves it out of the draft.
+  const entry = { form: props.form, begun: () => answerKey({ ...capture(), noteDraft: store.noteDraft }) !== pristine }
+  shown.set(props.form.id, entry)
   onCleanup(() => {
+    if (shown.get(props.form.id) === entry) shown.delete(props.form.id)
     if (refused.get(props.form.id) === showRefusal) refused.delete(props.form.id)
     // A reply or cancel removes the form from data before this unmount runs (and keeps its own
     // draft for a refusal), so a form still listed here is only hidden by navigation and worth restoring.
@@ -278,7 +313,9 @@ export function FormPrompt(props: { form: FormWithLocation }) {
       .list(props.form.sessionID, props.form.location)
       ?.some((item) => item.id === props.form.id)
     if (!pending) return
-    drafts.set(props.form.id, capture())
+    const stashed = capture()
+    drafts.set(props.form.id, stashed)
+    if (answerKey(stashed) !== pristine) stashedBegun.set(props.form.id, props.form)
   })
 
   // Refs publish after initialization so burst typing stays with the interceptor until the editor is ready.
@@ -369,17 +406,21 @@ export function FormPrompt(props: { form: FormWithLocation }) {
     const id = props.form.id
     const draft = capture()
     drafts.set(id, { ...draft, error: "" })
-    void send().then(
-      () => {
-        drafts.delete(id)
-      },
-      (error: unknown) => {
-        const message = errorMessage(error)
-        const show = refused.get(id)
-        if (show) return show(message)
-        drafts.set(id, { ...(drafts.get(id) ?? draft), error: message })
-      },
-    )
+    sending.add(id)
+    void send()
+      .then(
+        () => {
+          drafts.delete(id)
+        },
+        (error: unknown) => {
+          const message = errorMessage(error)
+          const show = refused.get(id)
+          if (show) return show(message)
+          drafts.set(id, { ...(drafts.get(id) ?? draft), error: message })
+          stashedBegun.set(id, props.form)
+        },
+      )
+      .finally(() => sending.delete(id))
   }
 
   function replySingle(field: FormAnswerField, value: FormValue) {

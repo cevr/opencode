@@ -11,6 +11,7 @@ import { BootTrace } from "@opencode/util/boot-trace"
 import { ClipboardProvider, useClipboard } from "./context/clipboard"
 import { LogProvider, type LogSink } from "./context/log"
 import { ExitProvider, useExit } from "./context/exit"
+import { arrive, RestartOnto, useUpdateRestart } from "./context/update-restart"
 import { EpilogueProvider } from "./context/epilogue"
 import { epilogue, type SessionEpilogue } from "./util/presentation"
 import { Selection } from "./util/selection"
@@ -238,6 +239,8 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
   const directory = location.directory
   const pluginDirectories = yield* Effect.promise(() => localPluginDirectories(process.cwd(), global.config))
   BootTrace.mark("tui plugin directories")
+  // A TUI that replaced an older build's process takes the drafts it left.
+  arrive()
   const handoff = input.terminalHandoff ? yield* Effect.promise(input.terminalHandoff) : undefined
   BootTrace.mark("tui terminal handoff")
   const managed = input.server.service
@@ -499,12 +502,15 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
       return { session: exit.session, updatedVersion: exit.updatedVersion, reason: exit.reason }
     }),
   )
+  // A move onto the service's newer build: the caller replaces this process, which prints nothing on its way out.
+  if (result.reason instanceof RestartOnto) return { restart: result.reason.plan }
   yield* Effect.sync(() => {
     if (result.reason !== undefined)
       process.stderr.write((cliErrorMessage(result.reason) ?? errorFormat(result.reason)) + "\n")
     const text = epilogue({ session: result.session, updatedVersion: result.updatedVersion })
     if (text) process.stdout.write(text + "\n")
   })
+  return {}
 })
 
 function App() {
@@ -533,6 +539,7 @@ function App() {
   const plugins = usePlugin()
   const clipboard = useClipboard()
   const terminalEnvironment = useTuiTerminalEnvironment()
+  useUpdateRestart()
   let paletteTimer: ReturnType<typeof setTimeout> | undefined
   const afterFrame = () => {
     // The native writer can still be flushing the frame when FRAME fires. Keep OSC probes behind visible app output.
