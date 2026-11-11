@@ -198,6 +198,8 @@ export function Session(props: {
     createEffect(() => {
       if (messages().length > 0) BootTrace.mark("session messages")
     })
+  if (BootTrace.enabled)
+    createEffect(() => BootTrace.mark(`session family ${data.session.family(route.sessionID).length}`))
   const messageIndexes = createMemo(() => new Map(messages().map((message, index) => [message.id, index])))
   const legacy = createMemo(() => SessionTurn.legacy(messages()))
   const messagesBeforeRevert = () => {
@@ -338,10 +340,13 @@ export function Session(props: {
     let timer: ReturnType<typeof setTimeout> | undefined
     // Plugins draw the transcript over a few frames after its rows are synced; the children wait past them.
     const drawn = () => {
-      timer = setTimeout(
-        () => void data.session.sync(sessionID, { children: true }).catch(() => undefined),
-        CHILDREN_AFTER_FRAME_MS,
-      )
+      timer = setTimeout(() => {
+        BootTrace.mark("session children read")
+        void data.session
+          .sync(sessionID, { children: true })
+          .then(() => BootTrace.mark(`session children ${data.session.family(sessionID).length}`))
+          .catch(() => undefined)
+      }, CHILDREN_AFTER_FRAME_MS)
     }
     renderer.once(CliRenderEvents.FRAME, drawn)
     renderer.requestRender()
