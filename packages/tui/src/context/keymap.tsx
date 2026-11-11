@@ -11,14 +11,16 @@ import {
 } from "@opentui/keymap/addons/opentui"
 import { formatCommandBindings, formatKeySequence } from "@opentui/keymap/extras"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
-import { KeymapProvider, useBindings, useKeymapSelector } from "@opentui/keymap/solid"
+import { KeymapProvider, reactiveMatcherFromSignal, useBindings } from "@opentui/keymap/solid"
 import { useRenderer } from "@opentui/solid"
 import {
   createComputed,
   createContext,
   createMemo,
   createSignal,
+  getOwner,
   onCleanup,
+  runWithOwner,
   useContext,
   type Accessor,
   type ParentProps,
@@ -52,12 +54,16 @@ type KeymapConfig = {
 
 export const COMMAND_PALETTE_COMMAND = "command.palette.show"
 
+// What a keymap whose host is gone throws; a view keeps its last value then.
+const DESTROYED = "Cannot use a keymap after its host was destroyed"
+
 const Context = createContext<{
   readonly keymap: OpenTuiKeymap
   readonly config: KeymapConfig
   readonly mode: Mode
   readonly dispatch: (id: string, input?: string) => void
   readonly input: (id: string) => string | undefined
+  readonly view: <T>(name: string, selector: (keymap: OpenTuiKeymap) => T) => Accessor<T>
 }>()
 
 function Provider(props: ParentProps<{ config?: KeymapConfig }>) {
@@ -148,6 +154,30 @@ function Provider(props: ParentProps<{ config?: KeymapConfig }>) {
     dispose.reverse().forEach((item) => item())
     mode.dispose()
   })
+  // Views of the keymap's state (shortcuts, commands, pending and active keys), one of each for the
+  // whole app, made on first use: every change to the keymap recomputes each view once, not once
+  // per component that reads it (a footer per assistant message, each plugin's API).
+  const owner = getOwner()
+  const [version, setVersion] = createSignal(0)
+  onCleanup(keymap.on("state", () => setVersion((value) => value + 1)))
+  const views = new Map<string, Accessor<unknown>>()
+  const view = <T,>(name: string, selector: (keymap: OpenTuiKeymap) => T): Accessor<T> => {
+    const found = views.get(name)
+    if (found) return found as Accessor<T>
+    const made = runWithOwner(owner, () =>
+      createMemo<T | undefined>((previous) => {
+        version()
+        try {
+          return selector(keymap)
+        } catch (error) {
+          if (previous !== undefined && error instanceof Error && error.message === DESTROYED) return previous
+          throw error
+        }
+      }),
+    ) as Accessor<T>
+    views.set(name, made)
+    return made
+  }
   return (
     <KeymapProvider keymap={keymap}>
       <Context.Provider
@@ -157,6 +187,7 @@ function Provider(props: ParentProps<{ config?: KeymapConfig }>) {
           mode,
           dispatch,
           input: (id) => (invocation?.id === id ? invocation.input : undefined),
+          view,
         }}
       >
         {props.children}
@@ -210,13 +241,21 @@ function createLayer(input: () => KeymapLayer) {
   // The keymap rebuilds a re-registered layer when a command's `opencode` object is new,
   // so each command keeps one object while its data is unchanged.
   const stable = new Map<string, KeymapCommand & { readonly id: string }>()
+  // The layer's switch goes to the keymap as a reactive matcher: interactivity, or a layer's own
+  // `enabled` accessor, turning it on or off notifies the keymap without registering the layer
+  // again, which would rebuild its commands and every view of the active keys (tens of ms for
+  // the prompt's layers, on each form, dialog or run that starts or ends).
+  const switchOf = (own: KeymapLayer["enabled"]) => {
+    if (own === false) return false
+    return reactiveMatcherFromSignal(typeof own === "function" ? () => enabled() && own() : enabled)
+  }
   useBindings(() => {
     const layer = input()
     const { commands, bindings, mode, ...options } = layer
     const grouped = groupCommands(commands)
     return {
       ...options,
-      enabled: enabled() ? options.enabled : false,
+      enabled: switchOf(options.enabled),
       ...(mode === "global" ? {} : { mode: mode ?? MODE.base }),
       commands: grouped.named.map((command) => {
         const previous = stable.get(command.id)
@@ -230,6 +269,10 @@ function createLayer(input: () => KeymapLayer) {
         const { id, description, group, palette, bind, run, ...definition } = kept
         return {
           ...definition,
+          // A command's own accessor, reactive as the layer's: it reads the latest closure.
+          ...(typeof kept.enabled === "function"
+            ? { enabled: reactiveMatcherFromSignal(() => (kept.enabled as () => boolean)()) }
+            : {}),
           name: id,
           opencode: kept,
           run: (context: CommandContext<Renderable, KeyEvent>) => run(value.input(id), context.event),
@@ -317,7 +360,7 @@ function groupCommands(commands: readonly KeymapCommand[] = []) {
 
 function useShortcuts() {
   const value = useValue()
-  const shortcuts = useKeymapSelector((keymap) => {
+  const shortcuts = value.view("shortcuts", (keymap) => {
     const commands = keymap.getCommands({ visibility: "registered" }).map((command) => command.name)
     const bindings = keymap.getCommandBindings({ visibility: "registered", commands })
     return new Map(
@@ -361,7 +404,7 @@ function useLeaderActive() {
 
 function useCommands(): Accessor<readonly KeymapCommand[]> {
   const value = useValue()
-  return useKeymapSelector((keymap) =>
+  return value.view("commands", (keymap) =>
     keymap
       .getCommandEntries({
         visibility: "reachable",
@@ -394,13 +437,11 @@ function useCommands(): Accessor<readonly KeymapCommand[]> {
 }
 
 function usePendingSequence() {
-  useValue()
-  return useKeymapSelector((keymap) => keymap.getPendingSequence())
+  return useValue().view("pending", (keymap) => keymap.getPendingSequence())
 }
 
 function useActiveKeys() {
-  useValue()
-  return useKeymapSelector((keymap) => keymap.getActiveKeys({ includeMetadata: true }))
+  return useValue().view("active", (keymap) => keymap.getActiveKeys({ includeMetadata: true }))
 }
 
 function useState() {

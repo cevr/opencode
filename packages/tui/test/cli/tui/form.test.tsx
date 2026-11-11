@@ -49,7 +49,7 @@ async function mountForm(
   fields?: FormWithLocation["fields"],
   height = 20,
   clipboardText?: string,
-  response?: { reply?: 404 | 409; cancel?: 404 | 409; syncFailure?: boolean },
+  response?: { reply?: 404 | 409 | 500; cancel?: 404 | 409; syncFailure?: boolean; held?: Promise<void> },
   actions?: FormWithLocation["actions"],
   docked = false,
 ) {
@@ -77,7 +77,8 @@ async function mountForm(
       },
     ],
   } satisfies FormWithLocation
-  const failure = (status: 404 | 409) => {
+  const failure = (status: 404 | 409 | 500) => {
+    if (status === 500) return json({ message: "Could not reply" }, { status })
     terminal = true
     return json(
       {
@@ -94,8 +95,9 @@ async function mountForm(
         ? json({ message: "Could not refresh forms" }, { status: 500 })
         : json({ data: terminal ? [] : [form] })
     if (url.pathname === "/api/session/ses_test/form/frm_test/reply")
-      return request.json().then((answer) => {
+      return request.json().then(async (answer) => {
         replies.push(answer)
+        await response?.held
         return response?.reply ? failure(response.reply) : new Response(null, { status: 204 })
       })
     if (url.pathname === "/api/session/ses_test/form/frm_test" && request.method === "DELETE") {
@@ -167,7 +169,10 @@ async function mountForm(
   return { app, cancellations, copied, replies }
 }
 
-function mountRecoveringForm(root: string, response: { reply?: 404 | 409; cancel?: 404 | 409; syncFailure?: boolean }) {
+function mountRecoveringForm(
+  root: string,
+  response: { reply?: 404 | 409 | 500; cancel?: 404 | 409; syncFailure?: boolean; held?: Promise<void> },
+) {
   return mountForm(
     root,
     80,
@@ -185,6 +190,35 @@ test("restores the composer when terminal-form revalidation fails", async () => 
     prompt.app.mockInput.pressEnter()
     await prompt.app.waitForFrame((frame) => frame.includes("Composer ready"))
 
+    expect(prompt.replies).toHaveLength(1)
+  } finally {
+    prompt.app.renderer.destroy()
+  }
+})
+
+test("closes the form as the reply is sent, before the server answers", async () => {
+  await using tmp = await tmpdir()
+  const held = Promise.withResolvers<void>()
+  const prompt = await mountRecoveringForm(tmp.path, { held: held.promise })
+  try {
+    prompt.app.mockInput.pressEnter()
+    await prompt.app.waitForFrame((frame) => frame.includes("Composer ready"))
+    expect(prompt.app.captureCharFrame()).not.toContain("Authorization required")
+  } finally {
+    held.resolve()
+    prompt.app.renderer.destroy()
+  }
+})
+
+test("puts the form back when the server refuses the reply", async () => {
+  await using tmp = await tmpdir()
+  const held = Promise.withResolvers<void>()
+  const prompt = await mountRecoveringForm(tmp.path, { reply: 500, held: held.promise })
+  try {
+    prompt.app.mockInput.pressEnter()
+    await prompt.app.waitForFrame((frame) => frame.includes("Composer ready"))
+    held.resolve()
+    await prompt.app.waitForFrame((frame) => frame.includes("Authorization required"))
     expect(prompt.replies).toHaveLength(1)
   } finally {
     prompt.app.renderer.destroy()
@@ -492,6 +526,40 @@ const twoTargets = [
   { value: "staging", label: "Staging" },
   { value: "production", label: "Production" },
 ]
+
+test("a refused reply brings the form back with the typed answer and its error", async () => {
+  await using tmp = await tmpdir()
+  const held = Promise.withResolvers<void>()
+  const prompt = await mountForm(
+    tmp.path,
+    80,
+    [{ key: "target", type: "string", options: twoTargets, custom: true }],
+    20,
+    undefined,
+    { reply: 500, held: held.promise },
+  )
+  try {
+    prompt.app.mockInput.pressArrow("down")
+    prompt.app.mockInput.pressArrow("down")
+    await prompt.app.mockInput.typeText("west 2")
+    await prompt.app.waitFor(() => prompt.app.renderer.currentFocusedEditor?.plainText === "west 2")
+    prompt.app.mockInput.pressEnter()
+    await prompt.app.waitFor(() => prompt.replies.length === 1)
+    expect(prompt.replies).toEqual([{ answer: { target: "west 2" } }])
+    await prompt.app.waitForFrame((frame) => frame.includes("Composer ready"))
+    held.resolve()
+    const frame = await prompt.app.waitForFrame(
+      (frame) => frame.includes("Authorization required") && frame.includes("UnexpectedStatus: 500"),
+    )
+    expect(frame).toContain("west 2")
+    // Settled, so its draft does not outlive the test (drafts are kept by form id across mounts).
+    prompt.app.mockInput.pressEscape()
+    await prompt.app.waitFor(() => prompt.cancellations.length === 1)
+    await prompt.app.waitForFrame((frame) => frame.includes("Composer ready"))
+  } finally {
+    prompt.app.renderer.destroy()
+  }
+})
 
 test("letters on an option row do nothing, and on the custom row they start the custom answer", async () => {
   await using tmp = await tmpdir()

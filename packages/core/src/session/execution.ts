@@ -50,6 +50,15 @@ export function terminal(exit: Exit.Exit<void, SessionRunner.RunError>, reason?:
   return { type: "failed" as const, error: toSessionError(Cause.squash(exit.cause)) }
 }
 
+/**
+ * Resumes after the event loop's next timer phase, past pending I/O: queued socket writes go out
+ * first. A host timer, not the Clock, so a test clock never holds it.
+ */
+const nextTurn = Effect.callback<void>((resume) => {
+  const timer = setTimeout(() => resume(Effect.void), 0)
+  return Effect.sync(() => clearTimeout(timer))
+})
+
 /** Process-local execution: drains run in this process using the selected instance. */
 export const layer = Layer.effect(
   Service,
@@ -121,7 +130,12 @@ export const layer = Layer.effect(
           sessionID,
           bus.publish(SessionEvent.Execution.Started, { sessionID }, claimOnCommit(sessionID)),
         ),
-      drain: (sessionID, force, promotable) => drain(sessionID, force, undefined, promotable),
+      // A drain starts on the next turn of the event loop, not inside the wake: loading the history
+      // and building the request is one long synchronous stretch (tens to hundreds of ms on a large
+      // session), and the events and replies of what woke it (an answer's message, its form closing)
+      // would otherwise reach their clients only after it.
+      drain: (sessionID, force, promotable) =>
+        nextTurn.pipe(Effect.andThen(drain(sessionID, force, undefined, promotable))),
       // One terminal observation per busy period, covering every coalesced drain.
       settled: (sessionID, exit, reason) =>
         reportLifecycle(
