@@ -52,7 +52,7 @@ import {
   isSessionNotFoundError,
   type SessionPromptInput,
 } from "../promise"
-import { createStore, produce, reconcile } from "solid-js/store"
+import { createStore, produce, reconcile, unwrap } from "solid-js/store"
 import type { SessionInbox } from "@opencode/schema/session-inbox"
 import { batch, createEffect, createMemo, createSignal, onCleanup } from "solid-js"
 
@@ -618,15 +618,19 @@ export function createData(config: CreateDataInput) {
       "session",
       "family",
       produce((draft) => {
+        // Membership is checked on the raw arrays: through the store's proxy, each check read every
+        // member reactively, quadratic in a family of hundreds as its pages arrive.
         if (sessionID !== rootID && draft[sessionID]) {
           const members = (draft[rootID] ??= [])
-          for (const id of draft[sessionID]) {
-            if (!members.includes(id)) members.push(id)
+          const present = new Set(unwrap(members))
+          for (const id of unwrap(draft[sessionID])) {
+            if (!present.has(id)) members.push(id)
+            present.add(id)
           }
           delete draft[sessionID]
         }
         const family = (draft[rootID] ??= [])
-        if (!family.includes(sessionID)) family.push(sessionID)
+        if (!unwrap(family).includes(sessionID)) family.push(sessionID)
       }),
     )
   }
