@@ -1,5 +1,6 @@
 import { Service, type Endpoint, type EnsureOptions } from "@opencode/client/effect/service"
-import { ClientError, isUnauthorizedError, OpenCode } from "@opencode/client/promise"
+import { ClientError, isUnauthorizedError, OpenCode, serviceReadyFetch } from "@opencode/client/promise"
+import { noTimeoutFetch } from "@opencode/util/no-timeout-fetch"
 import { OPENCODE_VERSION } from "../version"
 import { Effect, Option, Redacted } from "effect"
 import { Server as ServerFlag, Standalone as StandaloneFlag } from "../commands/commands"
@@ -37,9 +38,20 @@ export const resolve = Effect.fn("cli.server-connection.resolve")(function* (arg
       url: server,
       auth: password ? { type: "basic" as const, username: "opencode", password: Redacted.value(password) } : undefined,
     } satisfies Endpoint
-    const client = OpenCode.make({ baseUrl: endpoint.url, headers: Service.headers(endpoint) })
+    const info = (timeout: number, fetch?: typeof globalThis.fetch) =>
+      OpenCode.make({ baseUrl: endpoint.url, headers: Service.headers(endpoint), fetch }).server.info({
+        signal: AbortSignal.timeout(timeout),
+      })
+    // A server that answers 503 is there: a restarted service refuses requests with service_starting
+    // until its routes are built, so the check waits for it as the TUI's own client does. Anything
+    // else (no answer, an application's own 503) still fails within 5 s.
     const health = yield* Effect.tryPromise({
-      try: () => client.server.info({ signal: AbortSignal.timeout(5_000) }),
+      try: () =>
+        info(5_000).catch((error: unknown) => {
+          if (!(error instanceof ClientError && error.reason === "UnexpectedStatus" && statusOf(error) === 503))
+            throw error
+          return info(60_000, serviceReadyFetch(noTimeoutFetch))
+        }),
       catch: (cause) => connectError(endpoint, cause),
     })
     if (health.version !== OPENCODE_VERSION)
@@ -97,6 +109,11 @@ const resolveManaged = Effect.fnUntraced(function* (options: EnsureOptions, mism
     return yield* Effect.fail(new Error("Background server version does not match this client"))
   return yield* Service.ensure(options)
 })
+
+function statusOf(error: ClientError) {
+  const cause: unknown = error.cause
+  return typeof cause === "object" && cause !== null && "status" in cause ? cause.status : undefined
+}
 
 function connectError(endpoint: Endpoint, cause: unknown) {
   if (isUnauthorizedError(cause)) {
