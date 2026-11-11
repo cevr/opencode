@@ -36,6 +36,48 @@ test.each(["service_starting", "service_stopping"])("requests wait through %s be
   ])
 })
 
+test("a prompt whose connection is refused (the restart's socket gap) is delivered once the service listens", async () => {
+  const bodies: string[] = []
+  const client = OpenCode.make({
+    baseUrl: "http://localhost:3000",
+    fetch: serviceReadyFetch(async (input, init) => {
+      const request = new Request(input, init)
+      const body = await request.text()
+      // No server received it: Bun's refusal, as fetch throws it with nothing listening.
+      if (bodies.push(body) < 2)
+        throw Object.assign(new TypeError("ECONNREFUSED: Unable to connect. Is the computer able to access the url?"), {
+          code: "ECONNREFUSED",
+        })
+      return Response.json({ data: { id: "msg_ready" } })
+    }),
+  })
+  expect(await client.session.prompt({ sessionID: "ses_test", text: "after the gap" })).toEqual({ id: "msg_ready" })
+  expect(bodies).toEqual([JSON.stringify({ text: "after the gap" }), JSON.stringify({ text: "after the gap" })])
+})
+
+test("onWait says once that requests wait for the service, and not when it serves at once", async () => {
+  let waits = 0
+  let requests = 0
+  const fetch = serviceReadyFetch(
+    async () =>
+      ++requests <= 2
+        ? Response.json({ code: "service_starting" }, { status: 503, headers: { "retry-after": "0" } })
+        : Response.json({ version: "ready" }),
+    { onWait: () => waits++ },
+  )
+  const client = OpenCode.make({ baseUrl: "http://localhost:3000", fetch })
+  expect(await client.server.info()).toEqual({ version: "ready" })
+  expect(await client.server.info()).toEqual({ version: "ready" })
+  expect(waits).toBe(1)
+  let quiet = 0
+  const ready = OpenCode.make({
+    baseUrl: "http://localhost:3000",
+    fetch: serviceReadyFetch(async () => Response.json({ version: "ready" }), { onWait: () => quiet++ }),
+  })
+  await ready.server.info()
+  expect(quiet).toBe(0)
+})
+
 test("a canceled startup wait does not submit after the service becomes ready", async () => {
   const abort = new AbortController()
   let requests = 0
