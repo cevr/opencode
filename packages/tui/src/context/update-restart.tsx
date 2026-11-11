@@ -43,8 +43,9 @@ const STALE_HANDOFF_MS = 10 * 60_000
 /** The waits between tries of a service read that failed (a service still starting answers 503). */
 const RETRY_MS = [1_000, 2_000, 4_000, 8_000, 16_000, 30_000] as const
 const CHECK_MS = 500
-// A mouse press, release or wheel turn in the SGR encoding the renderer asks for; motion alone (bit 32) is not input.
-const MOUSE = /\x1b\[<(\d+);\d+;\d+[Mm]/g
+// A mouse press, release or wheel turn in the SGR encoding the renderer asks for (after its ESC); motion alone (bit
+// 32) is not input. Typed text that looks like one is input all the same.
+const MOUSE = /\[<(\d+);\d+;\d+[Mm]/g
 
 /**
  * What replaces this process: the installed build's command with `args`, and `env` added to this process's
