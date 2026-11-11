@@ -19,6 +19,7 @@ import { useRoute, useRouteData } from "../../context/route"
 import { createStore } from "solid-js/store"
 import { useData } from "../../context/data"
 import { SplitBorder } from "../../ui/border"
+import { useSessionLinks } from "../../ui/session-link"
 import { useTuiPaths, useTuiTerminalEnvironment } from "../../context/runtime"
 import { Spinner, SPINNER_FRAMES } from "../../component/spinner"
 import { PatchDiff } from "../../component/patch-diff"
@@ -132,7 +133,7 @@ import { isRecord } from "../../util/record"
 import { parseTodos } from "../../util/todo"
 import { createHistoryPrepend } from "./history"
 import { context, use, type PendingAction } from "./render-context"
-import { INLINE_TOOL_ICON_WIDTH, InlineToolRow, ReasoningPart, TextPart, toolDisplay } from "./message-parts"
+import { INLINE_TOOL_ICON_WIDTH, InlineToolRow, ReasoningPart, TextPart, toolDisplay, useRowGutter } from "./message-parts"
 import { defaultVerbosity, type GroupKind, type SessionEntry } from "./grouping/session"
 import { SessionGroupView } from "./group-view"
 import { useEntryAnchor } from "./anchor-view"
@@ -360,8 +361,11 @@ export function Session(props: {
   )
 
   createEffect(
-    on([descendantSessionIDs, () => client.connection.status()], ([sessionIDs, status]) => {
-      if (status !== "connected") return
+    on([descendantSessionIDs, () => client.connection.status()], async ([sessionIDs, status]) => {
+      if (status !== "connected" || sessionIDs.length === 0) return
+      // One read covers the family as the server knows it; a member it did not cover (a subagent
+      // started since, or a server without the family read) is then read on its own.
+      await data.session.requests.sync(route.sessionID).catch(() => undefined)
       void Promise.allSettled(
         sessionIDs.flatMap((sessionID) => [data.session.permission.sync(sessionID), data.session.form.sync(sessionID)]),
       )
@@ -1463,8 +1467,9 @@ export function Session(props: {
       title: "Toggle subagent picker",
       id: "session.child.first",
       group: "Session",
-      run: () => {
-        if (picker()) setComposer({ open: false, dismissed: true })
+      run: (tab?: string) => {
+        if (tab === "shell" || tab === "subagents") setComposer({ open: true, tab })
+        else if (picker()) setComposer({ open: false, dismissed: true })
         else setComposer({ open: true, tab: "subagents" })
         dialog.clear()
       },
@@ -1871,6 +1876,7 @@ function TurnTokenUsage(props: {
   previousCache?: CacheUsage
   message: (messageID: string) => SessionMessageInfo | undefined
 }) {
+  const gutter = useRowGutter()
   const config = useConfig()
   const theme = useTheme()
   const renderer = useRenderer()
@@ -1926,7 +1932,7 @@ function TurnTokenUsage(props: {
   })
   return (
     <Show when={Boolean(config.data.debug?.turn_tokens) && steps().length > 0}>
-      <box paddingLeft={3} flexDirection="column">
+      <box paddingLeft={gutter()} flexDirection="column">
         <box
           flexDirection="row"
           onMouseOver={() => setHover(true)}
@@ -2027,6 +2033,7 @@ function turnTokenToolSummary(tool: SessionMessageAssistantTool) {
 }
 
 function BackgroundToolHint(props: { messages: SessionMessageInfo[] }) {
+  const gutter = useRowGutter()
   const theme = useTheme()
   const shortcut = Keymap.useShortcut("session.background")
   const running = createMemo(() => {
@@ -2050,7 +2057,7 @@ function BackgroundToolHint(props: { messages: SessionMessageInfo[] }) {
   return (
     <Show when={visible() && shortcut()}>
       {(value) => (
-        <box marginTop={1} paddingLeft={3} flexShrink={0}>
+        <box marginTop={1} paddingLeft={gutter()} flexShrink={0}>
           <text fg={theme.text.muted}>
             Press <span style={{ fg: theme.text.base }}>{value()}</span> to move running work to the background
           </text>
@@ -2101,9 +2108,10 @@ function SessionMessageView(props: { message: SessionMessageInfo }) {
 }
 
 function ExecutionError(props: { error: NonNullable<Extract<SessionMessageInfo, { type: "idle" }>["error"]> }) {
+  const gutter = useRowGutter()
   const theme = useTheme()
   return (
-    <box paddingLeft={3}>
+    <box paddingLeft={gutter()}>
       <text fg={theme.text.feedback.error.base}>Error: {errorMessage(props.error)}</text>
     </box>
   )
@@ -2160,6 +2168,7 @@ function SessionPartView(props: {
 }
 
 function AssistantFooter(props: { message: SessionMessageAssistant }) {
+  const gutter = useRowGutter()
   const ctx = use()
   const config = useConfig()
   const data = useData()
@@ -2176,6 +2185,7 @@ function AssistantFooter(props: { message: SessionMessageAssistant }) {
   const turn = () => ({ index: ctx.messageIndex(props.message.id), legacy: ctx.legacyTurns() })
   const duration = createMemo(() => SessionTurn.duration(messages(), props.message, turn()))
   const tokensPerSecond = createMemo(() => SessionTurn.tokensPerSecond(messages(), props.message, turn()))
+  const timeToFirstToken = createMemo(() => SessionTurn.timeToFirstToken(messages(), props.message, turn()))
   const interrupted = createMemo(() => props.message.error?.message === "Step interrupted")
   const freeLimit = createMemo(() => props.message.error?.type === "provider.free-limit")
   const limitNotice = useLimitNotice(() => props.message)
@@ -2184,7 +2194,7 @@ function AssistantFooter(props: { message: SessionMessageAssistant }) {
       <Show when={props.message.error && !interrupted() && !props.message.retry}>
         <Switch
           fallback={
-            <box paddingLeft={3}>
+            <box paddingLeft={gutter()}>
               <text fg={theme.text.feedback.error.base}>Error: {errorMessage(props.message.error)}</text>
             </box>
           }
@@ -2196,7 +2206,7 @@ function AssistantFooter(props: { message: SessionMessageAssistant }) {
         </Switch>
       </Show>
       <AssistantRetry retry={props.message.retry} />
-      <box paddingLeft={3} marginTop={props.message.retry || (props.message.error && !interrupted()) ? 1 : 0}>
+      <box paddingLeft={gutter()} marginTop={props.message.retry || (props.message.error && !interrupted()) ? 1 : 0}>
         <text>
           <span style={{ fg: props.message.error ? theme.text.muted : local.agent.color(props.message.agent) }}>
             {Locale.titlecase(props.message.agent)}
@@ -2210,6 +2220,9 @@ function AssistantFooter(props: { message: SessionMessageAssistant }) {
           <Show when={config.data.session.tps && tokensPerSecond()}>
             {(value) => <span style={{ fg: theme.text.muted }}> · {value().toFixed(1)} tok/s</span>}
           </Show>
+          <Show when={config.data.session.tps && ctx.terminal.width >= 36 && timeToFirstToken()}>
+            {(value) => <span style={{ fg: theme.text.muted }}> · {Locale.duration(value())} ttft</span>}
+          </Show>
           <Show when={interrupted()}>
             <span style={{ fg: theme.text.muted }}> · interrupted</span>
           </Show>
@@ -2220,11 +2233,12 @@ function AssistantFooter(props: { message: SessionMessageAssistant }) {
 }
 
 function SessionSwitchMessageV2(props: { message: SessionMessageInfo }) {
+  const gutter = useRowGutter()
   const ctx = use()
   const theme = useTheme()
   if (props.message.type === "location-switched")
     return (
-      <box paddingLeft={3}>
+      <box paddingLeft={gutter()}>
         <text>
           <span style={{ fg: theme.text.muted }}>↳ Moved to </span>
           <span style={{ fg: theme.text.feedback.info.base }}>{props.message.location.directory}</span>
@@ -2243,13 +2257,14 @@ function SessionSwitchMessageV2(props: { message: SessionMessageInfo }) {
     return ""
   }
   return (
-    <box paddingLeft={3}>
+    <box paddingLeft={gutter()}>
       <text fg={theme.text.muted}>{text()}</text>
     </box>
   )
 }
 
 function SessionNoticeMessageV2(props: { message: SessionMessageInfo }) {
+  const gutter = useRowGutter()
   const ctx = use()
   const theme = useTheme()
   const renderer = useRenderer()
@@ -2273,7 +2288,7 @@ function SessionNoticeMessageV2(props: { message: SessionMessageInfo }) {
     return state() ?? "finished"
   }
   const heading = () => `${state() === "completed" ? "↳" : "!"} ${actor()} ${status()}`
-  const suffix = () => Locale.truncateWidth(` · ${description()}`, Math.max(0, ctx.width - 3 - stringWidth(heading())))
+  const suffix = () => Locale.truncateWidth(` · ${description()}`, Math.max(0, ctx.width - gutter() - stringWidth(heading())))
   const color = () => {
     if (state() === "error") return theme.text.feedback.error.base
     if (state() === "cancelled") return theme.text.feedback.warning.base
@@ -2291,7 +2306,7 @@ function SessionNoticeMessageV2(props: { message: SessionMessageInfo }) {
     >
       <Slot path="session.message.completion" input={{ sessionID: ctx.sessionID, messageID: props.message.id }}>
         <box
-          marginLeft={3}
+          marginLeft={gutter()}
           onMouseOver={() => childID() && setHover(true)}
           onMouseOut={() => setHover(false)}
           onMouseUp={() => {
@@ -2320,6 +2335,7 @@ function SessionSkillMessage(props: { message: Extract<SessionMessageInfo, { typ
 }
 
 function CompactionMessage(props: { message: Extract<SessionMessageInfo, { type: "compaction" }> }) {
+  const gutter = useRowGutter()
   const ctx = use()
   const theme = useTheme()
   const { currentMarkdownSyntax: syntax } = useThemes()
@@ -2371,8 +2387,9 @@ function CompactionMessage(props: { message: Extract<SessionMessageInfo, { type:
         <box border={["top"]} borderColor={color()} flexGrow={1} />
       </box>
       <Show when={content()}>
-        <box paddingTop={1} paddingLeft={3}>
+        <box paddingTop={1} paddingLeft={gutter()}>
           <markdown
+            ref={useSessionLinks()}
             syntaxStyle={syntax()}
             renderNode={plugins.markdown()}
             streaming={true}
@@ -2678,12 +2695,13 @@ function freeLimitReset(delay: number | undefined, base: number) {
 }
 
 function FreeLimitNotice(props: { message: Pick<SessionMessageAssistant, "error" | "time"> }) {
+  const gutter = useRowGutter()
   const theme = useTheme()
   const reset = createMemo(() =>
     freeLimitReset(props.message.error?.retryAfterMs, props.message.time.completed ?? props.message.time.created),
   )
   return (
-    <box paddingLeft={3} flexDirection="column">
+    <box paddingLeft={gutter()} flexDirection="column">
       <text fg={theme.text.muted}>You've used today's free messages.{reset() ? ` They reset at ${reset()}.` : ""}</text>
       <text fg={theme.text.muted}>
         Upgrade to OpenCode Go → <span style={{ fg: theme.text.base }}>/connect</span> · Switch model →{" "}
@@ -2694,6 +2712,7 @@ function FreeLimitNotice(props: { message: Pick<SessionMessageAssistant, "error"
 }
 
 function AssistantRetry(props: { retry: SessionMessageAssistant["retry"] }) {
+  const gutter = useRowGutter()
   const theme = useTheme()
   const [seconds, setSeconds] = createSignal(0)
   createEffect(() => {
@@ -2709,7 +2728,7 @@ function AssistantRetry(props: { retry: SessionMessageAssistant["retry"] }) {
   return (
     <Show when={props.retry}>
       {(retry) => (
-        <box paddingLeft={3}>
+        <box paddingLeft={gutter()}>
           <text fg={theme.text.feedback.warning.base}>
             ⚠ {seconds() > 0 ? `Retrying in ${seconds()}s` : "Retry due"} · attempt {retry().attempt} ·{" "}
             {retry().error.message}
@@ -3138,6 +3157,7 @@ const SHELL_DISPLAY_LIMIT = 1024 * 1024
 function Shell(props: ToolProps) {
   const action = createMemo(() => shellActionSummary(props.input))
   const output = createMemo(() => shellOutputText(props.part.state, props.metadata))
+  const stopped = createMemo(() => stoppedShell(props.part, props.metadata))
   return (
     <Show
       when={action()}
@@ -3149,13 +3169,24 @@ function Shell(props: ToolProps) {
           workdir={stringValue(props.input.workdir)}
           status={props.part.state.status}
           background={props.part.state.status === "completed" && props.metadata.status === "running"}
-          output={stringValue(props.metadata.shellID) ? undefined : output()}
+          output={stopped()?.output ?? (stringValue(props.metadata.shellID) ? undefined : output())}
+          error={stopped()?.notice}
         />
       }
     >
       {(summary) => <GenericTool {...props} tool={summary()} input={{}} />}
     </Show>
   )
+}
+
+// A call the user stopped fails with its output followed by a notice, which its metadata names. Its output shows like
+// a finished call's and only the notice as the error. A plugin that rewrote the error gets it shown as is.
+function stoppedShell(part: SessionMessageAssistantTool, metadata: Record<string, unknown>) {
+  if (part.state.status !== "error" || metadata.interrupted !== true) return
+  const notice = stringValue(metadata.notice)
+  const message = part.state.error.message
+  if (!notice || !message.endsWith(notice)) return
+  return { output: message.slice(0, -notice.length).replace(/\n+$/, ""), notice }
 }
 
 function ShellDisplay(props: {
@@ -3368,6 +3399,7 @@ function Glob(props: ToolProps) {
 }
 
 function Read(props: ToolProps) {
+  const gutter = useRowGutter()
   const theme = useTheme()
   const pathFormatter = usePathFormatter()
   const isRunning = createMemo(() => props.part.state.status === "running")
@@ -3394,7 +3426,7 @@ function Read(props: ToolProps) {
       </InlineTool>
       <For each={loaded()}>
         {(filepath) => (
-          <box paddingLeft={3}>
+          <box paddingLeft={gutter()}>
             <text paddingLeft={3} fg={theme.text.muted}>
               ↳ Loaded {pathFormatter.format(filepath)}
             </text>
@@ -3515,6 +3547,7 @@ export function isBackgroundSubagent(
 export { executeCallSummary }
 
 function ExecuteCallView(props: { call: Accessor<ExecuteCall> }) {
+  const gutter = useRowGutter()
   const theme = useTheme()
   const renderer = useRenderer()
   const [expanded, setExpanded] = createSignal(false)
@@ -3530,7 +3563,7 @@ function ExecuteCallView(props: { call: Accessor<ExecuteCall> }) {
 
   return (
     <box
-      paddingLeft={3}
+      paddingLeft={gutter()}
       onMouseOver={() => expandable() && setHover(true)}
       onMouseOut={() => setHover(false)}
       onMouseUp={() => {
@@ -3568,6 +3601,7 @@ function ExecuteCallView(props: { call: Accessor<ExecuteCall> }) {
 
 // The `execute` tool streams child tool calls through metadata, not a child session like Task.
 function Execute(props: ToolProps) {
+  const gutter = useRowGutter()
   const ctx = use()
   const theme = useTheme()
   const dialog = useDialog()
@@ -3599,7 +3633,7 @@ function Execute(props: ToolProps) {
       </InlineTool>
       <Index each={calls()}>{(call) => <ExecuteCallView call={call} />}</Index>
       <Show when={showOutput()}>
-        <box paddingLeft={3}>
+        <box paddingLeft={gutter()}>
           <For each={outputPreview().split("\n")}>
             {(line, index) => (
               <text paddingLeft={3} fg={theme.text.feedback.error.base}>

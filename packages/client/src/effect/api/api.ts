@@ -361,6 +361,16 @@ export type SessionFormListOperation<E = never> = (
   input: SessionFormListInput,
 ) => Effect.Effect<SessionFormListOutput, E>
 
+export type SessionFamilyRequestListInput = { readonly sessionID: Session.ID }
+export type SessionFamilyRequestListOutput = {
+  readonly sessions: ReadonlyArray<Session.ID>
+  readonly permissions: ReadonlyArray<Permission.Request>
+  readonly forms: ReadonlyArray<Form.Info>
+}
+export type SessionFamilyRequestListOperation<E = never> = (
+  input: SessionFamilyRequestListInput,
+) => Effect.Effect<SessionFamilyRequestListOutput, E>
+
 export type SessionFormCreateInput = {
   readonly sessionID: string
   readonly id?: Form.ID | undefined
@@ -450,6 +460,7 @@ export interface SessionApi<E = never> {
     readonly reply: SessionFormReplyOperation<E>
     readonly cancel: SessionFormCancelOperation<E>
   }
+  readonly family: { readonly request: { readonly list: SessionFamilyRequestListOperation<E> } }
   readonly environment: SessionEnvironmentOperation<E>
   readonly view: SessionViewOperation<E>
 
@@ -988,6 +999,17 @@ export type ExperimentalSessionLogOutput =
             readonly snapshot?: Snapshot.ID | undefined
             readonly started: number
           }
+        }
+      | {
+          readonly id: Event.ID
+          readonly created: number
+          readonly metadata?: { readonly [x: string]: unknown } | undefined
+          readonly type: "session.step.first-token"
+          readonly durable: { readonly aggregateID: string; readonly seq: Event.Seq; readonly version: Event.Version }
+          readonly location?:
+            | { readonly directory: AbsolutePath; readonly workspaceID?: Workspace.ID | undefined }
+            | undefined
+          readonly data: { readonly sessionID: Session.ID; readonly assistantMessageID: SessionMessage.ID }
         }
       | {
           readonly id: Event.ID
@@ -2094,6 +2116,7 @@ export type EventSubscribeInput = {
         | "session.shell.started"
         | "session.shell.ended"
         | "session.step.started"
+        | "session.step.first-token"
         | "session.step.streamed"
         | "session.step.ended"
         | "session.step.failed"

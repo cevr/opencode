@@ -10,7 +10,7 @@ import { EntryAnchor, GroupAnchor, visitEntries } from "./anchor-view"
 import { groupID } from "./anchors"
 import { instructionPaths, type PartRef, type SessionEntry, type SessionGroup, type SessionNode } from "./grouping/session"
 import { summarizeActivity } from "./activity-summary"
-import { InlineToolRow, reasoningContent, toolDisplay } from "./message-parts"
+import { InlineToolRow, reasoningContent, toolDisplay, useRowGutter } from "./message-parts"
 import { use } from "./render-context"
 import { resolvePart } from "./rows"
 import { generateThinkingSyntax } from "./thinking-syntax"
@@ -64,6 +64,7 @@ function GroupContent(props: GroupProps) {
   const ctx = use()
   const theme = useTheme()
   const disclosure = useDisclosure(props)
+  const gutter = useRowGutter()
   const id = disclosure.id
   const expanded = disclosure.expanded
   const [hover, setHover] = createSignal(false)
@@ -188,7 +189,7 @@ function GroupContent(props: GroupProps) {
               <Show when={props.completed && duration()}> · {Locale.duration(duration())}</Show>
             </InlineToolRow>
             <Show when={expanded()}>
-              <box paddingLeft={3}>{children("thought")}</box>
+              <box paddingLeft={gutter()}>{children("thought")}</box>
             </Show>
           </Show>
         </Show>

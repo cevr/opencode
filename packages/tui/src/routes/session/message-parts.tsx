@@ -9,14 +9,24 @@ import type {
 import { Spinner } from "../../component/spinner"
 import { createSyntaxStyleMemo, useTheme, useThemes } from "../../context/theme"
 import { reasoningSummary } from "../../context/thinking"
-import { usePlugin } from "../../plugin/context"
+import { useLayout, usePlugin } from "../../plugin/context"
 import { SplitBorder } from "../../ui/border"
 import { Locale } from "../../util/locale"
 import { use } from "./render-context"
 import { generateThinkingSyntax } from "./thinking-syntax"
 import { canonicalToolName } from "../../util/tool-display"
+import { useSessionLinks } from "../../ui/session-link"
 
 export const INLINE_TOOL_ICON_WIDTH = 2
+
+/** The host's cells from the transcript's inset to where each row starts (its glyph or first letter). */
+export const ROW_GUTTER = 3
+
+/** Where each transcript row starts: a plugin's layout `gutter`, else the host's. Every row-level indent reads it, so all rows share one column. */
+export function useRowGutter() {
+  const layout = useLayout()
+  return () => layout().gutter ?? ROW_GUTTER
+}
 
 const toolDisplays = new Set([
   "shell",
@@ -52,6 +62,7 @@ export function ReasoningPart(props: {
     generateThinkingSyntax(syntax(), theme.text.muted, renderer.nativeScene),
   )
   const ctx = use()
+  const gutter = useRowGutter()
   // Collapsed by default in hide mode: a single line throughout, so the
   // layout never shifts. Click to open the full markdown block, click to close.
   const [expanded, setExpanded] = createSignal(false)
@@ -74,7 +85,7 @@ export function ReasoningPart(props: {
 
   return (
     <Show when={content()}>
-      <box paddingLeft={3} flexDirection="column" flexShrink={0}>
+      <box paddingLeft={gutter()} flexDirection="column" flexShrink={0}>
         <box
           border={!inMinimal() || expanded() ? ["left"] : undefined}
           customBorderChars={SplitBorder.customBorderChars}
@@ -179,11 +190,13 @@ export function TextPart(props: {
   const theme = useTheme()
   const { currentMarkdownSyntax: syntax } = useThemes()
   const plugins = usePlugin()
+  const gutter = useRowGutter()
   return (
     <Show when={props.part.text.trim()}>
-      <box paddingLeft={3} flexShrink={0}>
+      <box paddingLeft={gutter()} flexShrink={0}>
         {/* Configure custom nodes before parsing; apply content before streaming so completion keeps the final tokens. */}
         <markdown
+          ref={useSessionLinks()}
           syntaxStyle={syntax()}
           renderNode={plugins.markdown()}
           content={props.part.text.trim()}
@@ -218,8 +231,9 @@ export function InlineToolRow(props: {
   onMouseOut?: () => void
   onMouseUp?: (event: MouseEvent) => void
 }) {
+  const gutter = useRowGutter()
   return (
-    <box paddingLeft={3} onMouseOver={props.onMouseOver} onMouseOut={props.onMouseOut} onMouseUp={props.onMouseUp}>
+    <box paddingLeft={gutter()} onMouseOver={props.onMouseOver} onMouseOut={props.onMouseOut} onMouseUp={props.onMouseUp}>
       <Switch>
         <Match when={props.spinner}>
           <Show when={props.status} fallback={<Spinner color={props.color} children={props.children} />}>

@@ -55,7 +55,13 @@ async function openSession(
   const setup = await createAppFixture({
     width: 100,
     height: 30,
-    config: { animations: false, tabs: { enabled: false }, plugins: [fixture.directory] },
+    // Medium keeps each tool call its own row; the default (low) folds a turn's calls into one activity row.
+    config: {
+      animations: false,
+      tabs: { enabled: false },
+      plugins: [fixture.directory],
+      session: { verbosity: "medium" },
+    },
     args: { sessionID: session.id },
     fetch: (url) => {
       if (url.pathname === "/api/session") return json({ data: [session], cursor: {} })
@@ -116,7 +122,7 @@ test("the user's transcript config wins over a plugin's defaults", async () => {
         animations: false,
         tabs: { enabled: false },
         plugins: [fixture.directory],
-        session: { thinking: "hide" },
+        session: { thinking: "hide", verbosity: "medium" },
       },
       args: { sessionID: session.id },
       fetch: (url) => {
@@ -245,6 +251,20 @@ test("a plugin claims completion notices, and layout rules see notices as their 
   // Other notices keep the host's own row.
   expect(lines[first + 2]).toContain("Goal updated")
   expect(frame).not.toContain("Worker finished")
+})
+
+test("a layout gutter starts every host row, a notice's glyph and prose alike, in one column", async () => {
+  const goal = { type: "synthetic", id: "msg_goal", text: "Notice", description: "Goal updated", metadata: { source: "goal" }, time: { created: 6 } }
+  await using app = await openSession("row-gutter", [goal, ...messages])
+  await app.ready
+  const frame = await waitForHighlightedFrame(app, (frame) => frame.includes("Goal updated") && frame.includes("is fixed"))
+  const start = (needle: string) => {
+    const line = frame.split("\n").find((item) => item.includes(needle)) ?? ""
+    return line.length - line.trimStart().length
+  }
+  // inset 1 and gutter 1: each row starts two cells in, where the host's own gutter (3) would put it five in.
+  expect(start("◎ Goal updated")).toBe(2)
+  expect(start("is fixed")).toBe(2)
 })
 
 test("a plugin follows whether the session's sidebar is visible", async () => {

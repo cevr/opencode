@@ -139,6 +139,10 @@ export type FormOption = { value: string; label: string; description?: string }
 
 export type FormExternalField = { key: string; type: "external"; url: string; title?: string; description?: string }
 
+export type PermissionID = string
+
+export type PermissionSource = { type: "tool"; messageID: string; id: string }
+
 export type FormValue = string | number | "Infinity" | "-Infinity" | "NaN" | boolean | Array<string>
 
 export type SessionStatsToolTotals = { calls: number; succeeded: number; failed: number; unfinished: number }
@@ -188,7 +192,7 @@ export type ModelCacheFormat = "anthropic" | "alibaba"
 
 export type ModelMediaInput = "assets" | "state" | "root"
 
-export type ModelCapabilities = { tools: boolean; input: Array<string>; output: Array<string>; temperature?: boolean }
+export type ToolFreeformFormat = "text" | "regex" | "lark"
 
 export type MoneyUSDPerMillionTokens = number
 
@@ -287,10 +291,6 @@ export type ProjectIcon = { url?: string; override?: string; color?: string }
 export type ProjectCommands = { start?: string }
 
 export type ProjectTime = { created: number; updated: number; active: number; archived?: number }
-
-export type PermissionID = string
-
-export type PermissionSource = { type: "tool"; messageID: string; id: string }
 
 export type PermissionSavedID = string
 
@@ -663,6 +663,17 @@ export type FormMultiselectField = {
   default?: Array<string>
 }
 
+export type PermissionRequest = {
+  id: PermissionID
+  sessionID: SessionID
+  action: string
+  resources: Array<string>
+  save?: Array<string>
+  metadata?: { [x: string]: JsonValue }
+  source?: PermissionSource
+  message?: string
+}
+
 export type FormAnswer = { [x: string]: FormValue }
 
 export type SessionStatsTools =
@@ -713,6 +724,14 @@ export type ProviderCompatibility = {
   streamUsage?: boolean
   cacheFormat?: ModelCacheFormat
   mediaInput?: ModelMediaInput
+}
+
+export type ModelCapabilities = {
+  tools: boolean
+  freeform?: Array<ToolFreeformFormat>
+  input: Array<string>
+  output: Array<string>
+  temperature?: boolean
 }
 
 export type ModelCost = {
@@ -795,17 +814,6 @@ export type Project = {
   commands?: ProjectCommands
   time: ProjectTime
   sandboxes: Array<string>
-}
-
-export type PermissionRequest = {
-  id: PermissionID
-  sessionID: SessionID
-  action: string
-  resources: Array<string>
-  save?: Array<string>
-  metadata?: { [x: string]: JsonValue }
-  source?: PermissionSource
-  message?: string
 }
 
 export type PermissionSavedInfo = {
@@ -985,6 +993,7 @@ export type UsageLimitsGo = { rolling: UsageLimitsMeter; weekly: UsageLimitsMete
 
 export type ConfigModelCapabilities = {
   tools?: boolean
+  freeform?: Array<ToolFreeformFormat>
   input?: Array<string>
   output?: Array<string>
   temperature?: boolean
@@ -1413,6 +1422,16 @@ export type SessionStepStarted = {
     snapshot?: SnapshotID
     started: number
   }
+}
+
+export type SessionStepFirstToken = {
+  id: EventID
+  created: number
+  metadata?: { [x: string]: any }
+  type: "session.step.first-token"
+  durable: { aggregateID: string; seq: EventSeq; version: 1 }
+  location?: LocationRef
+  data: { sessionID: SessionID; assistantMessageID: SessionMessageID }
 }
 
 export type SessionStepStreamed = {
@@ -2547,15 +2566,16 @@ export type ConfigEntry =
         }
         experimental?: {
           portable_shell_scanner?: boolean
+          codemode_vm?: boolean
           all_flags?: boolean
           todo?: boolean
           background_compaction?: boolean
           media_blob?: boolean
           schedules?: boolean
           artifacts?: boolean
-          codemode_vm?: boolean
           shell_timeout_background?: boolean
           console_watches?: boolean
+          mcp_events?: boolean
           part_rows?: boolean
           image_generate?: boolean | { model?: string | { providerID: string; model: string; variant?: string } }
           subagent_depth?: number
@@ -2693,7 +2713,7 @@ export type SessionInboxInfo = SessionInboxUser | SessionInboxSynthetic | Sessio
 export type SessionMessageAssistant = {
   id: SessionMessageID
   metadata?: { [x: string]: JsonValue }
-  time: { created: number; streamed?: number; completed?: number }
+  time: { created: number; firstToken?: number; streamed?: number; completed?: number }
   type: "assistant"
   agent: AgentID
   model: ModelRef
@@ -2840,6 +2860,7 @@ export type SessionEventDurable =
   | SessionShellStarted
   | SessionShellEnded
   | SessionStepStarted
+  | SessionStepFirstToken
   | SessionStepStreamed
   | SessionStepEnded
   | SessionStepFailed
@@ -2898,6 +2919,7 @@ export type V2Event =
   | SessionShellStarted
   | SessionShellEnded
   | SessionStepStarted
+  | SessionStepFirstToken
   | SessionStepStreamed
   | SessionStepEnded
   | SessionStepFailed
@@ -3560,6 +3582,12 @@ export type SessionMessageGetOutput = { data: SessionMessageInfo }["data"]
 export type SessionFormListInput = { readonly sessionID: string }
 
 export type SessionFormListOutput = { data: Array<FormInfo> }["data"]
+
+export type SessionFamilyRequestListInput = { readonly sessionID: string }
+
+export type SessionFamilyRequestListOutput = {
+  data: { sessions: Array<SessionID>; permissions: Array<PermissionRequest>; forms: Array<FormInfo> }
+}["data"]
 
 export type SessionFormCreateInput = {
   readonly sessionID: string
@@ -4399,6 +4427,7 @@ export type EventSubscribeInput = {
         | "session.shell.started"
         | "session.shell.ended"
         | "session.step.started"
+        | "session.step.first-token"
         | "session.step.streamed"
         | "session.step.ended"
         | "session.step.failed"

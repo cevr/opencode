@@ -79,6 +79,8 @@ import type {
   SessionMessageGetOutput,
   SessionFormListInput,
   SessionFormListOutput,
+  SessionFamilyRequestListInput,
+  SessionFamilyRequestListOutput,
   SessionFormCreateInput,
   SessionFormCreateOutput,
   SessionFormGetInput,
@@ -700,6 +702,14 @@ const EndpointSessionFormList = (raw: RawClient["server.session"]) => (input: Se
     ),
   )
 
+const EndpointSessionFamilyRequestList = (raw: RawClient["server.session"]) => (input: SessionFamilyRequestListInput) =>
+  preserveEffect<SessionFamilyRequestListOutput>()(
+    raw["session.family.request.list"]({ params: { sessionID: input["sessionID"] } }).pipe(
+      Effect.mapError(mapClientError),
+      Effect.map((value) => value.data),
+    ),
+  )
+
 const EndpointSessionFormCreate = (raw: RawClient["server.session"]) => (input: SessionFormCreateInput) =>
   preserveEffect<SessionFormCreateOutput>()(
     raw["session.form.create"]({
@@ -795,6 +805,7 @@ const adaptGroupSession = (raw: RawClient["server.session"]) => ({
     reply: EndpointSessionFormReply(raw),
     cancel: EndpointSessionFormCancel(raw),
   },
+  family: { request: { list: EndpointSessionFamilyRequestList(raw) } },
   environment: EndpointSessionEnvironment(raw),
   view: EndpointSessionView(raw),
 })

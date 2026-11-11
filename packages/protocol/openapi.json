@@ -4359,6 +4359,96 @@
         }
       }
     },
+    "/api/session/{sessionID}/family/request": {
+      "get": {
+        "tags": ["session"],
+        "operationId": "session.family.request.list",
+        "parameters": [
+          {
+            "name": "sessionID",
+            "in": "path",
+            "schema": {
+              "$ref": "#/components/schemas/Session.ID"
+            },
+            "required": true
+          }
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "sessions": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/Session.ID"
+                          }
+                        },
+                        "permissions": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/Permission.Request"
+                          }
+                        },
+                        "forms": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/Form.Info"
+                          }
+                        }
+                      },
+                      "required": ["sessions", "permissions", "forms"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": ["data"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "InvalidRequestError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvalidRequestErrorEncoded"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedErrorEncoded"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "SessionNotFoundError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionNotFoundErrorEncoded"
+                }
+              }
+            }
+          }
+        },
+        "description": "Retrieve the pending permission requests and forms of a session and every session under it, in one read. `sessions` names every session the answer covers.",
+        "summary": "List a session family's pending requests"
+      }
+    },
     "/api/session/{sessionID}/form/{formID}": {
       "get": {
         "tags": ["session"],
@@ -10129,6 +10219,7 @@
                     "session.shell.started",
                     "session.shell.ended",
                     "session.step.started",
+                    "session.step.first-token",
                     "session.step.streamed",
                     "session.step.ended",
                     "session.step.failed",
@@ -10238,6 +10329,7 @@
                           "session.shell.started",
                           "session.shell.ended",
                           "session.step.started",
+                          "session.step.first-token",
                           "session.step.streamed",
                           "session.step.ended",
                           "session.step.failed",
@@ -16766,6 +16858,9 @@
               "portable_shell_scanner": {
                 "type": "boolean"
               },
+              "codemode_vm": {
+                "type": "boolean"
+              },
               "all_flags": {
                 "type": "boolean"
               },
@@ -16784,13 +16879,13 @@
               "artifacts": {
                 "type": "boolean"
               },
-              "codemode_vm": {
-                "type": "boolean"
-              },
               "shell_timeout_background": {
                 "type": "boolean"
               },
               "console_watches": {
+                "type": "boolean"
+              },
+              "mcp_events": {
                 "type": "boolean"
               },
               "part_rows": {
@@ -16929,6 +17024,12 @@
         "properties": {
           "tools": {
             "type": "boolean"
+          },
+          "freeform": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Tool.FreeformFormat"
+            }
           },
           "input": {
             "type": "array",
@@ -17777,6 +17878,28 @@
         "required": ["_tag", "message"],
         "additionalProperties": false
       },
+      "Form.Action": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "The key that runs it, in keybind form, e.g. `ctrl+x`"
+          },
+          "label": {
+            "type": "string",
+            "description": "What the footer names it, e.g. `dismiss`"
+          },
+          "value": {
+            "type": "string",
+            "description": "The answer a field takes when it runs"
+          },
+          "mark": {
+            "type": "string"
+          }
+        },
+        "required": ["key", "label", "value"],
+        "additionalProperties": false
+      },
       "Form.Answer": {
         "type": "object",
         "additionalProperties": {
@@ -17878,6 +18001,12 @@
           "metadata": {
             "$ref": "#/components/schemas/Form.Metadata"
           },
+          "actions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Form.Action"
+            }
+          },
           "fields": {
             "$ref": "#/components/schemas/Form.Fields"
           }
@@ -17899,6 +18028,12 @@
           },
           "metadata": {
             "$ref": "#/components/schemas/Form.Metadata"
+          },
+          "actions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Form.Action"
+            }
           },
           "fields": {
             "$ref": "#/components/schemas/Form.Fields"
@@ -18020,6 +18155,12 @@
           "metadata": {
             "$ref": "#/components/schemas/Form.Metadata"
           },
+          "actions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Form.Action"
+            }
+          },
           "fields": {
             "$ref": "#/components/schemas/Form.Fields"
           }
@@ -18041,6 +18182,12 @@
           },
           "metadata": {
             "$ref": "#/components/schemas/Form.Metadata"
+          },
+          "actions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Form.Action"
+            }
           },
           "fields": {
             "$ref": "#/components/schemas/Form.Fields_1"
@@ -20638,6 +20785,12 @@
           "tools": {
             "type": "boolean"
           },
+          "freeform": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Tool.FreeformFormat"
+            }
+          },
           "input": {
             "type": "array",
             "items": {
@@ -23038,6 +23191,9 @@
             "$ref": "#/components/schemas/session.step.started"
           },
           {
+            "$ref": "#/components/schemas/session.step.first-token"
+          },
+          {
             "$ref": "#/components/schemas/session.step.streamed"
           },
           {
@@ -23585,6 +23741,9 @@
             "type": "object",
             "properties": {
               "created": {
+                "type": "number"
+              },
+              "firstToken": {
                 "type": "number"
               },
               "streamed": {
@@ -25215,6 +25374,10 @@
         "required": ["type", "uri", "mime"],
         "additionalProperties": false
       },
+      "Tool.FreeformFormat": {
+        "type": "string",
+        "enum": ["text", "regex", "lark"]
+      },
       "Tool.TextContent": {
         "type": "object",
         "properties": {
@@ -25547,6 +25710,9 @@
           },
           {
             "$ref": "#/components/schemas/session.step.started"
+          },
+          {
+            "$ref": "#/components/schemas/session.step.first-token"
           },
           {
             "$ref": "#/components/schemas/session.step.streamed"
@@ -29412,6 +29578,58 @@
               }
             },
             "required": ["sessionID", "assistantMessageID", "error"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["id", "created", "type", "durable", "data"],
+        "additionalProperties": false
+      },
+      "session.step.first-token": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/Event.ID"
+          },
+          "created": {
+            "type": "number"
+          },
+          "metadata": {
+            "type": "object"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["session.step.first-token"]
+          },
+          "durable": {
+            "type": "object",
+            "properties": {
+              "aggregateID": {
+                "type": "string"
+              },
+              "seq": {
+                "$ref": "#/components/schemas/Event.Seq"
+              },
+              "version": {
+                "$ref": "#/components/schemas/Event.VersionEncoded_c77c5abcb68d"
+              }
+            },
+            "required": ["aggregateID", "seq", "version"],
+            "additionalProperties": false
+          },
+          "location": {
+            "$ref": "#/components/schemas/Location.Ref"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "sessionID": {
+                "$ref": "#/components/schemas/Session.ID"
+              },
+              "assistantMessageID": {
+                "$ref": "#/components/schemas/Session.Message.ID"
+              }
+            },
+            "required": ["sessionID", "assistantMessageID"],
             "additionalProperties": false
           }
         },
