@@ -242,3 +242,100 @@ test("global commands stay reachable when the mode changes", async () => {
     app.renderer.destroy()
   }
 })
+
+test("a layer switched by its enabled accessor is not registered again, and its commands follow the switch", async () => {
+  const [on, setOn] = createSignal(true)
+  const calls: string[] = []
+  let built = 0
+  let exercise = () => {}
+  let reachable = () => false
+
+  function Harness() {
+    const keymap = Keymap.use()
+    const commands = Keymap.useCommands()
+    Keymap.createLayer(() => {
+      built++
+      return {
+        mode: "global",
+        enabled: () => on(),
+        commands: [{ id: "demo.switched", run: () => void calls.push("ran") }],
+      }
+    })
+    exercise = () => keymap.dispatch("demo.switched")
+    reachable = () => commands().some((command) => command.id === "demo.switched")
+    return <box />
+  }
+
+  const app = await testRender(() => (
+    <ConfigProvider config={createTuiResolvedConfig()}>
+      <Keymap.Provider>
+        <Harness />
+      </Keymap.Provider>
+    </ConfigProvider>
+  ))
+  try {
+    expect(reachable()).toBe(true)
+    setOn(false)
+    expect(reachable()).toBe(false)
+    exercise()
+    expect(calls).toEqual([])
+    setOn(true)
+    expect(reachable()).toBe(true)
+    exercise()
+    expect(calls).toEqual(["ran"])
+    expect(built).toBe(1)
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("every reader of the shortcuts shares one view, computed once per keymap change", async () => {
+  const [extra, setExtra] = createSignal(false)
+  let changes = 0
+  let lookups = 0
+
+  function Reader() {
+    const shortcut = Keymap.useShortcut("demo.read")
+    return <text>{shortcut() ?? ""}</text>
+  }
+
+  function Extra() {
+    Keymap.createLayer(() => ({ commands: [{ id: "demo.extra", run() {} }] }))
+    return <box />
+  }
+
+  function Harness() {
+    const keymap = useKeymap()
+    const lookup = keymap.getCommandBindings.bind(keymap)
+    keymap.getCommandBindings = ((...input: Parameters<typeof lookup>) => {
+      lookups++
+      return lookup(...input)
+    }) as typeof keymap.getCommandBindings
+    keymap.on("state", () => void changes++)
+    Keymap.createLayer(() => ({ commands: [{ id: "demo.read", run() {} }] }))
+    return (
+      <box>
+        {Array.from({ length: 10 }, () => (
+          <Reader />
+        ))}
+        {extra() ? <Extra /> : null}
+      </box>
+    )
+  }
+
+  const app = await testRender(() => (
+    <ConfigProvider config={createTuiResolvedConfig()}>
+      <Keymap.Provider>
+        <Harness />
+      </Keymap.Provider>
+    </ConfigProvider>
+  ))
+  try {
+    const before = { changes, lookups }
+    setExtra(true)
+    expect(changes).toBeGreaterThan(before.changes)
+    expect(lookups - before.lookups).toBe(changes - before.changes)
+  } finally {
+    app.renderer.destroy()
+  }
+})

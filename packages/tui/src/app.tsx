@@ -749,6 +749,9 @@ function App() {
   })
 
   const connected = useConnected()
+  // A boolean memo: the session's model selection is a new object on each write to its info, and the
+  // app's commands should not rebuild (and their layer register again) unless this changes.
+  const hasVariants = createMemo(() => local.model.variant.list().length > 0)
   const appCommands = createMemo(() =>
     [
       {
@@ -764,7 +767,7 @@ function App() {
         name: "session.list",
         title: "Switch session",
         category: "Session",
-        suggested: data.session.list().length > 0,
+        suggested: () => data.session.list().length > 0,
         slash: { name: "sessions", aliases: ["resume", "continue"] },
         run: () => {
           dialog.replace(() => <DialogSessionList />)
@@ -993,7 +996,7 @@ function App() {
         name: "variant.list",
         title: "Switch model variant",
         category: "Agent",
-        palette: local.model.variant.list().length === 0 ? undefined : (true as const),
+        palette: hasVariants() ? (true as const) : undefined,
         slash: { name: "variants", aliases: ["thinking", "effort"] },
         run: () => {
           if (local.model.variant.list().length === 0) {

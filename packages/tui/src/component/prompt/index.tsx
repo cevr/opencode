@@ -265,7 +265,7 @@ export function Prompt(props: PromptProps) {
   const [pendingDirectory, setPendingDirectory] = createSignal<string>()
   Keymap.createLayer(() => ({
     mode: "global",
-    enabled: !disabled(),
+    enabled: () => !disabled(),
     commands: [
       {
         id: "session.cd",
@@ -462,7 +462,7 @@ export function Prompt(props: PromptProps) {
         title: "Remove editor context",
         name: "prompt.editor_context.clear",
         category: "Prompt",
-        enabled: Boolean(editorContext()),
+        enabled: () => Boolean(editorContext()),
         run: () => {
           dismissEditorContext()
           dialog.clear()
@@ -496,7 +496,7 @@ export function Prompt(props: PromptProps) {
         title: "View image attachments",
         name: "prompt.images.view",
         category: "Prompt",
-        enabled: imageAttachments().length > 0,
+        enabled: () => imageAttachments().length > 0,
         run: () => openImagePreview(0),
       },
       {
@@ -504,7 +504,7 @@ export function Prompt(props: PromptProps) {
         name: "session.interrupt",
         category: "Session",
         palette: undefined,
-        enabled: status() === "running",
+        enabled: () => status() === "running",
         run: () => {
           if (auto()?.visible) return
           if (!input.focused) return
@@ -536,7 +536,7 @@ export function Prompt(props: PromptProps) {
         name: "session.background",
         category: "Session",
         palette: undefined,
-        enabled: status() === "running",
+        enabled: () => status() === "running",
         run: () => {
           if (auto()?.visible) return
           if (!input.focused) return
@@ -644,18 +644,18 @@ export function Prompt(props: PromptProps) {
 
   Keymap.createLayer(() => ({
     mode: "global",
-    enabled: !disabled(),
+    enabled: () => !disabled(),
     commands: promptCommands(),
   }))
 
   Keymap.createLayer(() => ({
     priority: 1,
-    enabled: !disabled(),
+    enabled: () => !disabled(),
     bindings: ["prompt.queue"],
   }))
 
   Keymap.createLayer(() => ({
-    enabled: !disabled(),
+    enabled: () => !disabled(),
     bindings: [
       "prompt.submit",
       "prompt.editor",
@@ -886,7 +886,7 @@ export function Prompt(props: PromptProps) {
         title: "Stash prompt",
         name: "prompt.stash",
         category: "Prompt",
-        enabled: !!store.prompt.text,
+        enabled: () => !!store.prompt.text,
         run: () => {
           if (!store.prompt.text) return
           stash.push({ prompt: store.prompt })
@@ -898,7 +898,7 @@ export function Prompt(props: PromptProps) {
         title: "Stash pop",
         name: "prompt.stash.pop",
         category: "Prompt",
-        enabled: stash.list().length > 0,
+        enabled: () => stash.list().length > 0,
         run: () => {
           const entry = stash.pop()
           if (entry) {
@@ -914,7 +914,7 @@ export function Prompt(props: PromptProps) {
         title: "Stash list",
         name: "prompt.stash.list",
         category: "Prompt",
-        enabled: stash.list().length > 0,
+        enabled: () => stash.list().length > 0,
         run: () => {
           dialog.replace(() => (
             <DialogStash
@@ -942,14 +942,14 @@ export function Prompt(props: PromptProps) {
 
   Keymap.createLayer(() => ({
     mode: "global",
-    enabled: !disabled(),
+    enabled: () => !disabled(),
     commands: stashCommands(),
   }))
 
   Keymap.createLayer(() => {
     return {
       target: inputTarget,
-      enabled: inputTarget() !== undefined && !disabled(),
+      enabled: () => inputTarget() !== undefined && !disabled(),
       bindings: ["prompt.paste"],
     }
   })
@@ -957,7 +957,7 @@ export function Prompt(props: PromptProps) {
   Keymap.createLayer(() => {
     return {
       target: inputTarget,
-      enabled: inputTarget() !== undefined && !disabled() && store.prompt.text !== "",
+      enabled: () => inputTarget() !== undefined && !disabled() && store.prompt.text !== "",
       bindings: ["prompt.clear"],
     }
   })
@@ -965,7 +965,7 @@ export function Prompt(props: PromptProps) {
   Keymap.createLayer(() => {
     return {
       target: inputTarget,
-      enabled: (() => {
+      enabled: () => {
         cursorVersion()
         return (
           inputTarget() !== undefined &&
@@ -974,7 +974,7 @@ export function Prompt(props: PromptProps) {
           !auto()?.visible &&
           input?.visualCursor.offset === 0
         )
-      })(),
+      },
       commands: [
         {
           bind: "!",
@@ -993,7 +993,7 @@ export function Prompt(props: PromptProps) {
     return {
       priority: 1,
       target: inputTarget,
-      enabled: inputTarget() !== undefined && !disabled() && store.mode === "shell",
+      enabled: () => inputTarget() !== undefined && !disabled() && store.mode === "shell",
       commands: [
         { bind: "escape", title: "Exit shell mode", group: "Prompt", run: () => setStore("mode", "normal") },
         {
@@ -1010,10 +1010,10 @@ export function Prompt(props: PromptProps) {
   Keymap.createLayer(() => {
     return {
       target: inputTarget,
-      enabled: (() => {
+      enabled: () => {
         cursorVersion()
         return inputTarget() !== undefined && !disabled() && store.mode === "shell" && input?.visualCursor.offset === 0
-      })(),
+      },
       commands: [
         { bind: "backspace", title: "Exit shell mode", group: "Prompt", run: () => setStore("mode", "normal") },
       ],
@@ -1024,10 +1024,10 @@ export function Prompt(props: PromptProps) {
     return {
       priority: 1,
       target: inputTarget,
-      enabled: (() => {
+      enabled: () => {
         cursorVersion()
         return inputTarget() !== undefined && !disabled() && !auto()?.visible && input !== undefined
-      })(),
+      },
       commands: [
         {
           id: "prompt.history.previous",
@@ -1060,10 +1060,10 @@ export function Prompt(props: PromptProps) {
     return {
       priority: 1,
       target: inputTarget,
-      enabled: (() => {
+      enabled: () => {
         cursorVersion()
         return inputTarget() !== undefined && !disabled() && !auto()?.visible && input !== undefined
-      })(),
+      },
       commands: [
         {
           id: "prompt.history.next",
