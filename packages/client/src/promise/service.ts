@@ -37,6 +37,12 @@ export async function ensure(options: EnsureOptions = {}): Promise<Endpoint> {
     announced = true
     options.onStart?.(reason, previousVersion)
   }
+  let waited = false
+  const waiting = (url: string) => {
+    if (waited) return
+    waited = true
+    options.onWait?.(url)
+  }
   const spawnContender = async () => {
     const [command, ...args] = options.command ?? ["opencode", "serve", "--service"]
     if (command === undefined) throw new Error("Missing service command")
@@ -77,6 +83,7 @@ export async function ensure(options: EnsureOptions = {}): Promise<Endpoint> {
           await PtyHandoff.complete(options.file ?? fallback(), service.info)
           return service.endpoint
         }
+        if (decision._tag === "wait") waiting(service.info.url)
         if (decision._tag === "replace") {
           announce("version-mismatch", service.version)
           if (service.state !== "ready")
@@ -85,6 +92,7 @@ export async function ensure(options: EnsureOptions = {}): Promise<Endpoint> {
           pool.evict(service.info.pid)
         }
       } else {
+        if (registration.info !== undefined) waiting(registration.info.url)
         const failed = pool.reap()
         if (failed !== undefined) throw failed
         if (pool.shouldRecruit(registration.info !== undefined)) {

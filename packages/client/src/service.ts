@@ -32,6 +32,8 @@ export type EnsureOptions = DiscoverOptions & {
   readonly env?: Readonly<Record<string, string>>
   /** Called once before spawning a new service process. */
   readonly onStart?: (reason: EnsureReason, previousVersion?: string) => void
+  /** Called once when the registered service cannot serve yet: it is booting, or does not answer (a restart's gap). */
+  readonly onWait?: (url: string) => void
 }
 
 /** Options used to stop the local OpenCode service. */

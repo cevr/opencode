@@ -36,10 +36,18 @@ export default Runtime.handler(Commands, (input) =>
       Effect.forever,
       Effect.forkScoped,
     )
+    // Said once, before the TUI draws: a server down for a restart or still booting is waited for, not an error.
+    let waitSaid = false
+    const onWait = (url: string) => {
+      if (waitSaid) return
+      waitSaid = true
+      process.stderr.write(`Waiting for the OpenCode server at ${url}...\n`)
+    }
     const server = yield* ServerConnection.resolve({
       server: requestedServer,
       standalone: input.standalone,
       mismatch: "replace",
+      onWait,
       onStart: (reason, previousVersion) => {
         Queue.offerUnsafe(serviceStarts, { reason, previousVersion })
         if (reason === "version-mismatch" && preflight.begin(previousVersion)) return
@@ -58,7 +66,7 @@ export default Runtime.handler(Commands, (input) =>
     const session = Option.getOrUndefined(input.session)
     // A missing --session ID becomes the ID of the session the first prompt creates.
     // The lookup waits, as the TUI's own client does, while a service restarted meanwhile (an install)
-    // still answers 503 service_starting: a TUI opened then would otherwise exit on the refusal.
+    // refuses the connection or still answers 503 service_starting: a TUI opened then would otherwise exit.
     const sessionExists =
       session !== undefined &&
       (yield* Effect.tryPromise({
@@ -67,7 +75,7 @@ export default Runtime.handler(Commands, (input) =>
             OpenCode.make({
               baseUrl: server.endpoint.url,
               headers: Service.headers(server.endpoint),
-              fetch: serviceReadyFetch(noTimeoutFetch),
+              fetch: serviceReadyFetch(noTimeoutFetch, { onWait: () => onWait(server.endpoint.url) }),
             }),
             session,
           ),
