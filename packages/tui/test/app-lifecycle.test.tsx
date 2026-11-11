@@ -394,6 +394,7 @@ test("session title generated while an untitled session is loading remains visib
   const renameSyncRequested = Promise.withResolvers<void>()
   const releaseSession = Promise.withResolvers<void>()
   let sessionRequests = 0
+  let renamed = false
   const session = {
     id: "dummy",
     projectID: "project",
@@ -409,8 +410,10 @@ test("session title generated while an untitled session is loading remains visib
       sessionRequests++
       sessionRequested.resolve()
       if (sessionRequests === 2) renameSyncRequested.resolve()
+      // A read the server starts after the rename sees the generated title, as the server's own would.
+      const read = renamed ? { ...session, title: "Generated title" } : session
       await releaseSession.promise
-      return json({ data: session })
+      return json({ data: read })
     }
     if (url.pathname === "/api/session/dummy/message") return json({ data: [], cursor: {} })
     if (url.pathname === "/api/session/dummy/inbox") return json({ data: [] })
@@ -433,6 +436,7 @@ test("session title generated while an untitled session is loading remains visib
     )
 
     await sessionRequested.promise
+    renamed = true
     events.emit({
       id: "evt_renamed",
       created: 1,
@@ -458,6 +462,78 @@ test("session title generated while an untitled session is loading remains visib
     const generated = titles.lastIndexOf("OC | Generated title")
     expect(generated).toBeGreaterThan(-1)
     expect(titles.slice(generated + 1)).not.toContain("OpenCode")
+    setup.renderer.destroy()
+    await task
+  } finally {
+    if (!setup.renderer.isDestroyed) setup.renderer.destroy()
+    await server.stop()
+  }
+})
+
+test("a session opened with -s reads its messages before its children", async () => {
+  await using state = await tmpdir()
+  // The session is an open tab, as the owner's is: the tabs read their sessions as the stream connects.
+  await Bun.write(
+    path.join(state.path, "test", "tui", "tabs.json"),
+    JSON.stringify({ global: { tabs: [], unread: {} }, cwd: { [directory]: { tabs: [{ sessionID: "ses_root" }], unread: {} } } }),
+  )
+  const setup = await createTestRenderer({ width: 80, height: 24 })
+  await setup.renderer.setupTerminal()
+  const requests: Array<{ read: "children" | "messages"; at: number }> = []
+  const childrenRead = Promise.withResolvers<void>()
+  const session = {
+    id: "ses_root",
+    title: "Root",
+    projectID: "project",
+    location: { directory },
+    cost: 0,
+    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+    time: { created: 0, updated: 0 },
+  }
+  const events = createEventStream()
+  const calls = createFetch(async (url) => {
+    if (url.pathname === "/api/session" && url.searchParams.get("parentID") === "ses_root") {
+      requests.push({ read: "children", at: performance.now() })
+      childrenRead.resolve()
+      return json({ data: [], cursor: {} })
+    }
+    if (url.pathname === "/api/session") return json({ data: [], cursor: {} })
+    if (url.pathname === "/api/session/ses_root") return json({ data: session })
+    if (url.pathname === "/api/session/ses_root/message") {
+      requests.push({ read: "messages", at: performance.now() })
+      return json({ data: [], cursor: {} })
+    }
+    if (url.pathname === "/api/session/ses_root/inbox") return json({ data: [] })
+    if (url.pathname === "/api/session/ses_root/permission") return json({ data: [] })
+  }, events)
+  const server = Bun.serve({ port: 0, fetch: (request) => calls.fetch(request) })
+
+  try {
+    const { run } = await import("../src/app")
+    const task = Effect.runPromise(
+      run({
+        app: { name: "test", version: "test", channel: "test" },
+        server: { endpoint: { url: server.url.toString() } },
+        config: { get: async () => ({ tabs: { enabled: true } }), update: async () => ({}) },
+        packages: { prepare: async () => ({ directory: "" }) },
+        terminalHandoff: async () => ({ renderer: setup.renderer, mode: "dark", complete: () => {} }),
+        args: { sessionID: "ses_root" },
+        log: () => {},
+      }).pipe(Effect.provide(Global.layerWith({ state: state.path })), Effect.provide(FileSystem.layerNoop({}))),
+    )
+    // The children wait for the transcript's first frame and a pause past it, however the tabs or the
+    // route start: a family of hundreds would otherwise land on the transcript's first draw.
+    await Promise.race([
+      childrenRead.promise,
+      Bun.sleep(5_000).then(() => {
+        throw new Error("the children were never read")
+      }),
+    ])
+    const messages = requests.find((request) => request.read === "messages")
+    const children = requests.find((request) => request.read === "children")
+    expect(messages).toBeDefined()
+    // A lower bound only: the pause past the frame is a timer, so load can only lengthen it.
+    expect(children!.at - messages!.at).toBeGreaterThanOrEqual(700)
     setup.renderer.destroy()
     await task
   } finally {
