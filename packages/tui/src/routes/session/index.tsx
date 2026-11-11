@@ -26,6 +26,7 @@ import { PatchDiff } from "../../component/patch-diff"
 import { useTheme, useThemes } from "../../context/theme"
 import {
   BoxRenderable,
+  CliRenderEvents,
   ScrollBoxRenderable,
   addDefaultParsers,
   TextAttributes,
@@ -325,6 +326,17 @@ export function Session(props: {
     // A scroll-triggered history load joins this boundary load instead of publishing its own page.
     () => pinAbove(),
   )
+  // The session's children (every subagent it ever ran, hundreds in a long orchestration) are read
+  // once its transcript is drawn: the first frame needs the session and its live children only, and
+  // those come with the session's own read and the connection's active sessions.
+  createEffect(() => {
+    if (!rowsSynced() || client.connection.status() !== "connected") return
+    const sessionID = route.sessionID
+    const read = () => void data.session.sync(sessionID, { children: true }).catch(() => undefined)
+    renderer.once(CliRenderEvents.FRAME, read)
+    renderer.requestRender()
+    onCleanup(() => renderer.off(CliRenderEvents.FRAME, read))
+  })
   const boundaries = createMemo(() => messageBoundaryIDs(rows, messages()))
   const anchors = createTimelineAnchors()
   const [navigationMessage, setNavigationMessage] = createSignal<string>()
@@ -396,7 +408,7 @@ export function Session(props: {
     const sessionID = route.sessionID
     void (async () => {
       await Promise.all([
-        data.session.sync(sessionID, { children: true }),
+        data.session.sync(sessionID),
         data.session.permission.sync(sessionID).catch(() => undefined),
         data.session.form.sync(sessionID).catch(() => undefined),
       ])

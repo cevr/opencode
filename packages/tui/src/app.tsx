@@ -33,6 +33,7 @@ import {
   onMount,
   onCleanup,
   batch,
+  on,
   Show,
 } from "solid-js"
 import {
@@ -544,6 +545,20 @@ function App() {
       if (route.data.type === "session" && data.session.get(route.data.sessionID)) BootTrace.mark("session info")
     })
   }
+  // The session's reads start once the event stream is connected, while the plugins still load: the
+  // session view mounts only when they are ready, and its own reads then join these instead of
+  // starting after them.
+  createEffect(
+    on(
+      () => [client.connection.status(), route.data.type === "session" ? route.data.sessionID : undefined] as const,
+      ([status, sessionID]) => {
+        if (status !== "connected" || sessionID === undefined) return
+        void data.session.sync(sessionID).catch(() => undefined)
+        void data.session.message.sync(sessionID).catch(() => undefined)
+        void data.session.pending.sync(sessionID).catch(() => undefined)
+      },
+    ),
+  )
   createEffect(() => {
     if (client.connection.status() !== "connected") return
     if (route.data.type !== "session") return

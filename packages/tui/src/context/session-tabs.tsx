@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createSignal, on, onCleanup } from "solid-js"
+import { createEffect, createMemo, createSignal, on, onCleanup, untrack } from "solid-js"
 import { createStore } from "solid-js/store"
 import { useKeyboard, useRenderer } from "@opentui/solid"
 import { isDeepEqual } from "remeda"
@@ -303,7 +303,12 @@ export const { use: useSessionTabs, provider: SessionTabsProvider } = createSimp
       const sessionIDs = signature.split("\n")
       let stale = false
       void (async () => {
-        await Promise.allSettled(sessionIDs.map((sessionID) => data.session.sync(sessionID, { children: true })))
+        // The shown session's children (hundreds, for a long orchestration) are its view's to read,
+        // once its transcript is drawn; a background tab reads its family here, for its status.
+        const shown = untrack(current)
+        await Promise.allSettled(
+          sessionIDs.map((sessionID) => data.session.sync(sessionID, { children: sessionID !== shown })),
+        )
         if (stale) return
         const locations = new Map(
           sessionIDs

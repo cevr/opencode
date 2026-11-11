@@ -380,7 +380,9 @@ test("keeps scroll anchors for open session tabs", async () => {
 })
 
 test("keeps parent and subagent scroll anchors independent", async () => {
+  // From home: the tabs read a background tab's children, where the shown session's are its view's to read.
   const setup = await renderSessionTabs("root", {
+    home: true,
     persisted: ["root"],
     sessionParents: { child: "root" },
   })
