@@ -226,7 +226,6 @@ export function Prompt(props: PromptProps) {
   const dialog = useDialog()
   const toast = useToast()
   const status = createMemo(() => data.session.status(props.sessionID ?? ""))
-  const history = usePromptHistory()
   const stash = usePromptStash()
   const keymap = Keymap.use()
   const renderer = useRenderer()
@@ -384,6 +383,7 @@ export function Prompt(props: PromptProps) {
     extmarkToPart: new Map(),
     interrupt: 0,
   })
+  const history = usePromptHistory(() => ({ ...unwrap(store.prompt), mode: store.mode }))
   let disposed = false
   let pasteQueue = Promise.resolve()
 
@@ -709,6 +709,7 @@ export function Prompt(props: PromptProps) {
       setStore("mode", mode)
     },
     set(prompt) {
+      history.reset()
       input.setText(prompt.text)
       setStore("prompt", prompt)
       restoreExtmarksFromPrompt(prompt)
@@ -723,6 +724,7 @@ export function Prompt(props: PromptProps) {
   }
 
   function resetComposer() {
+    history.reset()
     input.extmarks.clear()
     setStore("prompt", emptyPrompt())
     setStore("extmarkToPart", new Map())
@@ -815,6 +817,7 @@ export function Prompt(props: PromptProps) {
           virtual: true,
           styleId,
           typeId: promptPartTypeId,
+          data: ref.type === "pasted" ? { pasted: prompt.pasted[ref.index].text, label: mention.text } : undefined,
         })
         setStore("extmarkToPart", (map: Map<number, PromptPartRef>) => {
           const newMap = new Map(map)
@@ -837,6 +840,19 @@ export function Prompt(props: PromptProps) {
         const pasted: PromptInfo["pasted"] = []
 
         for (const extmark of allExtmarks) {
+          // Undo restores the extmark after its entry in the live prompt has been removed.
+          if (typeof extmark.data?.pasted === "string" && typeof extmark.data?.label === "string") {
+            if (input.getTextRange(extmark.start, extmark.end) !== extmark.data.label) {
+              input.extmarks.delete(extmark.id)
+              continue
+            }
+            newMap.set(extmark.id, { type: "pasted", index: pasted.length })
+            pasted.push({
+              text: extmark.data.pasted,
+              source: { start: extmark.start, end: extmark.end, text: extmark.data.label },
+            })
+            continue
+          }
           const ref = draft.extmarkToPart.get(extmark.id)
           if (!ref) continue
           if (ref.type === "file") {
@@ -866,15 +882,7 @@ export function Prompt(props: PromptProps) {
             const index = skills.length
             skills.push(part)
             newMap.set(extmark.id, { type: "skill", index })
-            continue
           }
-          const part = draft.prompt.pasted[ref.index]
-          if (!part) continue
-          part.source.start = extmark.start
-          part.source.end = extmark.end
-          const index = pasted.length
-          pasted.push(part)
-          newMap.set(extmark.id, { type: "pasted", index })
         }
 
         const nextFiles = preserveMentionlessPromptAttachments(draft.prompt.files, files)
@@ -918,12 +926,7 @@ export function Prompt(props: PromptProps) {
         enabled: () => stash.list().length > 0,
         run: () => {
           const entry = stash.pop()
-          if (entry) {
-            input.setText(entry.prompt.text)
-            setStore("prompt", entry.prompt)
-            restoreExtmarksFromPrompt(entry.prompt)
-            input.gotoBufferEnd()
-          }
+          if (entry) ref.set(entry.prompt)
           dialog.clear()
         },
       },
@@ -933,16 +936,7 @@ export function Prompt(props: PromptProps) {
         category: "Prompt",
         enabled: () => stash.list().length > 0,
         run: () => {
-          dialog.replace(() => (
-            <DialogStash
-              onSelect={(entry) => {
-                input.setText(entry.prompt.text)
-                setStore("prompt", entry.prompt)
-                restoreExtmarksFromPrompt(entry.prompt)
-                input.gotoBufferEnd()
-              }}
-            />
-          ))
+          dialog.replace(() => <DialogStash onSelect={(entry) => ref.set(entry.prompt)} />)
         },
       },
     ].map(
@@ -1491,6 +1485,7 @@ export function Prompt(props: PromptProps) {
       virtual: true,
       styleId: pasteStyleId,
       typeId: promptPartTypeId,
+      data: { pasted: text, label: virtualText },
     })
 
     setStore(
@@ -1512,7 +1507,6 @@ export function Prompt(props: PromptProps) {
     const part = store.prompt.pasted[ref.index]
     if (!part) return false
 
-    input.extmarks.delete(extmarkId)
     input.setSelection(extmark.start, extmark.end)
     input.insertText(part.text)
     return true
