@@ -8,7 +8,10 @@ import {
   arrive,
   HANDOFF_ENV,
   moveTarget,
+  namesVersion,
   NOTICE_MS,
+  reports,
+  settle,
   STAYED_ENV,
   writeHandoff,
   type RestartPlan,
@@ -41,9 +44,29 @@ const form = {
   fields: [{ key: "targets", type: "multiselect", options: [{ value: "staging", label: "Staging" }], custom: true }],
 }
 
+// The CLI from source, built as a release would be with OPENCODE_VERSION set, so `--version` prints what an installed
+// build prints, through the CLI's own code.
+const CLI = path.resolve(import.meta.dir, "../../cli/src/index.ts")
+const quote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`
+
+/** An executable at `file` that runs the CLI as build `version`, with its state under `dir`. */
+function build(file: string, version: string, dir: string) {
+  const env = ["DATA", "STATE", "CONFIG", "CACHE"].map((name) => `${name}_HOME=${quote(path.join(dir, "xdg", name))}`)
+  writeFileSync(
+    file,
+    [
+      "#!/bin/sh",
+      ...env.map((assignment) => `export XDG_${assignment}`),
+      `exec ${quote(process.execPath)} --define ${quote(`OPENCODE_VERSION=${JSON.stringify(version)}`)} ${quote(CLI)} "$@"`,
+      "",
+    ].join("\n"),
+  )
+  chmodSync(file, 0o755)
+}
+
 /**
- * A machine with an install: the installed build's command (a script that reports `reports`), its record in the
- * state directory listing the builds it replaced, and a fake service whose build the install moves.
+ * A machine with an install: the installed build's command (the CLI as build `reports`), its record in the state
+ * directory listing the builds it replaced, and a fake service whose build the install moves.
  */
 async function machine(
   dir: string,
@@ -51,8 +74,7 @@ async function machine(
 ) {
   const state = path.join(dir, "state")
   const command = path.join(dir, "opencode-new")
-  writeFileSync(command, `#!/bin/sh\necho ${input.reports ?? NEW}\n`)
-  chmodSync(command, 0o755)
+  build(command, input.reports ?? NEW, dir)
   mkdirSync(state, { recursive: true })
   writeFileSync(
     path.join(state, "installed.json"),
@@ -114,6 +136,7 @@ function install(fake: Machine, tui: Awaited<ReturnType<typeof oldTui>>) {
 const settled = <T,>(promise: Promise<T>, ms: number) =>
   Promise.race([promise, Bun.sleep(ms).then(() => "pending" as const)])
 
+// The installed build's `--version` runs the CLI, which takes most of a second before the notice can show.
 /** Whether the notice shows at any moment over `ms`. */
 async function noticeWithin(tui: Awaited<ReturnType<typeof oldTui>>, ms: number) {
   const end = performance.now() + ms
@@ -132,7 +155,7 @@ test("an old TUI on a session moves onto the installed build, on the same sessio
   await old.waitForFrame((frame) => frame.includes("Carry this draft"))
 
   install(fake, old)
-  await old.waitForFrame((frame) => frame.includes(NOTICE))
+  expect(await noticeWithin(old, 15_000)).toBe(true)
   const result = (await settled(old.task, 15_000)) as { restart?: RestartPlan } | "pending"
   expect(result).not.toBe("pending")
   const plan = (result as { restart?: RestartPlan }).restart!
@@ -253,7 +276,7 @@ test("input during the notice withdraws it: the move waits a whole notice after 
   const fake = await machine(scratch.path)
   await using old = await oldTui(fake)
   install(fake, old)
-  await old.waitForFrame((frame) => frame.includes(NOTICE))
+  expect(await noticeWithin(old, 15_000)).toBe(true)
   await Bun.sleep(1_000)
   old.mockInput.pressArrow("left")
   const pressed = performance.now()
@@ -306,7 +329,7 @@ test("an installed build gone when the notice ends leaves the TUI on its build, 
   const fake = await machine(scratch.path)
   await using old = await oldTui(fake)
   install(fake, old)
-  await old.waitForFrame((frame) => frame.includes(NOTICE))
+  expect(await noticeWithin(old, 15_000)).toBe(true)
   const script = readFileSync(fake.command, "utf8")
   rmSync(fake.command)
   expect(await settled(old.task, NOTICE_MS + 3_000)).toBe("pending")
@@ -316,6 +339,20 @@ test("an installed build gone when the notice ends leaves the TUI on its build, 
   old.events.disconnect()
   expect(await noticeWithin(old, 4_000)).toBe(false)
   expect(await settled(old.task, 0)).toBe("pending")
+})
+
+test("a build's version is read from what the CLI's --version prints", async () => {
+  await using scratch = await tmpdir()
+  const file = path.join(scratch.path, "opencode-new")
+  build(file, NEW, scratch.path)
+  // The real output, `opencode v<version>`, from the CLI's own code.
+  const printed = await new Response(Bun.spawn([file, "--version"], { stdout: "pipe" }).stdout).text()
+  expect(printed.trim()).toBe(`opencode v${NEW}`)
+  expect(await reports([file], NEW)).toBe(true)
+  expect(await reports([file], OLD)).toBe(false)
+  expect(namesVersion(`opencode v${NEW}\n`, NEW)).toBe(true)
+  expect(namesVersion(NEW, NEW)).toBe(true)
+  expect(namesVersion(`opencode v${NEW}-dirty`, NEW)).toBe(false)
 })
 
 test("a TUI moves only onto the installed build the service runs, from a build it superseded, never back", () => {
@@ -335,7 +372,7 @@ test("a TUI moves only onto the installed build the service runs, from a build i
   expect(moveTarget("2.3.0", served, { ...installed, previous: ["2.3.0"] })).toBeUndefined()
 })
 
-test("the handoff carries every tab's draft, is read once, and handoffs nobody took are swept", async () => {
+test("the handoff carries every tab's draft, is kept until the screen is up, and handoffs nobody took are swept", async () => {
   await using scratch = await tmpdir()
   const prompt = (text: string) => ({ text, files: [], agents: [], skills: [], pasted: [] })
   const file = writeHandoff(scratch.path, {
@@ -351,6 +388,9 @@ test("the handoff carries every tab's draft, is read once, and handoffs nobody t
   const env: Record<string, string | undefined> = { [HANDOFF_ENV]: file }
   expect(arrive(env)).toEqual({ from: OLD, to: NEW, stayed: false })
   expect(env[HANDOFF_ENV]).toBeUndefined()
+  // The file stays until the screen is up: a watcher that finds it after this process ended starts the build before.
+  expect(existsSync(file)).toBe(true)
+  settle()
   expect(existsSync(file)).toBe(false)
   expect(takeDraft("ses_a")).toEqual({ prompt: prompt("on a"), cursor: 2 })
   expect(takeDraft(undefined)).toEqual({ prompt: prompt("on home"), cursor: Infinity })

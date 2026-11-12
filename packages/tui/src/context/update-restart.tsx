@@ -129,13 +129,17 @@ export function writeHandoff(
 
 export type Arrival = { readonly from: string; readonly to: string; readonly stayed: boolean }
 let arrival: Arrival | undefined
+// The handoff this process came with. It stays until the screen is up (`settle`): a watcher that sees it still there once
+// this process ended knows this build never came up, and starts the one before with it.
+let taken: string | undefined
 /** The builds a move onto failed, which this process does not try again. */
 const stayedOff = new Set<string>()
 
 /**
  * Takes the handoff a replaced TUI left for this one, if `env` names one: stashes its drafts for the composers that
- * mount next, deletes the file and the variables (so nothing this process starts inherits them), and returns the
- * builds it moved between, or the build it stayed off. Deletes handoffs under `state` that no process took.
+ * mount next, deletes the variables (so nothing this process starts inherits them), and returns the builds it moved
+ * between, or the build it stayed off. The file itself goes once the screen is up (`settle`). Deletes handoffs under
+ * `state` that no process took.
  */
 export function arrive(env: Record<string, string | undefined> = process.env, state?: string) {
   if (state) sweep(state)
@@ -145,6 +149,7 @@ export function arrive(env: Record<string, string | undefined> = process.env, st
   delete env[STAYED_ENV]
   if (stayed) stayedOff.add(stayed)
   if (!file) return undefined
+  taken = file
   const text = (() => {
     try {
       return readFileSync(file, "utf8")
@@ -152,7 +157,6 @@ export function arrive(env: Record<string, string | undefined> = process.env, st
       return undefined
     }
   })()
-  rmSync(file, { force: true })
   const handoff = text === undefined ? undefined : Option.getOrUndefined(decodeHandoff(text))
   if (!handoff) return undefined
   for (const draft of handoff.drafts) {
@@ -161,6 +165,12 @@ export function arrive(env: Record<string, string | undefined> = process.env, st
   }
   arrival = { from: handoff.from, to: handoff.to, stayed: stayed === handoff.to }
   return arrival
+}
+
+/** Deletes the handoff this process came with: its screen is up, so the move held. */
+export function settle() {
+  if (taken) rmSync(taken, { force: true })
+  taken = undefined
 }
 
 function sweep(state: string) {
@@ -196,6 +206,7 @@ export function useUpdateRestart() {
   const paths = useTuiPaths()
 
   onMount(() => {
+    settle()
     const moved = arrival
     arrival = undefined
     if (!moved) return
@@ -350,14 +361,25 @@ export function useUpdateRestart() {
   })
 }
 
+/**
+ * Whether a build's `--version` output names `version`. The CLI prints `opencode v<version>`; any word of the output,
+ * with or without that `v`, counts.
+ */
+export function namesVersion(output: string, version: string) {
+  return output
+    .trim()
+    .split(/\s+/)
+    .some((word) => word === version || word === `v${version}`)
+}
+
 /** Whether `command --version` reports `version`: the build is in place and runs. */
-async function reports(command: ReadonlyArray<string>, version: string) {
+export async function reports(command: ReadonlyArray<string>, version: string) {
   try {
     const child = Bun.spawn([...command, "--version"], { stdout: "pipe", stderr: "ignore", stdin: "ignore" })
     const timer = setTimeout(() => child.kill(), 10_000)
     const output = await new Response(child.stdout).text()
     clearTimeout(timer)
-    return (await child.exited) === 0 && output.trim().split(/\s+/).includes(version)
+    return (await child.exited) === 0 && namesVersion(output, version)
   } catch {
     return false
   }
