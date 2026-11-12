@@ -338,8 +338,12 @@ test("an unfolded low activity group spaces its rows by the transcript's row gap
     // The second call draws nothing, as a plugin's call row folded into the one before it does.
     entry: (entry) =>
       entry.type === "part" && entry.ref.partID !== "two" ? <text>Shell {entry.ref.partID}</text> : null,
-    // Tight under the group's row and after the first call, one blank row above the third.
-    gap: (entry) => (entry.type === "part" && entry.ref.partID === "three" ? 1 : 0),
+    // Prime's rule in small: a row after the group's own row or after a call stacks tight; any other
+    // previous row (none, a message) gets a blank row. The third call asks for one blank row above it.
+    gap: (entry, previous) => {
+      if (entry.type === "part" && entry.ref.partID === "three") return 1
+      return previous?.type === "group" || previous?.type === "part" ? 0 : 1
+    },
   })
   try {
     app.renderer.start()
@@ -349,6 +353,7 @@ test("an unfolded low activity group spaces its rows by the transcript's row gap
       .split("\n")
       .map((line) => line.trim())
     const start = lines.findIndex((line) => line.startsWith("− 3 commands"))
+    // The owner's layout: the first call on the row right under the group's own row, no blank row between.
     expect(lines.slice(start, start + 4)).toEqual(["− 3 commands", "Shell one", "", "Shell three"])
   } finally {
     app.renderer.destroy()
