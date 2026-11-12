@@ -203,26 +203,46 @@ test("reports a bounded contender stderr tail with native promises", async () =>
   expect(error.message.length).toBeLessThan(9_000)
 }, 10_000)
 
-test("evicts an unresponsive registered service before starting its replacement", async () => {
+test("a registered service it did not start that answers probes slowly survives ensure", async () => {
+  await using fixture = await serviceFixture()
+  const registration = fixture.registration
+  const existing = fixture.spawn("slow", "5")
+  await fixture.waitForFile()
+  const original = await Bun.file(registration).json()
+
+  const endpoint = await ensure({ file: registration, version: "test", command: fixture.command("record-start") })
+
+  expect((await Bun.file(registration + ".requests").text()).trim().split("\n")).toHaveLength(5)
+  expect(endpoint.url).toBe(original.url)
+  expect(existing.exitCode).toBe(null)
+  expect(await fixture.signal()).toBeUndefined()
+  expect(await Bun.file(registration + ".started").exists()).toBe(false)
+})
+
+test("a hanging registered service it did not start is waited for, then reported and left running", async () => {
   await using fixture = await serviceFixture()
   const registration = fixture.registration
   const existing = fixture.spawn("hanging")
   await fixture.waitForFile()
   const original = await Bun.file(registration).json()
+  const waits: string[] = []
 
-  const endpoint = await ensure({
+  const error = await ensure({
     file: registration,
     version: "test",
-    command: fixture.command("delayed", "10"),
-  })
-  const replacement = await Bun.file(registration).json()
-  fixture.track(replacement.pid)
+    command: fixture.command("record-start"),
+    onWait: (url) => waits.push(url),
+  }).catch((error: unknown) => error)
 
-  expect((await Bun.file(registration + ".requests").text()).trim().split("\n")).toHaveLength(3)
-  expect(await existing.exited).toBe(stoppedExitCode)
-  expect(replacement.pid).not.toBe(original.pid)
-  expect(endpoint.url).toBe(replacement.url)
-})
+  expect(error).toBeInstanceOf(Error)
+  expect(String(error)).toContain(`Background service at ${original.url} (pid ${original.pid}) did not answer`)
+  expect(String(error)).toContain("left running")
+  expect(waits).toEqual([original.url])
+  expect(existing.exitCode).toBe(null)
+  expect(await fixture.signal()).toBeUndefined()
+  expect(await Bun.file(registration).json()).toEqual(original)
+  expect(await Bun.file(registration + ".started").exists()).toBe(false)
+}, 10_000)
 
 test("recovers when the starting service it waits for is stopped", async () => {
   await using fixture = await serviceFixture()

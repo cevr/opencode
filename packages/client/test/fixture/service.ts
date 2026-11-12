@@ -75,6 +75,11 @@ const server = Bun.serve({
       return new Response(null, { status: 404 })
     requests += 1
     if (mode === "starting") await writeFile(registration + ".status-request", "")
+    // A busy or booting service: its first `delay` probes answer after the client gave up on them.
+    if (mode === "slow" && requests <= Number(delay)) {
+      await appendFile(registration + ".requests", process.pid + "\n")
+      await Bun.sleep(300)
+    }
     if (mode === "hanging" || controlled === "hang") {
       await appendFile(registration + ".requests", process.pid + "\n")
       return new Promise<Response>(() => {})
