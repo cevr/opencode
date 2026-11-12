@@ -107,6 +107,10 @@ export function contenderPool(timing: EnsureTiming) {
       // survivors finish without recruiting replacements that could hide the error indefinitely.
       return failure === undefined && contenders.size < 2 && Date.now() - lastSpawn >= spawnDelay
     },
+    /** Whether `pid` is a live attempt this call started: the only service it may stop for not answering. */
+    owns(pid: number) {
+      return [...contenders].some((item) => item.child.pid === pid && !contenderFinished(item))
+    },
     add(contender: ServiceContender) {
       contenders.add(contender)
       lastSpawn = Date.now()

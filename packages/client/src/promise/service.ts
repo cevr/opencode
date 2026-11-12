@@ -4,7 +4,7 @@ import { contenderPool, spawnServiceContender } from "../service-contender.js"
 import { defaultEnsureTiming, ensureTiming, type EnsureTiming } from "../service-timing.js"
 import { matchesVersion } from "../service-version.js"
 import { PtyHandoff } from "../pty-handoff.js"
-import { decide, fallback, headers, probeResult, same } from "../service-probe.js"
+import { decide, fallback, headers, probeResult, same, unanswered } from "../service-probe.js"
 
 export * from "../service.js"
 export { fallback, headers }
@@ -30,6 +30,7 @@ export async function ensure(options: EnsureOptions = {}): Promise<Endpoint> {
   const deadline = Date.now() + timing.promiseTimeout
   const pool = contenderPool(timing)
   let timeouts: { readonly info: Info; readonly count: number } | undefined
+  let unresponsive: Info | undefined
   let announced = false
 
   const announce = (reason: "missing" | "version-mismatch", previousVersion?: string) => {
@@ -56,8 +57,19 @@ export async function ensure(options: EnsureOptions = {}): Promise<Endpoint> {
   try {
     while (true) {
       if (Date.now() >= deadline)
-        throw pool.failure() ?? new Error("Timed out waiting for the background service to start")
+        throw unresponsive !== undefined
+          ? unanswered(unresponsive, timing.promiseTimeout)
+          : (pool.failure() ?? new Error("Timed out waiting for the background service to start"))
       const registration = await registered(options.file, timing.requestTimeout)
+      unresponsive = undefined
+      // A slow service this call did not start is busy or booting as often as hung: it is reported
+      // and waited for (bounded by promiseTimeout), never stopped or raced by a contender.
+      if (registration.timedOut && registration.info !== undefined && !pool.owns(registration.info.pid)) {
+        unresponsive = registration.info
+        waiting(registration.info.url)
+        await delay(timing.pollInterval)
+        continue
+      }
       if (registration.timedOut && registration.info !== undefined) {
         timeouts = {
           info: registration.info,

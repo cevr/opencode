@@ -4,7 +4,7 @@ import { contenderPool, spawnServiceContender } from "../service-contender.js"
 import { defaultEnsureTiming, ensureTiming, type EnsureTiming } from "../service-timing.js"
 import { matchesVersion } from "../service-version.js"
 import { PtyHandoff } from "../pty-handoff.js"
-import { decide, fallback, headers, probeResult, same } from "../service-probe.js"
+import { decide, fallback, headers, probeResult, same, unanswered } from "../service-probe.js"
 
 export * from "../service.js"
 export { headers }
@@ -50,6 +50,7 @@ export const ensure = Effect.fn("service.ensure")(function* (options: EnsureOpti
   const timing = ensureTiming(options)
   const pool = contenderPool(timing)
   let timeouts: { readonly info: Info; readonly count: number } | undefined
+  let unresponsive: Info | undefined
   let announced = false
   const announce = (reason: "missing" | "version-mismatch", previousVersion?: string) =>
     Effect.sync(() => {
@@ -79,7 +80,15 @@ export const ensure = Effect.fn("service.ensure")(function* (options: EnsureOpti
     const registration = yield* registered(options.file, timing.requestTimeout)
     const info = registration.info
     const service = registration.service
+    unresponsive = undefined
     if (registration.timedOut && info !== undefined) {
+      // A slow service this call did not start is busy or booting as often as hung: it is reported
+      // and waited for (bounded by promiseTimeout), never stopped or raced by a contender.
+      if (!pool.owns(info.pid)) {
+        unresponsive = info
+        yield* waiting(info.url)
+        return Option.none()
+      }
       timeouts = {
         info,
         count: timeouts !== undefined && same(timeouts.info, info) ? timeouts.count + 1 : 1,
@@ -131,7 +140,11 @@ export const ensure = Effect.fn("service.ensure")(function* (options: EnsureOpti
     Effect.ensuring(Effect.sync(() => pool.releaseAll())),
   )
   if (Option.isNone(found))
-    return yield* Effect.fail(pool.failure() ?? new Error("Timed out waiting for the background service to start"))
+    return yield* Effect.fail(
+      unresponsive !== undefined
+        ? unanswered(unresponsive, timing.promiseTimeout)
+        : (pool.failure() ?? new Error("Timed out waiting for the background service to start")),
+    )
   return found.value.endpoint
 })
 

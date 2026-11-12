@@ -31,6 +31,18 @@ export function decide(service: LocalService, options: DiscoverOptions) {
   return { _tag: "wait" } as const
 }
 
+/**
+ * Why `ensure()` gave up on a registered service it did not start that kept not answering its
+ * probes. Such a service is busy or still starting as often as it is hung, so ensure never stops
+ * it; it waits for it, bounded, and leaves the decision to restart it to the user.
+ */
+export function unanswered(info: Info, waitedMs: number) {
+  return new Error(
+    `Background service at ${info.url} (pid ${info.pid}) did not answer within ${Math.round(waitedMs / 1000)}s. ` +
+      "It was left running; if it is stuck, restart it with `opencode service restart`.",
+  )
+}
+
 function fail(message: string) {
   return { _tag: "fail" as const, error: new Error(message) }
 }
