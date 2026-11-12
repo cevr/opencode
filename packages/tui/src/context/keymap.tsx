@@ -1,13 +1,19 @@
 import type { KeymapActive, KeymapCommand, KeymapLayer, KeymapPending } from "@opencode/plugin/tui/context"
 import { InputRenderable, TextareaRenderable, type KeyEvent, type Renderable } from "@opentui/core"
-import { stringifyKeyStroke, type Binding, type CommandContext } from "@opentui/keymap"
+import {
+  stringifyKeyStroke,
+  type Binding,
+  type CommandContext,
+  type KeyLike,
+  type KeySequencePart,
+} from "@opentui/keymap"
 import {
   registerBackspacePopsPendingSequence,
   registerBaseLayoutFallback,
   registerCommaBindings,
   registerEscapeClearsPendingSequence,
+  registerLeader,
   registerManagedTextareaLayer,
-  registerTimedLeader,
 } from "@opentui/keymap/addons/opentui"
 import { formatCommandBindings, formatKeySequence } from "@opentui/keymap/extras"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
@@ -143,11 +149,12 @@ function Provider(props: ParentProps<{ config?: KeymapConfig }>) {
   const leader = config.keybinds.get("leader")?.[0]?.key
   if (leader) {
     dispose.push(
-      registerTimedLeader(keymap, {
-        trigger: leader,
-        name: "leader",
-        timeoutMs: config.leader?.timeout ?? ("leader_timeout" in config ? config.leader_timeout : undefined) ?? 2000,
-      }),
+      registerLeader(keymap, { trigger: leader, name: "leader" }),
+      registerLeaderTimeout(
+        keymap,
+        leader,
+        config.leader?.timeout ?? ("leader_timeout" in config ? config.leader_timeout : undefined) ?? 2000,
+      ),
     )
   }
   onCleanup(() => {
@@ -531,6 +538,39 @@ function createMode(keymap: OpenTuiKeymap) {
       unregister()
       keymap.setData(MODE.key, undefined)
     },
+  }
+}
+
+// How long the leader's expiry waits after its timeout, for the input that waited behind a stall to be read.
+const LEADER_SETTLE_MS = 16
+
+// Clears a pending leader `timeoutMs` after it, as opentui's `registerTimedLeader` does, except that the clear
+// waits one more short timer: the event loop reads the input that is waiting before it runs a timer set after the
+// timeout fired. opentui clears from the timeout's own callback, so when the thread stalls past the timeout (a
+// loaded machine, a long input callback), the expired timer runs before the key typed in time is read, and that
+// key is typed as text. Drop this for `registerTimedLeader` once opentui defers its clear the same way.
+function registerLeaderTimeout(keymap: OpenTuiKeymap, trigger: KeyLike, timeoutMs: number) {
+  const matches = keymap.createKeyMatcher(trigger)
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const stop = () => {
+    clearTimeout(timer)
+    timer = undefined
+  }
+  const sync = (sequence: readonly KeySequencePart[]) => {
+    stop()
+    if (!matches(sequence[0])) return
+    timer = setTimeout(() => {
+      timer = setTimeout(() => {
+        timer = undefined
+        keymap.clearPendingSequence()
+      }, LEADER_SETTLE_MS)
+    }, timeoutMs)
+  }
+  const off = keymap.on("pendingSequence", sync)
+  sync(keymap.getPendingSequence())
+  return () => {
+    stop()
+    off()
   }
 }
 
