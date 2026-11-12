@@ -1,13 +1,14 @@
 /** @jsxImportSource @opentui/solid */
 // A TUI keymap on this process's stdin that stalls for `argv[2]` ms in the input callback that reads the leader,
 // as a loaded machine stalls the TUI's thread. It prints `ready` once listening, then the commands that ran as one
-// JSON line once one ran (or after 10 s), and exits. Run by test/keymap-leader.test.tsx.
+// JSON line once `argv[3]` of them ran (default 1; or after 10 s), and exits. Run by test/keymap-leader.test.tsx.
 import { testRender } from "@opentui/solid"
 import { ConfigProvider } from "../../src/config"
 import { Keymap } from "../../src/context/keymap"
 import { createTuiResolvedConfig } from "./tui-runtime"
 
 const stall = Number(process.argv[2])
+const expected = Number(process.argv[3] ?? 1)
 const calls: string[] = []
 
 function Harness() {
@@ -36,7 +37,7 @@ process.stdin.on("data", (chunk: Buffer) => {
 })
 process.stdout.write("ready\n")
 const deadline = Date.now() + 10_000
-while (calls.length === 0 && Date.now() < deadline) await Bun.sleep(20)
+while (calls.length < expected && Date.now() < deadline) await Bun.sleep(20)
 await Bun.sleep(100)
 process.stdout.write(`${JSON.stringify(calls)}\n`)
 app.renderer.destroy()
