@@ -469,6 +469,8 @@ export function Session(props: {
   let sent = false
   let restored = false
   let scroll: ScrollBoxRenderable
+  // The box of the session.transcript.start slot: it stays above rows prepended from history, so it is never their pin.
+  let transcriptStart: BoxRenderable | undefined
   createEffect(() => {
     if (restored || !synced() || !rowsSynced() || !scroll || scroll.isDestroyed) return
     restored = true
@@ -507,7 +509,9 @@ export function Session(props: {
   const pinAbove = () => {
     if (!scroll || scroll.isDestroyed) return
     if (scroll.stickyScroll && scroll.scrollTop >= scroll.scrollHeight - scroll.viewport.height) return
-    const node = scroll.getChildren().find((node) => node.height > 0 && node.y + node.height > scroll.viewport.y)
+    const node = scroll
+      .getChildren()
+      .find((node) => node !== transcriptStart && node.height > 0 && node.y + node.height > scroll.viewport.y)
     if (node) afterLayout(scroll.anchor(node))
   }
 
@@ -1656,7 +1660,9 @@ export function Session(props: {
                   updateAwayFromBottom()
                 }}
               >
-                <Slot path="session.transcript.start" input={{ sessionID: route.sessionID }} />
+                <box ref={(node: BoxRenderable) => (transcriptStart = node)} flexShrink={0}>
+                  <Slot path="session.transcript.start" input={{ sessionID: route.sessionID }} />
+                </box>
                 <For each={visibleRows()}>
                   {(row, index) => (
                     <SessionRowView
