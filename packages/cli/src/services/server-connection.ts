@@ -2,6 +2,7 @@ import { Service, type Endpoint, type EnsureOptions } from "@opencode/client/eff
 import { ClientError, isUnauthorizedError, OpenCode, serviceReadyFetch } from "@opencode/client/promise"
 import { OPENCODE_VERSION } from "../version"
 import { Effect, Option, Redacted } from "effect"
+import { Global } from "@opencode/util/global"
 import { Server as ServerFlag, Standalone as StandaloneFlag } from "../commands/commands"
 import { Env } from "../env"
 import { ServiceConfig } from "./service-config"
@@ -62,26 +63,31 @@ export const resolve = Effect.fn("cli.server-connection.resolve")(function* (arg
   }
 
   const mismatch = args.mismatch ?? "ignore"
+  const global = yield* Global.Service
   const options = yield* ServiceConfig.options({ checkVersion: mismatch !== "ignore" })
   if (args.autostart === false) {
     const endpoint = yield* Service.discover({ ...options, version: undefined })
     if (!endpoint) return { endpoint: yield* Standalone.start(), standalone: true } satisfies Resolved
-    return { endpoint, service: managedService(options) } satisfies Resolved
+    return { endpoint, service: managedService(options, global.state) } satisfies Resolved
   }
   return {
     endpoint: yield* resolveManaged({ ...options, onStart: args.onStart, onWait: args.onWait }, mismatch),
-    service: managedService(options),
+    service: managedService(options, global.state),
   } satisfies Resolved
 })
 
-function managedService(options: EnsureOptions) {
-  const reconnectOptions = { ...options, version: undefined }
+function managedService(options: EnsureOptions, state: string) {
+  // Read at each call, never once at resolve: an install that came while this client ran changes which build it may
+  // start or accept.
+  const current = () => ServiceConfig.reconnectOptions(options, state)
   return {
-    reconnect: () => Service.ensure(reconnectOptions),
+    /** The options the next reconnect or restart uses. */
+    options: current,
+    reconnect: () => Effect.suspend(() => Service.ensure(current())),
     restart: () =>
       Effect.gen(function* () {
         yield* Service.stop({ file: options.file, pty: "handoff" })
-        yield* Service.ensure(reconnectOptions)
+        yield* Service.ensure(current())
       }),
   }
 }

@@ -110,6 +110,56 @@ test("a client of a build an install superseded starts and accepts the service o
   }
 })
 
+test("a client open across an install reconnects and restarts the service on the installed build, read at each call", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-service-reconnect-"))
+  const state = path.join(root, "state")
+  const server = Bun.serve({
+    port: 0,
+    fetch: () => Response.json({ version: OPENCODE_VERSION, pid: process.pid, urls: [] }),
+  })
+  const layer = Global.layerWith({ config: path.join(root, "config"), state })
+  const runPromise = <A, E>(effect: Effect.Effect<A, E, Global.Service | FileSystem.FileSystem | Scope.Scope>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.provide(NodeFileSystem.layer), Effect.scoped))
+  const installed = path.join(root, "opencode-2.2.9")
+  const record = (value: unknown) => fs.writeFile(path.join(state, "installed.json"), JSON.stringify(value))
+
+  try {
+    await fs.mkdir(state, { recursive: true })
+    await fs.writeFile(installed, "#!/bin/sh\n", { mode: 0o755 })
+    await fs.writeFile(
+      path.join(state, ServiceConfig.filename()),
+      JSON.stringify({ id: "reconnect-test", version: OPENCODE_VERSION, url: server.url.toString(), pid: process.pid }),
+    )
+    // Resolved before any install: its own build, any running service accepted.
+    const resolved = await runPromise(ServerConnection.resolve())
+    if (!resolved.service) throw new Error("Expected a managed service")
+    expect(resolved.service.options().command).not.toContain(installed)
+    expect(resolved.service.options().version).toBeUndefined()
+
+    // The install comes while it runs: the next reconnect starts, and accepts only, the installed build.
+    await record({ version: "2.2.9", command: [installed], previous: [OPENCODE_VERSION] })
+    expect(resolved.service.options().command).toEqual([installed, "serve", "--service"])
+    expect(resolved.service.options().version).toBe("2.2.9")
+
+    // A client of the installed build accepts only it too, so a service an older client started is replaced.
+    expect(
+      ServiceConfig.reconnectOptions(
+        { command: [] as string[], version: undefined as string | undefined },
+        state,
+        "2.2.9",
+      ),
+    ).toEqual({
+      command: [...ServiceConfig.serviceBuild(state, "2.2.9").command, "serve", "--service"],
+      version: "2.2.9",
+    })
+    // A build the record does not know keeps its own, accepting whatever runs.
+    expect(ServiceConfig.reconnectOptions({ command: [], version: "x" }, state, "2.3.0-dev").version).toBeUndefined()
+  } finally {
+    await server.stop(true)
+    await fs.rm(root, { recursive: true, force: true })
+  }
+})
+
 test("global --server and --standalone flags parse in any position for server-connecting commands and reject on local-only commands", async () => {
   const captured: Array<{
     readonly path: string

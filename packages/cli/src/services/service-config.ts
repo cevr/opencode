@@ -141,15 +141,24 @@ export function processEnv(env: Info["env"]) {
   return rest
 }
 
+/**
+ * The build this client starts the service on, from the install record as it is now (read on every call: an install
+ * can come while the client runs). A client of a build the install superseded uses the installed build: its own would
+ * undo the install for every client of the machine. `installed` tells whether the record names the build chosen, the
+ * one every client the record knows agrees on.
+ */
+export function serviceBuild(state: string, own = OPENCODE_VERSION) {
+  const record = InstalledBuild.read(state)
+  const recorded = record?.version
+  if (InstalledBuild.supersedes(record, own))
+    return { version: record.version, command: record.command, installed: true } as const
+  return { version: own, command: selfCommand(), installed: recorded === own }
+}
+
 export const options = Effect.fnUntraced(function* (input: { readonly checkVersion?: boolean } = {}) {
   const { file, legacyRegistrationFiles } = yield* paths
   yield* Effect.forEach(legacyRegistrationFiles, (legacy) => migrateRegistration(legacy, file))
-  // A client of a build an install has since replaced starts, and accepts, the service on the installed build: its
-  // own would undo the install for every client of the machine.
-  const installed = InstalledBuild.read((yield* Global.Service).state)
-  const build = InstalledBuild.supersedes(installed, OPENCODE_VERSION)
-    ? { version: installed.version, command: installed.command }
-    : { version: OPENCODE_VERSION, command: selfCommand() }
+  const build = serviceBuild((yield* Global.Service).state)
   return {
     file,
     version: input.checkVersion ? build.version : undefined,
@@ -157,6 +166,24 @@ export const options = Effect.fnUntraced(function* (input: { readonly checkVersi
     command: [...build.command, "serve", "--service"],
   }
 })
+
+/**
+ * The options a running client starts or accepts the service with when it reconnects or restarts it, read afresh each
+ * time from `base` (the options it resolved with) and the install record. Where the record names the build, only that
+ * build is accepted: a service an older client started is replaced by the installed build, not kept.
+ */
+export function reconnectOptions<T extends { readonly command?: ReadonlyArray<string>; readonly version?: unknown }>(
+  base: T,
+  state: string,
+  own = OPENCODE_VERSION,
+): T {
+  const build = serviceBuild(state, own)
+  return {
+    ...base,
+    command: [...build.command, "serve", "--service"],
+    version: build.installed ? build.version : undefined,
+  }
+}
 
 export const read = Effect.fn("cli.service-config.read")(function* () {
   const { fs, configFile, legacyConfigFile } = yield* paths
