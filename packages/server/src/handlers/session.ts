@@ -656,16 +656,8 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
         "session.family.request.list",
         Effect.fn(function* (ctx) {
           const root = yield* requireSession(ctx.params.sessionID)
-          // Every session under the root, a page of children at a time.
-          const members: Session.Info[] = [root]
-          for (let index = 0; index < members.length; index++) {
-            let page = yield* session.list({ parentID: members[index]!.id, limit: 200 }).pipe(Effect.orDie)
-            members.push(...page.data)
-            while (page.cursor.next) {
-              page = yield* session.list({ cursor: page.cursor.next, limit: 200 }).pipe(Effect.orDie)
-              members.push(...page.data)
-            }
-          }
+          // Every session under the root in one read.
+          const members: Session.Info[] = [root, ...(yield* session.descendants(root.id))]
           // Requests live in memory: a session whose capabilities are not live has none, and reading
           // it must not boot its Location (a family can hold deleted worktrees).
           const pending = yield* Effect.forEach(

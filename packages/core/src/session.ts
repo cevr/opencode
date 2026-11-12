@@ -132,6 +132,8 @@ export interface Interface {
     },
     InvalidListCursorError
   >
+  /** Every Session under one in a single read; see {@link SessionStore.Interface.descendants}. */
+  readonly descendants: (sessionID: SessionSchema.ID) => Effect.Effect<SessionSchema.Info[]>
   readonly create: (input: CreateInput) => Effect.Effect<SessionSchema.Info, NotFoundError>
   readonly fork: (
     input: ForkInput,
@@ -414,6 +416,7 @@ const layer = Layer.effect(
         yield* bus.remove(sessionID)
         yield* Effect.forEach(children, (child) => result.remove(child.id), { concurrency: 1, discard: true })
       }),
+      descendants: (sessionID) => store.descendants(sessionID),
       list: Effect.fn("Session.list")(function* (input = {}) {
         const filter =
           input.cursor === undefined

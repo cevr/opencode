@@ -54,6 +54,11 @@ export type MessagesInput = {
 export interface Interface {
   readonly get: (sessionID: Session.ID) => Effect.Effect<Session.Info | undefined>
   readonly list: (input?: ListInput) => Effect.Effect<Session.Info[]>
+  /**
+   * Every Session under one, in a single read: breadth-first, and each parent's children newest
+   * updated first (the order of `list({ parentID })`). The Session itself is not included.
+   */
+  readonly descendants: (sessionID: Session.ID) => Effect.Effect<Session.Info[]>
   readonly messages: (input: MessagesInput) => Effect.Effect<SessionMessage.Info[], MessageDecodeError>
   readonly context: (sessionID: Session.ID) => Effect.Effect<SessionMessage.Info[], MessageDecodeError>
   /**
@@ -193,6 +198,38 @@ const layer = Layer.effect(
           Effect.orDie,
         )
         return (direction === "previous" ? rows.toReversed() : rows).map((row) => fromRow(row))
+      }),
+      descendants: Effect.fn("SessionStore.descendants")(function* (sessionID) {
+        // UNION, not UNION ALL: a parent cycle ends the walk instead of looping.
+        const rows = yield* db
+          .select()
+          .from(SessionTable)
+          .where(
+            sql`${SessionTable.id} IN (WITH RECURSIVE family(id) AS (SELECT id FROM ${SessionTable} WHERE parent_id = ${sessionID} UNION SELECT child.id FROM ${SessionTable} AS child JOIN family ON child.parent_id = family.id) SELECT id FROM family)`,
+          )
+          .all()
+          .pipe(Effect.orDie)
+        const children = new Map<string, typeof rows>()
+        for (const row of rows) {
+          if (row.id === sessionID || !row.parent_id) continue
+          const siblings = children.get(row.parent_id)
+          if (siblings) siblings.push(row)
+          else children.set(row.parent_id, [row])
+        }
+        // SQLite compares text bytewise; session ids are ASCII, so code-unit order matches it.
+        for (const siblings of children.values())
+          siblings.sort((a, b) =>
+            a.time_updated !== b.time_updated ? b.time_updated - a.time_updated : a.id < b.id ? 1 : a.id > b.id ? -1 : 0,
+          )
+        const ordered: typeof rows = []
+        const queue: string[] = [sessionID]
+        for (let index = 0; index < queue.length; index++) {
+          for (const child of children.get(queue[index]!) ?? []) {
+            ordered.push(child)
+            queue.push(child.id)
+          }
+        }
+        return ordered.map((row) => fromRow(row))
       }),
       messages: Effect.fn("SessionStore.messages")(function* (input) {
         return yield* SessionHistory.decodeMessageRows(db, yield* messageRows(input))
