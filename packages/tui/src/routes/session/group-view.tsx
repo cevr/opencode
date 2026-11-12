@@ -1,4 +1,4 @@
-import { createMemo, createSignal, For, Match, Show, Switch } from "solid-js"
+import { createMemo, createSignal, For, Match, Show, splitProps, Switch } from "solid-js"
 import { RGBA, type Renderable } from "@opentui/core"
 import { useRenderer, type JSX } from "@opentui/solid"
 import type { SessionMessageAssistantTool, SessionMessageInfo } from "@opencode/client"
@@ -15,10 +15,19 @@ import { use } from "./render-context"
 import { resolvePart } from "./rows"
 import { generateThinkingSyntax } from "./thinking-syntax"
 
+/** A row as the transcript's row gap rule sees it: an entry, or a group of any kind. */
+export type GapRow = SessionEntry | { readonly type: "group" }
+
 type Renderers = {
   message: (messageID: string) => SessionMessageInfo | undefined
   entry: (entry: SessionEntry, images?: boolean) => JSX.Element
   images: (parts: readonly SessionMessageAssistantTool[]) => JSX.Element
+  /**
+   * Blank rows above a row of an unfolded activity group, by the rule that
+   * spaces the transcript's own rows, so they sit as they would ungrouped.
+   * The first row's previous row is the group's own. Without a rule, 1.
+   */
+  gap?: (row: GapRow, previous: GapRow) => number
 }
 
 type GroupProps = Renderers & {
@@ -222,9 +231,7 @@ function ActivityGroup(props: GroupProps) {
           {summary().label}
         </InlineToolRow>
         <Show when={disclosure.expanded()}>
-          <box flexDirection="column" gap={1} marginTop={1}>
-            <Children {...props} nodes={props.node.children} mode="normal" />
-          </box>
+          <Children {...props} nodes={props.node.children} mode="normal" spaced />
         </Show>
       </Show>
       <PendingEntries {...props} entries={entries()} />
@@ -309,11 +316,31 @@ function PendingEntries(props: GroupProps & { entries: readonly SessionEntry[] }
   )
 }
 
-function Children(props: GroupProps & { nodes: readonly SessionNode[]; mode: "normal" | "thought" | "tool" }) {
+/** A node as the row gap rule sees it. */
+function gapRow(node: SessionNode): GapRow {
+  return node.type === "entry" ? node.entry : { type: "group" }
+}
+
+/**
+ * The rows of a group. `spaced` puts the row gap rule's blank rows above each,
+ * the first counted from the group's own row.
+ */
+function Children(
+  input: GroupProps & { nodes: readonly SessionNode[]; mode: "normal" | "thought" | "tool"; spaced?: boolean },
+) {
+  // Nested groups lay out their own rows: the flag stays with these. A call site sets it once.
+  const [own, props] = splitProps(input, ["spaced"])
+  const spaced = own.spaced
+  const gap = (index: number) => {
+    const node = props.nodes[index]
+    if (!node) return 0
+    const previous = props.nodes[index - 1]
+    return props.gap?.(gapRow(node), previous ? gapRow(previous) : { type: "group" }) ?? 1
+  }
   return (
     <For each={props.nodes}>
       {(node, index) => {
-        return (
+        const row = (
           <Switch>
             <Match when={node.type === "group" ? node : undefined}>
               {(node) => (
@@ -350,6 +377,12 @@ function Children(props: GroupProps & { nodes: readonly SessionNode[]; mode: "no
               )}
             </Match>
           </Switch>
+        )
+        if (!spaced) return row
+        return (
+          <box marginTop={gap(index())} flexShrink={0}>
+            {row}
+          </box>
         )
       }}
     </For>

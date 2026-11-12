@@ -137,7 +137,7 @@ import { createHistoryPrepend } from "./history"
 import { context, use, type PendingAction } from "./render-context"
 import { INLINE_TOOL_ICON_WIDTH, InlineToolRow, ReasoningPart, TextPart, toolDisplay, useRowGutter } from "./message-parts"
 import { defaultVerbosity, type GroupKind, type SessionEntry } from "./grouping/session"
-import { SessionGroupView } from "./group-view"
+import { SessionGroupView, type GapRow } from "./group-view"
 import { useEntryAnchor } from "./anchor-view"
 import { containsAnchor, createTimelineAnchors, groupID } from "./anchors"
 import { rowsAfter, rowsBefore, rowWeight } from "./mount-budget"
@@ -1805,7 +1805,7 @@ type SessionRowViewProps = {
 
 // The coarse row kind a plugin layout rule sees: one name per visual role.
 function transcriptRowKind(
-  row: SessionRow,
+  row: GapRow,
   message: (messageID: string) => SessionMessageInfo | undefined,
 ): TranscriptRowKind {
   if (row.type === "group") return "group"
@@ -1824,7 +1824,7 @@ function transcriptRowKind(
 }
 
 // The message a row draws, as layout rules see it: none for a group, which spans several.
-function transcriptRowMessageID(row: SessionRow) {
+function transcriptRowMessageID(row: GapRow) {
   if (row.type === "message" || row.type === "assistant-footer") return row.messageID
   if (row.type === "part") return row.ref.messageID
   return undefined
@@ -1837,15 +1837,17 @@ function SessionRowView(props: SessionRowViewProps) {
     entry: () => (props.row.type === "group" ? undefined : props.row),
     node: target,
   })
-  const gap = createMemo(() => {
+  // Blank rows above a row; an unfolded group spaces the rows it holds by the same rule.
+  const rowGap = (row: GapRow, previous: GapRow | undefined) => {
     const rule = plugins.layout().rowGap
     if (!rule) return 1
     return rule({
-      kind: transcriptRowKind(props.row, props.message),
-      previous: props.previous ? transcriptRowKind(props.previous, props.message) : undefined,
-      messageID: transcriptRowMessageID(props.row),
+      kind: transcriptRowKind(row, props.message),
+      previous: previous ? transcriptRowKind(previous, props.message) : undefined,
+      messageID: transcriptRowMessageID(row),
     })
-  })
+  }
+  const gap = createMemo(() => rowGap(props.row, props.previous))
   return (
     <box ref={setTarget} id={sessionRowID(props.row, props.boundaryID)} marginTop={gap()} flexShrink={0}>
       <Switch>
@@ -1856,6 +1858,7 @@ function SessionRowView(props: SessionRowViewProps) {
               message={props.message}
               entry={(entry, images) => <SessionEntryView row={entry} message={props.message} images={images} />}
               images={(parts) => <ToolImages parts={parts} />}
+              gap={rowGap}
             />
           )}
         </Match>

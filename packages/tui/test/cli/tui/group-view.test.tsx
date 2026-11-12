@@ -7,7 +7,7 @@ import parsers from "../../../src/parsers-config"
 import type { SessionMessageAssistant, SessionMessageInfo } from "@opencode/client"
 import { ConfigProvider } from "../../../src/config"
 import { ThemeProvider } from "../../../src/context/theme"
-import { SessionGroupView } from "../../../src/routes/session/group-view"
+import { SessionGroupView, type GapRow } from "../../../src/routes/session/group-view"
 import { createTimelineAnchors, groupID, type AnchorTarget } from "../../../src/routes/session/anchors"
 import { context } from "../../../src/routes/session/render-context"
 import type { SessionEntry, SessionGroup } from "../../../src/routes/session/grouping/session"
@@ -300,6 +300,61 @@ test("failed low activity uses a disclosure icon and keeps details expandable", 
   }
 })
 
+test("an unfolded low activity group spaces its rows by the transcript's row gap rule", async () => {
+  const ids = ["one", "two", "three"]
+  const message: SessionMessageAssistant = {
+    id: "a",
+    type: "assistant",
+    agent: "build",
+    model: { providerID: "fixture", id: "fixture" },
+    time: { created: 0, completed: 2 },
+    content: ids.map((id) => ({
+      type: "tool" as const,
+      id,
+      name: "shell",
+      time: { created: 0, completed: 1 },
+      state: { status: "completed" as const, input: {}, content: [{ type: "text" as const, text: id }], metadata: {} },
+    })),
+  }
+  const row: SessionGroup = {
+    type: "group",
+    kind: "activity",
+    size: ids.length,
+    completed: true,
+    pending: [],
+    children: ids.map((partID) => ({
+      type: "entry",
+      size: 1,
+      entry: { type: "part", ref: { messageID: "a", partID } },
+    })),
+  }
+  const app = await mount({
+    row,
+    anchors: createTimelineAnchors(),
+    config: createTuiResolvedConfig({ animations: false }),
+    expanded: () => true,
+    setExpanded: () => {},
+    message: () => message,
+    // The second call draws nothing, as a plugin's call row folded into the one before it does.
+    entry: (entry) =>
+      entry.type === "part" && entry.ref.partID !== "two" ? <text>Shell {entry.ref.partID}</text> : null,
+    // Tight under the group's row and after the first call, one blank row above the third.
+    gap: (entry) => (entry.type === "part" && entry.ref.partID === "three" ? 1 : 0),
+  })
+  try {
+    app.renderer.start()
+    await app.waitForFrame((frame) => frame.includes("Shell three"))
+    const lines = app
+      .captureCharFrame()
+      .split("\n")
+      .map((line) => line.trim())
+    const start = lines.findIndex((line) => line.startsWith("− 3 commands"))
+    expect(lines.slice(start, start + 4)).toEqual(["− 3 commands", "Shell one", "", "Shell three"])
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
 function mount(input: {
   row: SessionGroup
   anchors: ReturnType<typeof createTimelineAnchors>
@@ -308,6 +363,7 @@ function mount(input: {
   setExpanded: (id: string, value: boolean) => void
   message: (id: string) => SessionMessageInfo | undefined
   entry: (entry: SessionEntry) => JSX.Element
+  gap?: (row: GapRow, previous: GapRow) => number
 }) {
   return testRender(
     () => (
@@ -340,6 +396,7 @@ function mount(input: {
                   message={input.message}
                   images={() => <text>Image previews</text>}
                   entry={input.entry}
+                  gap={input.gap}
                 />
               </box>
             </context.Provider>
