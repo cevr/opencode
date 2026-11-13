@@ -6,6 +6,7 @@ import { useClient } from "../../../context/client"
 import { useTheme } from "../../../context/theme"
 import { Keymap } from "../../../context/keymap"
 import { useComposerTab } from "./context"
+import { Slot } from "../../../plugin/render"
 import { useDialog } from "../../../ui/dialog"
 import { DialogShellOutput } from "../../../component/dialog-shell-output"
 
@@ -25,6 +26,7 @@ export function ShellTab(props: { sessionID: string }) {
   let scroll: ScrollBoxRenderable | undefined
 
   const selectedEntry = createMemo(() => entries()[store.selected])
+  const ids = createMemo(() => entries().map((shell) => shell.id))
 
   const open = () => {
     const entry = selectedEntry()
@@ -132,13 +134,30 @@ export function ShellTab(props: { sessionID: string }) {
                     open()
                   }}
                 >
-                  <text
-                    fg={active() ? theme.text.action.primary.focused : theme.text.action.primary.base}
-                    attributes={active() ? TextAttributes.BOLD : undefined}
-                    wrapMode="none"
+                  <Slot
+                    path="session.composer.panel.row"
+                    input={{
+                      sessionID: props.sessionID,
+                      tab: "shell",
+                      id: shell.id,
+                      get ids() {
+                        return ids()
+                      },
+                      label: shell.command.split("\n", 1)[0] ?? "",
+                      get selected() {
+                        return active()
+                      },
+                      current: false,
+                    }}
                   >
-                    {shell.command.split("\n", 1)[0]}
-                  </text>
+                    <text
+                      fg={active() ? theme.text.action.primary.focused : theme.text.action.primary.base}
+                      attributes={active() ? TextAttributes.BOLD : undefined}
+                      wrapMode="none"
+                    >
+                      {shell.command.split("\n", 1)[0]}
+                    </text>
+                  </Slot>
                 </box>
               )
             }}

@@ -188,6 +188,54 @@ export interface TranscriptOverlayInput {
   readonly reveal: (messageID: string) => void
 }
 
+/** A tab of the background-work panel (Down on an empty prompt): the host's and the plugins' (`ui.composerTab`). */
+export interface ComposerPanelTab {
+  /** `subagents`, `shell`, `terminals`, or a plugin tab's id. */
+  readonly id: string
+  readonly label: string
+}
+
+/** A key the panel's active tab binds, as its footer names it. */
+export interface ComposerPanelHint {
+  readonly label: string
+  readonly shortcut: string
+}
+
+export interface ComposerPanelTabsInput {
+  readonly sessionID: string
+  /** Every tab, in the order ←/→ cycles them. */
+  readonly tabs: readonly ComposerPanelTab[]
+  /** The active tab's id. */
+  readonly active: string
+  /** Makes a tab the active one, as a click on its name does. */
+  readonly select: (id: string) => void
+  /** Puts the panel away, as Escape does. */
+  readonly dismiss: () => void
+}
+
+export interface ComposerPanelRowInput {
+  readonly sessionID: string
+  readonly tab: "subagents" | "shell" | "terminals"
+  /** The row's subject: a session ID, a shell ID or a terminal ID; empty for the Terminals tab's new-terminal row. */
+  readonly id: string
+  /** The IDs of every row the tab lists now, in order, so a replacement can line its columns up across them. */
+  readonly ids: readonly string[]
+  /** The words the host draws for the row: `Implementor: Fix CSV quoting`, a shell's command, a terminal's process. */
+  readonly label: string
+  /** Under the keyboard's highlight: the host paints the row's background in the theme's focused colour. */
+  readonly selected: boolean
+  /** The session or terminal on screen. */
+  readonly current: boolean
+}
+
+export interface ComposerPanelFooterInput {
+  readonly sessionID: string
+  /** The active tab's hints. */
+  readonly hints: readonly ComposerPanelHint[]
+  /** How many tabs there are: ←/→ switches them when more than one. */
+  readonly tabs: number
+}
+
 export type PanelPresentation = "panel" | "fullscreen"
 
 /** Client-local state of the selected session panel. The host owns its layout and input scope. */
@@ -228,6 +276,16 @@ export interface SlotMap {
    * Published whether or not any wait, so a replacement may draw its own list.
    */
   readonly "session.composer.queued": { readonly sessionID: string }
+  /** The background-work panel's tab bar: each tab's name, the active one marked, and `esc`. */
+  readonly "session.composer.panel.tabs": ComposerPanelTabsInput
+  /**
+   * One row of the panel's Subagents, Shell or Terminals tab, inside the
+   * host's row box: the host keeps the row's background, pointer and keys, a
+   * replacement draws what the row says.
+   */
+  readonly "session.composer.panel.row": ComposerPanelRowInput
+  /** The panel's footer: the active tab's key hints, and how to switch tabs. */
+  readonly "session.composer.panel.footer": ComposerPanelFooterInput
   /** Above the transcript, full width. Empty by default. */
   readonly "session.header": { readonly sessionID: string }
   /** First child of the transcript scroll area. Empty by default. */

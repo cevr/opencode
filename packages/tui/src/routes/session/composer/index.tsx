@@ -10,6 +10,7 @@ import { TerminalsTab } from "./terminals-tab"
 import { PluginTab } from "./plugin-tab"
 import type { ComposerTab as PluginComposerTab } from "@opencode/plugin/tui/context"
 import { ComposerContext, type ComposerTab } from "./context"
+import { Slot } from "../../../plugin/render"
 
 export type ComposerProps = {
   sessionID: string
@@ -106,62 +107,90 @@ export function Composer(props: ComposerProps) {
           paddingBottom={1}
         >
           <box gap={1}>
-            <box flexDirection="row" justifyContent="space-between" paddingLeft={1}>
-              <Show
-                when={tabList().length > 1}
-                fallback={
-                  <text fg={theme.text.base} attributes={TextAttributes.BOLD}>
-                    {tabList()[0]?.label ?? ""}
-                  </text>
-                }
-              >
-                <box flexDirection="row" gap={2}>
-                  <For each={tabList()}>
-                    {(t) => {
-                      const isActive = createMemo(() => store.active === t.id)
-                      return (
-                        <text
-                          fg={isActive() ? theme.text.base : theme.text.muted}
-                          attributes={isActive() ? TextAttributes.BOLD : undefined}
-                          onMouseUp={() => setStore("active", t.id)}
-                        >
-                          {t.label}
-                        </text>
-                      )
-                    }}
-                  </For>
-                </box>
-              </Show>
-              <text fg={theme.text.muted} onMouseUp={dismiss}>
-                esc
-              </text>
-            </box>
+            <Slot
+              path="session.composer.panel.tabs"
+              input={{
+                sessionID: props.sessionID,
+                get tabs() {
+                  return tabList().map((tab) => ({ id: tab.id, label: tab.label }))
+                },
+                get active() {
+                  return store.active
+                },
+                select: (id: string) => setStore("active", id),
+                dismiss,
+              }}
+            >
+              <box flexDirection="row" justifyContent="space-between" paddingLeft={1}>
+                <Show
+                  when={tabList().length > 1}
+                  fallback={
+                    <text fg={theme.text.base} attributes={TextAttributes.BOLD}>
+                      {tabList()[0]?.label ?? ""}
+                    </text>
+                  }
+                >
+                  <box flexDirection="row" gap={2}>
+                    <For each={tabList()}>
+                      {(t) => {
+                        const isActive = createMemo(() => store.active === t.id)
+                        return (
+                          <text
+                            fg={isActive() ? theme.text.base : theme.text.muted}
+                            attributes={isActive() ? TextAttributes.BOLD : undefined}
+                            onMouseUp={() => setStore("active", t.id)}
+                          >
+                            {t.label}
+                          </text>
+                        )
+                      }}
+                    </For>
+                  </box>
+                </Show>
+                <text fg={theme.text.muted} onMouseUp={dismiss}>
+                  esc
+                </text>
+              </box>
+            </Slot>
             <SubagentsTab sessionID={props.sessionID} />
             <ShellTab sessionID={props.sessionID} />
             <Show when={props.terminals}>
               <TerminalsTab sessionID={props.sessionID} visibleTerminalID={props.visibleTerminalID} />
             </Show>
             <For each={props.pluginTabs ?? []}>{(tab) => <PluginTab tab={tab} sessionID={props.sessionID} />}</For>
-            <box flexDirection="row" gap={2} paddingLeft={1} flexShrink={0}>
-              <For each={footerHints()}>
-                {(hint) => (
+            <Slot
+              path="session.composer.panel.footer"
+              input={{
+                sessionID: props.sessionID,
+                get hints() {
+                  return footerHints()
+                },
+                get tabs() {
+                  return tabList().length
+                },
+              }}
+            >
+              <box flexDirection="row" gap={2} paddingLeft={1} flexShrink={0}>
+                <For each={footerHints()}>
+                  {(hint) => (
+                    <text>
+                      <span style={{ fg: theme.text.base }}>
+                        <b>{hint.label}</b>{" "}
+                      </span>
+                      <span style={{ fg: theme.text.muted }}>{hint.shortcut}</span>
+                    </text>
+                  )}
+                </For>
+                <Show when={tabList().length > 1}>
                   <text>
                     <span style={{ fg: theme.text.base }}>
-                      <b>{hint.label}</b>{" "}
+                      <b>tabs</b>{" "}
                     </span>
-                    <span style={{ fg: theme.text.muted }}>{hint.shortcut}</span>
+                    <span style={{ fg: theme.text.muted }}>←/→</span>
                   </text>
-                )}
-              </For>
-              <Show when={tabList().length > 1}>
-                <text>
-                  <span style={{ fg: theme.text.base }}>
-                    <b>tabs</b>{" "}
-                  </span>
-                  <span style={{ fg: theme.text.muted }}>←/→</span>
-                </text>
-              </Show>
-            </box>
+                </Show>
+              </box>
+            </Slot>
           </box>
         </box>
       </box>

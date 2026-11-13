@@ -5,6 +5,7 @@ import { useSessionTerminals } from "../../../context/session-terminals"
 import { useTheme } from "../../../context/theme"
 import { useToast } from "../../../ui/toast"
 import { useComposerTab } from "./context"
+import { Slot } from "../../../plugin/render"
 
 export function TerminalsTab(props: { sessionID: string; visibleTerminalID?: string }) {
   const composer = useComposerTab()
@@ -90,20 +91,39 @@ export function TerminalsTab(props: { sessionID: string; visibleTerminalID?: str
                   select()
                 }}
               >
-                <text
-                  fg={
-                    active()
-                      ? theme.text.action.primary.focused
-                      : current()
-                        ? theme.text.action.primary.selected
-                        : theme.text.action.primary.base
-                  }
-                  attributes={active() ? TextAttributes.BOLD : undefined}
-                  wrapMode="none"
-                  truncate
+                <Slot
+                  path="session.composer.panel.row"
+                  input={{
+                    sessionID: props.sessionID,
+                    tab: "terminals",
+                    id: terminal?.id ?? "",
+                    get ids() {
+                      return entries().map((each) => each.id)
+                    },
+                    label: terminal?.foregroundProcess ?? terminal?.title ?? "+ New terminal",
+                    get selected() {
+                      return active()
+                    },
+                    get current() {
+                      return current()
+                    },
+                  }}
                 >
-                  {terminal?.foregroundProcess ?? terminal?.title ?? "+ New terminal"}
-                </text>
+                  <text
+                    fg={
+                      active()
+                        ? theme.text.action.primary.focused
+                        : current()
+                          ? theme.text.action.primary.selected
+                          : theme.text.action.primary.base
+                    }
+                    attributes={active() ? TextAttributes.BOLD : undefined}
+                    wrapMode="none"
+                    truncate
+                  >
+                    {terminal?.foregroundProcess ?? terminal?.title ?? "+ New terminal"}
+                  </text>
+                </Slot>
               </box>
             )
           }}
