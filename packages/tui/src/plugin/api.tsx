@@ -54,6 +54,9 @@ import { useOptionalPanel } from "../context/panel"
 import { useLocal } from "../context/local"
 import { errorMessage } from "../util/error"
 import { abbreviateHome } from "../util/path-format"
+import { usePromptRestore } from "../prompt/restore"
+import { takeBack } from "../prompt/take-back"
+import { appendToSessionPrompt } from "../component/prompt/draft-stash"
 
 export type Dispose = () => Promise<void>
 
@@ -112,6 +115,7 @@ export function usePluginHost() {
     sessionTabs: useSessionTabs(),
     panel: useOptionalPanel(),
     local: useLocal(),
+    restorePrompt: usePromptRestore(),
   }
 }
 
@@ -239,6 +243,24 @@ export function createPluginContext(input: {
     ui: {
       dialog: dialogApi,
       toast: toastApi,
+      composer: {
+        takeBack: (request) =>
+          takeBack(
+            {
+              pending: (sessionID) => host.data.session.pending.list(sessionID),
+              restore: (prompt) => host.restorePrompt(prompt),
+              cancel: (sessionID, inboxID) =>
+                host.client.api.session.inbox.cancel({ sessionID, inboxID }).then(
+                  () => true,
+                  () => false,
+                ),
+              append: (sessionID, prompt, separator) =>
+                appendToSessionPrompt(sessionID, prompt, host.renderer.widthMethod, separator),
+              widthMethod: host.renderer.widthMethod,
+            },
+            request,
+          ),
+      },
       format: {
         path: (value) => abbreviateHome(value, host.paths.home),
       },

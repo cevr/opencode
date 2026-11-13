@@ -579,9 +579,7 @@ export interface Layout {
    * left rail in the text colour (the warning colour in shell mode) with no
    * fill, padding or metadata row.
    */
-  readonly composer?:
-    | { readonly chrome: "bar" }
-    | { readonly chrome: "rail" }
+  readonly composer?: { readonly chrome: "bar" } | { readonly chrome: "rail" }
   /**
    * Transcript defaults for users who have not chosen. The user's `session`
    * config wins over them. Fields merge across plugins one by one.
@@ -732,6 +730,20 @@ export interface UI {
       /** Selects a variant of the selected model, or the model default when undefined. Returns false when no model is selected or the variant is unavailable. */
       set(variant: string | undefined): boolean
     }
+  }
+  readonly composer: {
+    /**
+     * Takes pending user prompts back out of a session's inbox into its composer, attachments and all, as the host's
+     * undo takes one: each is read back (its images as bytes), then cancelled, and the ones the server cancelled are
+     * appended in `inboxIDs` order, joined by `separator` (a blank line by default), after anything already in the
+     * composer, or its stashed draft when no composer is mounted. Resolves the ids taken and the ids left: no longer
+     * pending, unreadable, or not cancelled by the server.
+     */
+    takeBack(input: {
+      readonly sessionID: string
+      readonly inboxIDs: readonly string[]
+      readonly separator?: string
+    }): Promise<{ readonly taken: readonly string[]; readonly left: readonly string[] }>
   }
   /** Claims a place in the slot tree; see SlotClaim. */
   readonly slot: (claim: SlotClaim) => () => void

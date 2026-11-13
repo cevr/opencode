@@ -46,16 +46,25 @@ export function registerComposer(sessionID: string | undefined, composer: Prompt
 /**
  * Appends a prompt that comes back after an await (an undo or revert) to a session's composer if one is mounted, else
  * to its stashed draft, after anything already typed there. A session view remounts with its tab, so the composer it
- * started with may be gone by then. Returns the composer it wrote to.
+ * started with may be gone by then. `separator` goes between what was there and the prompt (a blank line by
+ * default). Returns the composer it wrote to.
  */
-export function appendToSessionPrompt(sessionID: string, prompt: PromptInfo, widthMethod: WidthMethod) {
+export function appendToSessionPrompt(
+  sessionID: string,
+  prompt: PromptInfo,
+  widthMethod: WidthMethod,
+  separator?: string,
+) {
   const composer = composers.get(sessionID)
   if (!composer) {
     const draft = takeDraft(sessionID)?.prompt
-    saveDraft(sessionID, { prompt: draft ? appendPrompt(draft, prompt, widthMethod) : prompt, cursor: Infinity })
+    saveDraft(sessionID, {
+      prompt: draft ? appendPrompt(draft, prompt, widthMethod, separator) : prompt,
+      cursor: Infinity,
+    })
     return
   }
   composer.setMode("normal")
-  composer.set(appendPrompt(composer.current, prompt, widthMethod))
+  composer.set(appendPrompt(composer.current, prompt, widthMethod, separator))
   return composer
 }

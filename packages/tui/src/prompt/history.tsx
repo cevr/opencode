@@ -34,8 +34,13 @@ export type PromptPartRef = {
 export const emptyPrompt = (): PromptInfo => ({ text: "", files: [], agents: [], skills: [], pasted: [] })
 
 // Part ranges are textarea offsets, so shift by the measured offset rather than string length.
-export function appendPrompt(prompt: PromptInfo, following: PromptInfo, widthMethod: WidthMethod): PromptInfo {
-  const text = prompt.text ? `${prompt.text}\n\n` : ""
+export function appendPrompt(
+  prompt: PromptInfo,
+  following: PromptInfo,
+  widthMethod: WidthMethod,
+  separator = "\n\n",
+): PromptInfo {
+  const text = prompt.text ? `${prompt.text}${separator}` : ""
   const offset = measureEditText(text, { widthMethod })
   const shift = <T extends { start: number; end: number }>(range: T, by: number) => ({
     ...range,
