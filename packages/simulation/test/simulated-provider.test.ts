@@ -17,8 +17,9 @@ import { AbsolutePath } from "@opencode/core/schema"
 import { Session } from "@opencode/core/session"
 import { SessionMessage } from "@opencode/core/session/message"
 import { Tool } from "@opencode/core/tool"
-import { Deferred, Effect, Fiber, Layer, Queue, Stream } from "effect"
+import { Clock, Deferred, Effect, Fiber, Layer, Queue, Stream } from "effect"
 import type { Scope } from "effect/Scope"
+import { SimulationClock } from "../src/backend/clock"
 import { SimulatedProvider } from "../src/backend/simulated-provider"
 import { availableEndpoint, connect } from "./fixture/websocket"
 
@@ -116,6 +117,57 @@ test("replays an invocation to a controller that attaches after it opens", async
       )
       expect(yield* Queue.take(messages)).toMatchObject({ id: 2, result: { ok: true } })
       expect(Array.from(yield* Fiber.join(response))).toEqual([{ type: "finish", reason: "stop" }])
+    }),
+  )
+})
+
+test("a controller advances the server's clock, which wakes a sleep it passes, and a bad advance is refused", async () => {
+  const endpoint = availableEndpoint()
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const clock = yield* SimulationClock.make()
+      yield* Effect.gen(function* () {
+        yield* SimulatedProvider.Service
+        const socket = yield* connect(endpoint)
+        const messages = yield* messagesFrom(socket)
+        socket.send(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: 0,
+            method: "simulation.handshake",
+            params: {
+              client: { name: "test", version: "test" },
+              expectedRole: "backend",
+              offeredVersions: [1],
+              requiredCapabilities: ["clock.advance"],
+              optionalCapabilities: [],
+            },
+          }),
+        )
+        expect(yield* Queue.take(messages)).toMatchObject({
+          id: 0,
+          result: { capabilities: expect.arrayContaining(["clock.advance"]) },
+        })
+
+        const before = yield* Clock.currentTimeMillis
+        const sleeper = yield* Effect.sleep("1 hour").pipe(Effect.forkScoped)
+        yield* Effect.yieldNow
+        socket.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "clock.advance", params: { ms: 3_600_000 } }))
+        const advanced = requireRecord(yield* Queue.take(messages))
+        expect(advanced.id).toBe(1)
+        const now = requireRecord(advanced.result).now
+        if (typeof now !== "number") throw new Error("clock.advance did not answer the new time")
+        expect(now).toBeGreaterThanOrEqual(before + 3_600_000)
+        yield* Fiber.join(sleeper).pipe(Effect.timeout("5 seconds"))
+
+        socket.send(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "clock.advance", params: { ms: -5 } }))
+        // The params fail the protocol's schema, which answers as it does any request it cannot read.
+        expect(yield* Queue.take(messages)).toMatchObject({ id: null, error: { code: -32000 } })
+      }).pipe(
+        Effect.provide(providerLayer(endpoint, clock)),
+        Effect.provideService(Clock.Clock, clock.clock),
+        Effect.scoped,
+      )
     }),
   )
 })
@@ -675,8 +727,8 @@ function runProvider<E>(
   )
 }
 
-const providerLayer = (endpoint: string) =>
-  SimulatedProvider.layerDrive({ endpoint, version: "test" }).pipe(
+const providerLayer = (endpoint: string, clock?: SimulationClock.Interface) =>
+  SimulatedProvider.layerDrive({ endpoint, version: "test", ...(clock ? { clock } : {}) }).pipe(
     Layer.provide(
       Layer.succeed(SdkPlugins.Service, SdkPlugins.Service.of({ register: () => Effect.void, all: () => [] })),
     ),

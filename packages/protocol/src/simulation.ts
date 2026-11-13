@@ -445,6 +445,7 @@ export namespace Backend {
     "tool.fail",
     "tool.invocation",
     "tool.cancel",
+    "clock.advance",
   ] as const satisfies ReadonlyArray<Handshake.Capability>
 
   export const Item = Schema.Union([
@@ -588,6 +589,14 @@ export namespace Backend {
   export const Ok = Schema.Struct({ ok: Schema.Literal(true) })
   export interface Ok extends Schema.Schema.Type<typeof Ok> {}
 
+  /** Moves the server's clock forward by `ms`; time keeps flowing in real time besides. */
+  export const ClockAdvanceParams = Schema.Struct({ ms: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)) })
+  export interface ClockAdvanceParams extends Schema.Schema.Type<typeof ClockAdvanceParams> {}
+
+  /** The server's clock after an advance, in epoch ms. */
+  export const ClockAdvanced = Schema.Struct({ now: Schema.Number })
+  export interface ClockAdvanced extends Schema.Schema.Type<typeof ClockAdvanced> {}
+
   export const ChunkParams = Schema.Struct({ id: Schema.String, items: Schema.Array(Item) })
   export interface ChunkParams extends Schema.Schema.Type<typeof ChunkParams> {}
 
@@ -615,6 +624,7 @@ export namespace Backend {
     Schema.Struct({ ...JsonRpc.RequestFields, method: Schema.Literal("tool.update"), params: ToolUpdateParams }),
     Schema.Struct({ ...JsonRpc.RequestFields, method: Schema.Literal("tool.finish"), params: ToolFinishParams }),
     Schema.Struct({ ...JsonRpc.RequestFields, method: Schema.Literal("tool.fail"), params: ToolFailParams }),
+    Schema.Struct({ ...JsonRpc.RequestFields, method: Schema.Literal("clock.advance"), params: ClockAdvanceParams }),
     Schema.Struct({
       ...JsonRpc.RequestFields,
       method: Schema.Literals(["llm.attach", "llm.pending"]),
@@ -688,4 +698,5 @@ export const BackendRpcs = RpcGroup.make(
   request("tool.update", { payload: Backend.ToolUpdateParams, success: Backend.Ok }),
   request("tool.finish", { payload: Backend.ToolFinishParams, success: Backend.Ok }),
   request("tool.fail", { payload: Backend.ToolFailParams, success: Backend.Ok }),
+  request("clock.advance", { payload: Backend.ClockAdvanceParams, success: Backend.ClockAdvanced }),
 )
