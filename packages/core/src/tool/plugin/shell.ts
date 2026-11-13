@@ -26,9 +26,11 @@ import { toolFailure } from "../runtime.js"
 export const name = "shell"
 // How long a call the user interrupted waits for its stopped command to exit before settling with the output so far.
 const INTERRUPT_WAIT = "500 millis"
-// How long a foreground command runs before it moves to the background and its call returns its handle;
-// `experimental.shell_background_after` replaces it (0: never), a call's `timeout` overrides both.
-export const DEFAULT_BACKGROUND_AFTER_MS = 10 * 60 * 1_000
+// How long a foreground command runs before it moves to the background and its call returns its handle (upstream's
+// default timeout); `experimental.shell_background_after` replaces it (0: never), a call's `timeout` overrides both.
+export const DEFAULT_TIMEOUT_MS = 2 * 60 * 1_000
+// How long a `wait` action waits by default.
+const DEFAULT_WAIT_MS = 10 * 60 * 1_000
 // The output a handle shows: the tail of a command that moved to the background or started there, and the
 // most of what is new that a check, wait or kill shows.
 const TAIL_LINES = 20
@@ -57,11 +59,12 @@ const description = (shell?: string) =>
     "When output is large, the full result is saved to a file and a truncated preview is returned.",
     "Rely on automatic truncation unless filtering the output is more useful.",
     "A command that ends in the foreground returns its handle already exited, with its output.",
-    `One still running after its timeout (default ${minutes(DEFAULT_BACKGROUND_AFTER_MS)}) moves to the background: the call returns its running handle with the output so far, and the command keeps running.`,
+    `One still running after its timeout (default ${minutes(DEFAULT_TIMEOUT_MS)}) moves to the background: the call returns its running handle with the output so far, and the command keeps running.`,
     "background: true returns the handle at once.",
     "You are notified when a background command ends.",
     'Act on a handle with this same tool, its action and its id: { action: "check", id } shows its state and the output since your last look, { action: "wait", id, ms } waits up to ms for it to end, { action: "kill", id } stops it.',
     '{ action: "list" } lists this session\'s shells.',
+    "The current session ID is available in the OPENCODE_SESSION_ID environment variable.",
   ].join(" ")
 
 export const Action = Schema.Literals(["run", "check", "wait", "kill", "list"])
@@ -100,7 +103,7 @@ export const Input = Schema.StructWithRest(
         "Run: working directory to execute it in. Defaults to the current working directory. When possible, avoid changing directories in the command and set the working directory here instead.",
     }),
     timeout: Schema.optionalKey(NonNegativeInt).annotate({
-      description: `Run: milliseconds. For a foreground command, how long it may run before it moves to the background and the call returns its handle (it is never killed); 0 waits until it ends. Defaults to ${DEFAULT_BACKGROUND_AFTER_MS}. For a background command, a deadline after which it is killed; none by default.`,
+      description: `Run: milliseconds. For a foreground command, how long it may run before it moves to the background and the call returns its handle (it is never killed); 0 waits until it ends. Defaults to ${DEFAULT_TIMEOUT_MS}. For a background command, a deadline after which it is killed; none by default.`,
     }),
     description: Schema.optionalKey(Schema.String).annotate({
       description: "Run: a few words on what the command does, shown when the session's shells are listed.",
@@ -113,7 +116,7 @@ export const Input = Schema.StructWithRest(
       description: "Check, wait, kill: the shell ID (sh_…) an earlier shell call returned.",
     }),
     ms: Schema.optionalKey(NonNegativeInt).annotate({
-      description: `Wait: milliseconds to wait for the command to end before returning its handle. Defaults to ${DEFAULT_BACKGROUND_AFTER_MS}.`,
+      description: `Wait: milliseconds to wait for the command to end before returning its handle. Defaults to ${DEFAULT_WAIT_MS}.`,
     }),
     offset: Schema.optionalKey(NonNegativeInt).annotate({
       description: `Check, wait: return the output from this byte offset (a handle's \`next\`), up to ${READ_LIMIT / 1024} KiB.`,
@@ -476,7 +479,7 @@ export const Plugin = {
 
     const backgroundAfter = Effect.fnUntraced(function* (input: Input) {
       if (input.timeout !== undefined) return input.timeout
-      return Config.latest(yield* config.entries(), "experimental")?.shell_background_after ?? DEFAULT_BACKGROUND_AFTER_MS
+      return Config.latest(yield* config.entries(), "experimental")?.shell_background_after ?? DEFAULT_TIMEOUT_MS
     })
 
     const outputLimits = Effect.fnUntraced(function* () {
@@ -726,40 +729,43 @@ export const Plugin = {
               return yield* moved("start")
             }
 
-            // At the limit the command moves to the background as a ctrl+b would move it, unless it settled first.
-            let byLimit = false
-            const timer =
+            // Past its limit the command moves to the background, as a ctrl+b would move it (upstream's timeout
+            // backgrounding). `running`: a command that settled as the limit passed keeps its foreground result.
+            const waiting = jobs.block({ id: job.id, sessionID: context.sessionID })
+            const blocked =
               limit > 0
-                ? yield* Effect.sleep(limit).pipe(
-                    Effect.andThen(
-                      Effect.suspend(() => {
-                        byLimit = true
-                        return jobs.background(job.id, { running: true })
-                      }),
+                ? waiting.pipe(
+                    Effect.timeoutOption(limit),
+                    Effect.flatMap((result) =>
+                      Option.isSome(result)
+                        ? Effect.succeed(result.value)
+                        : jobs
+                            .background(job.id, { running: true })
+                            .pipe(
+                              Effect.map((info) =>
+                                info ? { type: "backgrounded" as const, info, timedOut: true } : undefined,
+                              ),
+                            ),
                     ),
-                    Effect.interruptible,
-                    Effect.forkChild({ startImmediately: true }),
                   )
-                : undefined
+                : waiting
             // A user's stop arrives through `cancel`. Any interrupt stops the command too, unless the server is
             // handing its daemon over: then the command and its job keep running, and the next server takes the
             // call over and moves the command to the background.
             const outcome = yield* restore(
               Effect.raceFirst(
-                jobs
-                  .block({ id: job.id, sessionID: context.sessionID })
-                  .pipe(Effect.map((result) => ({ type: "settled" as const, result }))),
+                blocked.pipe(Effect.map((result) => ({ type: "settled" as const, result }))),
                 Deferred.await(stopped).pipe(Effect.as({ type: "cancelled" as const })),
               ),
             ).pipe(
               Effect.onInterrupt(() => (shell.handoffPrepared() ? Effect.void : jobs.cancel(job.id).pipe(Effect.ignore))),
-              Effect.ensuring(timer ? Fiber.interrupt(timer) : Effect.void),
             )
             if (outcome.type === "cancelled") return yield* cancelled(info, job.id)
             const result = outcome.result
             if (result?.type === "backgrounded") {
+              // Clears its timeout and keeps it under the background retention allowance.
               yield* shell.background(info.id).pipe(Effect.ignore)
-              return yield* moved(byLimit ? "limit" : "user")
+              return yield* moved("timedOut" in result ? "limit" : "user")
             }
             if (result?.info.status === "error")
               return yield* Effect.fail(new Error(result.info.error ?? "Command failed"))
@@ -793,7 +799,7 @@ export const Plugin = {
         else notes.push("it had already ended")
         yield* shell.kill(found.id)
       } else if (action === "wait" && found.status === "running") {
-        const ms = input.ms ?? DEFAULT_BACKGROUND_AFTER_MS
+        const ms = input.ms ?? DEFAULT_WAIT_MS
         // Claimed while it waits, so an end it sees sends no notice too.
         answered.add(found.id)
         const ended = yield* shell

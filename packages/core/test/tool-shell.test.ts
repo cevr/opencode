@@ -289,19 +289,8 @@ const progressOverflowCommand = (bytes: number, release: string) =>
     ? `[Console]::Out.Write(('x' * ${bytes})); while (!(Test-Path -LiteralPath '${release}')) { Start-Sleep -Milliseconds 50 }`
     : `head -c ${bytes} /dev/zero | tr '\\0' 'x'; while [ ! -e '${release}' ]; do sleep 0.05; done`
 
-const withSession = <A, E, R>(
-  directory: string,
-  body: (registry: Tool.Interface) => Effect.Effect<A, E, R>,
-  autoBackground?: boolean,
-) =>
+const withSession = <A, E, R>(directory: string, body: (registry: Tool.Interface) => Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
-    if (autoBackground !== undefined)
-      yield* Effect.promise(() =>
-        Bun.write(
-          path.join(directory, "opencode.json"),
-          JSON.stringify({ experimental: { shell_timeout_background: autoBackground } }),
-        ),
-      )
     const sessions = yield* Session.Service
     const location = Location.Ref.make({ directory: AbsolutePath.make(directory) })
     yield* sessions.create({
@@ -1459,14 +1448,10 @@ describe("ShellTool", () => {
     { timeout: 15_000 },
   )
 
-  for (const autoBackground of [true, false]) {
-    it.live(
-      `moves a foreground timeout to the background and delivers its original process result once (upstream flag ${autoBackground})`,
-      () => withTempDir((tmp) => {
-        reset()
-        return withSession(
-          tmp.path,
-          (registry) =>
+  it.live("moves a foreground timeout to the background and delivers its original process result once", () =>
+    withTempDir((tmp) => {
+      reset()
+      return withSession(tmp.path, (registry) =>
             Effect.gen(function* () {
               const bus = yield* Bus.Service
               const notices = yield* Queue.unbounded<unknown>()
@@ -1509,13 +1494,11 @@ describe("ShellTool", () => {
               expect(yield* Queue.size(notices)).toBe(0)
               expect(yield* shell.list()).toEqual([])
             }),
-          autoBackground,
-        )
-      }),
-    )
-  }
+      )
+    }),
+  )
 
-  it.live("returns a fast foreground result directly with timeout backgrounding enabled", () =>
+  it.live("returns a fast foreground result directly", () =>
     withTempDir((tmp) => {
       reset()
       return withSession(
@@ -1528,7 +1511,6 @@ describe("ShellTool", () => {
             const jobs = yield* Job.Service
             expect(yield* jobs.runningBackground).toEqual([])
           }),
-        true,
       )
     }),
   )
@@ -1559,7 +1541,6 @@ describe("ShellTool", () => {
               metadata: { source: "shell", shellID: id, state: "completed", exit: 7 },
             })
           }),
-        true,
       )
     }),
   )
@@ -1578,7 +1559,6 @@ describe("ShellTool", () => {
             const jobs = yield* Job.Service
             expect(yield* jobs.runningBackground).toEqual([])
           }),
-        true,
       )
     }),
   )
@@ -1603,29 +1583,11 @@ describe("ShellTool", () => {
             expect((yield* shell.wait(id)).status).toBe("killed")
             expect(yield* shell.list()).toEqual([])
           }),
-        true,
       )
     }),
   )
 
-  it.live("preserves explicit background timeout limits with timeout backgrounding disabled", () =>
-    withTempDir((tmp) => {
-      reset()
-      return withSession(
-        tmp.path,
-        (registry) =>
-          Effect.gen(function* () {
-            const result = yield* executeTool(registry, call({ command: idleCommand, background: true, timeout: 10 }))
-            const id = ID.make(String(result.metadata?.shellID))
-            const shell = yield* Shell.Service
-            expect((yield* shell.wait(id)).status).toBe("timeout")
-          }),
-        false,
-      )
-    }),
-  )
-
-  it.live("preserves explicit background timeout limits with timeout backgrounding enabled", () =>
+  it.live("stops a background command when its explicit timeout expires", () =>
     withTempDir((tmp) => {
       reset()
       return withSession(
@@ -1640,7 +1602,6 @@ describe("ShellTool", () => {
             const shell = yield* Shell.Service
             expect((yield* shell.wait(id)).status).toBe("timeout")
           }),
-        true,
       )
     }),
   )
