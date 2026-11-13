@@ -52,6 +52,7 @@ const executionLayer = Layer.effect(
       awaitIdle: coordinator.awaitIdle,
       stop: () => Effect.succeed(false),
       stopped: () => Effect.succeed(false),
+      recover: () => Effect.void,
       wake: (sessionID) =>
         Effect.sync(() => control.wakes.push(sessionID)).pipe(Effect.andThen(coordinator.wake(sessionID))),
     })

@@ -131,6 +131,7 @@ const executionNode = makeGlobalNode({
         awaitIdle: (id) => complete(id).pipe(Effect.exit, Effect.asVoid),
         stop: () => Effect.succeed(false),
         stopped: () => Effect.succeed(false),
+        recover: () => Effect.void,
       })
     }),
   ),

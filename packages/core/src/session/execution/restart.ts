@@ -92,6 +92,15 @@ export const layer = (options?: Options) =>
         if (owner && !owner.revert && !(yield* execution.stopped(sessionID))) yield* execution.wake(sessionID)
       })
 
+      // A stop the server died inside (its mark written, its interrupt not yet settled) ends here as the stop would
+      // have: a user interruption that releases the claim. The turn is not continued and the mark stays.
+      const settleStopped = (sessionID: SessionSchema.ID) =>
+        bus.publish(
+          SessionEvent.Execution.Interrupted,
+          { sessionID, reason: "user" },
+          { commit: () => store.release(sessionID) },
+        )
+
       const prepareResume = Effect.fnUntraced(function* (sessionID: SessionSchema.ID) {
         // Durable before the resume runs, so a crash inside the resumed turn is
         // counted by the next sweep and the budget cannot be dodged.
@@ -345,6 +354,13 @@ export const layer = (options?: Options) =>
         }
 
         if (yield* execution.isActive(recovery.childSessionID)) return false
+        if (yield* execution.stopped(recovery.childSessionID)) {
+          // The stop's one cancelled report first: the job row stays running until it is admitted, and the claim
+          // left after a crash in between is settled by the next sweep's direct path.
+          yield* deliverSubagentSafe(notices, background.notificationID, recovery, { status: "cancelled" })
+          yield* settleStopped(recovery.childSessionID)
+          return false
+        }
         // prepareResume publishes Execution.Failed directly on the bus outside the
         // coordinator, so the settle hook never reports an exhausted child.
         if (!(yield* prepareResume(recovery.childSessionID))) {
@@ -454,13 +470,17 @@ export const layer = (options?: Options) =>
           const resumed = yield* execution.active
           const direct = yield* Effect.filter(
             (yield* store.listSuspended()).filter((sessionID) => !resumed.has(sessionID) && !children.has(sessionID)),
-            prepareResume,
+            Effect.fnUntraced(function* (sessionID) {
+              if (!(yield* execution.stopped(sessionID))) return yield* prepareResume(sessionID)
+              yield* settleStopped(sessionID)
+              return false
+            }),
           )
           yield* Effect.forEach(
             direct,
             Effect.fnUntraced(function* (sessionID) {
               suspended.delete(sessionID)
-              yield* execution.resume(sessionID).pipe(Effect.ignore, Effect.forkIn(scope))
+              yield* execution.recover(sessionID).pipe(Effect.ignore, Effect.forkIn(scope))
             }),
             { concurrency: "unbounded", discard: true },
           )
@@ -471,7 +491,7 @@ export const layer = (options?: Options) =>
           yield* Effect.forEach(
             resumable,
             Effect.fnUntraced(function* ({ background, recovery }) {
-              yield* SubagentJob.start(jobs, execution, recovery, background.notificationID)
+              yield* SubagentJob.restart(jobs, execution, recovery, background.notificationID)
               suspended.delete(recovery.childSessionID)
             }),
             { discard: true },

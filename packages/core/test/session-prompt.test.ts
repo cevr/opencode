@@ -82,6 +82,7 @@ const execution = Layer.succeed(
         return false
       }),
     stopped: (sessionID) => Effect.sync(() => stoppedSessions.has(sessionID)),
+    recover: () => Effect.void,
   }),
 )
 const mediaDirectory = "/media"
