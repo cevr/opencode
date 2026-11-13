@@ -25,7 +25,9 @@ export interface Interface {
   readonly resume: (sessionID: SessionSchema.ID) => Effect.Effect<void, SessionRunner.RunError>
   /**
    * Continues a turn a dead server left claimed (the restart sweep's resume). Unlike `resume` it is not new work:
-   * it never ends a stop, and a stopped Session is not run (the sweep settles it instead).
+   * it never ends a stop. A Session stopped when its turn's first drain begins (marked before the sweep looked, or
+   * after) is never drained: the turn settles as the stop's user interruption, claim released and the stop's one
+   * report given, and `recover` succeeds.
    */
   readonly recover: (sessionID: SessionSchema.ID) => Effect.Effect<void, SessionRunner.RunError>
   /** Registers newly recorded work. Repeated wakeups may coalesce. */
@@ -128,6 +130,8 @@ export const layer = Layer.effect(
       ),
       stopped,
     })
+    // Sessions a `recover` asked to run: their next run's first drain checks the stop mark before running the turn.
+    const recovering = new Set<SessionSchema.ID>()
     // Why a Session's execution is being interrupted, read from the coordinator once it exists.
     let interruption: (sessionID: SessionSchema.ID) => InterruptReason | undefined = () => undefined
     const drain = Effect.fnUntraced(function* (
@@ -183,7 +187,20 @@ export const layer = Layer.effect(
       // session), and the events and replies of what woke it (an answer's message, its form closing)
       // would otherwise reach their clients only after it.
       drain: (sessionID, force, promotable) =>
-        nextTurn.pipe(Effect.andThen(drain(sessionID, force, undefined, promotable))),
+        nextTurn.pipe(
+          Effect.andThen(
+            Effect.gen(function* () {
+              // A recovered turn reads the stop mark here, at its first drain, and not before its run starts:
+              // a stop that lands before this read is seen, and one after it finds the turn active and
+              // interrupts it. Either way the turn settles as the stop's user interruption, never drained.
+              if (force && recovering.delete(sessionID) && (yield* stopped(sessionID))) {
+                yield* Effect.suspend(() => holder.coordinator?.interrupt(sessionID, "user") ?? Effect.void)
+                return yield* Effect.never
+              }
+              return yield* drain(sessionID, force, undefined, promotable)
+            }),
+          ),
+        ),
       // One terminal observation per busy period, covering every coalesced drain.
       settled: (sessionID, exit, reason) =>
         reportLifecycle(
@@ -234,8 +251,18 @@ export const layer = Layer.effect(
         }),
       // New work ends a stop: the mark goes before the run starts, so its period reports as any other.
       resume: (sessionID) => kv.remove(STOPPED + sessionID).pipe(Effect.andThen(coordinator.run(sessionID))),
+      // Only a run's first drain consumes the flag (see `drain`). One left by a recover that joined a running
+      // period is read by the next run's first drain, after a resume removed the mark or as the stop it is.
       recover: (sessionID) =>
-        Effect.flatMap(stopped(sessionID), (mark) => (mark ? Effect.void : coordinator.run(sessionID))),
+        Effect.sync(() => void recovering.add(sessionID)).pipe(
+          Effect.andThen(coordinator.run(sessionID)),
+          // A stop that settled the recovered turn is its outcome, not an interruption of the caller.
+          Effect.catchCause((cause) =>
+            Cause.hasInterruptsOnly(cause)
+              ? Effect.flatMap(stopped(sessionID), (mark) => (mark ? Effect.void : Effect.failCause(cause)))
+              : Effect.failCause(cause),
+          ),
+        ),
       wake: coordinator.wake,
       awaitIdle: coordinator.awaitIdle,
       stop: (sessionID) =>
