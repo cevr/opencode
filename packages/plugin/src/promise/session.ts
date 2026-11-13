@@ -195,6 +195,20 @@ export interface SessionIdle {
   readonly background: ReadonlyArray<SessionIdleBackground>
 }
 
+/**
+ * Runs at an idle boundary that is about to deliver the oldest queued prompt while more queued user prompts wait
+ * behind it, before any of them is delivered. `prompts` lists those waiting user prompts, oldest first, up to the
+ * first queued item that is not a user prompt. Set `take` to n (2 to `prompts.length`) to deliver the oldest n as
+ * one user message: their texts joined by `separator`, their attachments in order, the first one's metadata. The
+ * default `take` of 1 delivers the oldest alone, as without the hook. Experimental.
+ */
+export interface SessionQueueDeliver {
+  readonly sessionID: Session.ID
+  readonly prompts: ReadonlyArray<{ readonly id: SessionMessage.ID; readonly text: string }>
+  take: number
+  separator: string
+}
+
 export interface SessionHooks {
   readonly fork: { readonly sessionID: Session.ID }
   readonly prompt: SessionPrompt
@@ -211,6 +225,7 @@ export interface SessionHooks {
   readonly "experimental.ws.receive": SessionWebSocketReceive
   readonly retry: SessionRetry
   readonly "experimental.idle": SessionIdle
+  readonly "experimental.queue.deliver": SessionQueueDeliver
 }
 
 export type SessionDomain = Pick<

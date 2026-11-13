@@ -29,6 +29,7 @@ import { SessionSchema } from "./schema.js"
 import { SessionStored } from "./stored.js"
 import { SessionInboxTable, SessionMessageTable } from "./sql.js"
 import { SessionHistory } from "./history.js"
+import type { PluginHooks } from "../plugin/hooks.js"
 
 type DatabaseService = Database.Interface["db"]
 
@@ -575,13 +576,15 @@ const publish = Effect.fn("SessionInbox.publish")(function* (
  * Promotes pending input into visible messages and returns the promoted count,
  * or undefined when the runner must first handle a pending control.
  * Steered compaction takes priority over pending prompts, without crossing a move.
- * Only the "input" scope may fall through to one queued input.
+ * Only the "input" scope may fall through to one queued input, which the
+ * `experimental.queue.deliver` hook may merge with the queued user prompts behind it.
  */
 export const promote = Effect.fn("SessionInbox.promote")(function* (
   db: DatabaseService,
   bus: Bus.Interface,
   sessionID: SessionSchema.ID,
   scope: Promotable,
+  hooks?: Pick<PluginHooks.Interface, "trigger">,
 ) {
   return yield* serialized(
     sessionID,
@@ -595,7 +598,7 @@ export const promote = Effect.fn("SessionInbox.promote")(function* (
       const queued = yield* firstQueued(db, sessionID)
       if (!queued) return 0
       if (isControl(queued)) return undefined
-      const promoted = yield* publish(db, bus, sessionID, [queued])
+      const promoted = yield* publish(db, bus, sessionID, [yield* mergeQueued(db, bus, hooks, sessionID, queued)])
       return promoted + (yield* publish(db, bus, sessionID, beforeControl(yield* pendingSteers(db, sessionID))))
     }),
   )
@@ -617,6 +620,100 @@ const firstQueued = (db: DatabaseService, sessionID: SessionSchema.ID) =>
     .limit(1)
     .get()
     .pipe(Effect.orDie)
+
+/** The queued user prompts from the oldest queued row, oldest first, up to the first queued row that is not one. */
+const queuedUsers = (db: DatabaseService, sessionID: SessionSchema.ID) =>
+  db
+    .select()
+    .from(SessionInboxTable)
+    .where(and(eq(SessionInboxTable.session_id, sessionID), eq(SessionInboxTable.delivery, "queue")))
+    .orderBy(asc(SessionInboxTable.enqueued_seq))
+    .all()
+    .pipe(
+      Effect.orDie,
+      Effect.map((rows) => {
+        const end = rows.findIndex((row) => row.type !== "user")
+        return end === -1 ? rows : rows.slice(0, end)
+      }),
+    )
+
+type Mention = { readonly start: number; readonly end: number; readonly text: string }
+const shifted = <T extends { readonly mention?: Mention }>(items: ReadonlyArray<T> | undefined, by: number) =>
+  (items ?? []).map((item) =>
+    item.mention
+      ? { ...item, mention: { ...item.mention, start: item.mention.start + by, end: item.mention.end + by } }
+      : item,
+  )
+
+/** One user payload of `payloads` in order: the texts joined by `separator`, each attachment's mention moved with its text. */
+export const mergePayloads = (payloads: ReadonlyArray<UserPayload>, separator: string): UserPayload => {
+  let text = ""
+  const files: NonNullable<UserPayload["files"]>[number][] = []
+  const agents: NonNullable<UserPayload["agents"]>[number][] = []
+  const skills: NonNullable<UserPayload["skills"]>[number][] = []
+  payloads.forEach((payload, index) => {
+    if (index > 0) text += separator
+    const at = text.length
+    text += payload.text
+    files.push(...shifted(payload.files, at))
+    agents.push(...shifted(payload.agents, at))
+    skills.push(...shifted(payload.skills, at))
+  })
+  return UserPayload.make({
+    text,
+    files: files.length ? files : undefined,
+    agents: agents.length ? agents : undefined,
+    skills: skills.length ? skills : undefined,
+    metadata: payloads[0]?.metadata,
+  })
+}
+
+/**
+ * The row an idle boundary delivers: the oldest queued one, or, when the
+ * `experimental.queue.deliver` hook takes two or more of the queued user
+ * prompts, one new queued row that merges them. The merged row is admitted
+ * before the prompts it merges are cancelled, so a failure between the two
+ * leaves every text in the inbox. Runs inside the session's inbox lock.
+ */
+const mergeQueued = Effect.fn("SessionInbox.mergeQueued")(function* (
+  db: DatabaseService,
+  bus: Bus.Interface,
+  hooks: Pick<PluginHooks.Interface, "trigger"> | undefined,
+  sessionID: SessionSchema.ID,
+  queued: typeof SessionInboxTable.$inferSelect,
+) {
+  if (hooks === undefined || queued.type !== "user") return queued
+  const rows = yield* queuedUsers(db, sessionID)
+  if (rows.length < 2 || rows[0]?.id !== queued.id) return queued
+  const hydrated = (yield* SessionBlob.hydrateInbox(db, rows)).map(fromRow)
+  const users = hydrated.filter((item): item is User => item.type === "user")
+  const event = yield* hooks.trigger("session", "experimental.queue.deliver", {
+    sessionID,
+    prompts: users.map((item) => ({ id: item.id, text: item.payload.text })),
+    take: 1,
+    separator: "\n",
+  })
+  const take = Math.min(Math.floor(event.take), users.length)
+  if (!(take >= 2)) return queued
+  const merging = users.slice(0, take)
+  const id = SessionMessage.ID.create()
+  yield* bus.publish(SessionEvent.InboxEnqueued, {
+    inboxID: id,
+    sessionID,
+    item: {
+      type: "user",
+      payload: mergePayloads(
+        merging.map((item) => item.payload),
+        event.separator,
+      ),
+      delivery: "queue",
+    },
+  })
+  for (const item of merging) yield* bus.publish(SessionEvent.InboxCancelled, { sessionID, inboxID: item.id })
+  const merged = yield* db.select().from(SessionInboxTable).where(eq(SessionInboxTable.id, id)).get().pipe(Effect.orDie)
+  if (merged === undefined) return yield* Effect.die(new LifecycleConflict({ id }))
+  return merged
+})
 
 const pendingSteers = (db: DatabaseService, sessionID: SessionSchema.ID) =>
   db

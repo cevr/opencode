@@ -200,6 +200,7 @@ const layer = Layer.effect(
                     bus,
                     sessionID,
                     entering && !continuing ? promotable : "steer",
+                    hooks,
                   )
                   // A control admitted during context preparation owns this boundary.
                   if (promoted === undefined) return undefined

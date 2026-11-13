@@ -77,7 +77,21 @@ import { SessionSystemPrompt } from "@opencode/core/session/system-prompt"
 import { ID, Model } from "@opencode/core/model"
 import { Location } from "@opencode/core/location"
 import { Provider } from "@opencode/core/provider"
-import { Cause, Context, DateTime, Deferred, Effect, Exit, Fiber, Layer, Queue, Schema, Scope, Stream, Tracer } from "effect"
+import {
+  Cause,
+  Context,
+  DateTime,
+  Deferred,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  Queue,
+  Schema,
+  Scope,
+  Stream,
+  Tracer,
+} from "effect"
 import { TestClock } from "effect/testing"
 import { and, asc, desc, eq, sql } from "drizzle-orm"
 import { testEffect } from "./lib/effect"
@@ -4662,6 +4676,65 @@ describe("SessionRunnerLLM", () => {
     expect(userTexts(s.requests[0])).toEqual(["Start working"])
     expect(userTexts(s.requests[1])).toEqual(["Start working"])
     expect(userTexts(s.requests[2])).toEqual(["Start working", "Wait until continuation ends"])
+  })
+
+  for (const take of [3, 2, 1] as const)
+    scenario(
+      `delivers the ${take === 1 ? "oldest queued prompt alone" : `oldest ${take} queued prompts as one message`} when the queue.deliver hook takes ${take}`,
+      function* (s) {
+        const hooks = yield* PluginHooks.Service
+        const seen: Array<ReadonlyArray<string>> = []
+        yield* hooks.register("session", "experimental.queue.deliver", (event) =>
+          Effect.sync(() => {
+            seen.push(event.prompts.map((prompt) => prompt.text))
+            event.take = take
+          }),
+        )
+        const runner = yield* SessionRunner.Service
+        yield* s.admit("Start working")
+        for (const text of ["A", "B", "C"])
+          yield* s.session.prompt({ sessionID, text, delivery: "queue", resume: false })
+        yield* s.llm.push(TestLLM.stop(), TestLLM.stop(), TestLLM.stop(), TestLLM.stop())
+        yield* runner.drain({ sessionID, force: false })
+
+        // The transcript lists the newest message first.
+        const delivered = (yield* s.messages)
+          .flatMap((message) => (message.type === "user" ? [message.text] : []))
+          .reverse()
+        if (take === 3) {
+          expect(delivered).toEqual(["Start working", "A\nB\nC"])
+          expect(seen).toEqual([["A", "B", "C"]])
+        }
+        if (take === 2) {
+          // The hook runs again at the next boundary, where only one queued prompt waits: it is not asked.
+          expect(delivered).toEqual(["Start working", "A\nB", "C"])
+          expect(seen).toEqual([["A", "B", "C"]])
+        }
+        if (take === 1) {
+          expect(delivered).toEqual(["Start working", "A", "B", "C"])
+          expect(seen).toEqual([
+            ["A", "B", "C"],
+            ["B", "C"],
+          ])
+        }
+        expect(s.requests.at(-1) && userTexts(s.requests.at(-1)!)).toEqual(delivered)
+        expect(yield* s.inbox).toEqual([])
+      },
+    )
+
+  test("a merged queued prompt keeps each attachment's mention on its own text", () => {
+    const merged = SessionInbox.mergePayloads(
+      [
+        { text: "see @a", agents: [{ name: "a", mention: { start: 4, end: 6, text: "@a" } }] },
+        { text: "and @b", agents: [{ name: "b", mention: { start: 4, end: 6, text: "@b" } }] },
+      ],
+      "\n",
+    )
+    expect(merged.text).toBe("see @a\nand @b")
+    expect(merged.agents?.map((agent) => merged.text.slice(agent.mention!.start, agent.mention!.end))).toEqual([
+      "@a",
+      "@b",
+    ])
   })
 
   scenario("keeps queued input parked when a steer is cancelled during preparation", function* (s) {
