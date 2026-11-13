@@ -1,4 +1,5 @@
-import { Effect, FileSystem, Formatter, Logger, Option, Schedule, Stream, type LogLevel } from "effect"
+import { Duration, Effect, FileSystem, Formatter, Logger, Option, Schedule, Stream, type LogLevel } from "effect"
+import { closeSync, openSync, writeSync } from "node:fs"
 import path from "path"
 import { Global } from "../global.js"
 import { runID } from "./shared.js"
@@ -61,12 +62,72 @@ export function file(local = true, channel = "local") {
   return path.join(Global.Path.log, `opencode-${channel.replace(/[^a-zA-Z0-9._-]/g, "-")}.log`)
 }
 
-export function fileLogger(target = file(), id: string = runID()) {
-  // Do not set batchWindow to 0; it causes high idle CPU usage.
+// How long the file logger holds lines before it writes them. Do not set it to 0; it causes high idle CPU usage.
+const LOG_BATCH_WINDOW: Duration.Input = "1 second"
+
+/** The batched lines of every file logger open in this process. */
+const pending = new Set<() => void>()
+let writeThrough = false
+
+function drainAll() {
+  for (const drain of pending) drain()
+}
+
+/**
+ * Shutdown has started: write every batched line now, and from here on each line as it is logged. Whatever ends the
+ * process next (a SIGKILL once a parent's grace is over, the shutdown deadline's exit) then loses no line logged
+ * before it. Synchronous, so a signal handler can call it before teardown begins.
+ */
+export function writeThroughFromNow() {
+  writeThrough = true
+  drainAll()
+}
+
+/**
+ * A logger appending to `target`, batching its lines for up to `window` (as Logger.toFile does) until
+ * shutdown starts (writeThroughFromNow), and writing them out when its scope closes or the process exits.
+ * Writes are synchronous: the drain must finish inside a signal handler or an exit listener, which cannot await.
+ */
+export function fileLogger(target = file(), id: string = runID(), window: Duration.Input = LOG_BATCH_WINDOW) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     yield* fs.makeDirectory(path.dirname(target), { recursive: true })
-    const logger = yield* Logger.toFile(formatter(id), target, { flag: "a" })
+    const fd = yield* Effect.acquireRelease(
+      Effect.try(() => openSync(target, "a")),
+      (fd) => Effect.sync(() => closeSync(fd)),
+    )
+    const format = formatter(id)
+    let lines: string[] = []
+    let open = true
+    // A failed write drops its lines, as Logger.toFile's did: logging must never fail the program.
+    const drain = () => {
+      if (!open || lines.length === 0) return
+      const batch = lines
+      lines = []
+      try {
+        writeSync(fd, batch.join("\n") + "\n")
+      } catch {}
+    }
+    // Registered after the open, so it runs before the close.
+    yield* Effect.acquireRelease(
+      Effect.sync(() => {
+        if (pending.size === 0) process.on("exit", drainAll)
+        pending.add(drain)
+      }),
+      () =>
+        Effect.sync(() => {
+          drain()
+          open = false
+          pending.delete(drain)
+          if (pending.size === 0) process.off("exit", drainAll)
+        }),
+    )
+    yield* Effect.sync(drain).pipe(Effect.repeat(Schedule.spaced(window)), Effect.forkScoped)
+    const logger = Logger.make((options) => {
+      if (!open) return
+      lines.push(format.log(options))
+      if (writeThrough) drain()
+    })
     yield* trim(target).pipe(
       Effect.ignore,
       Effect.repeat(Schedule.spaced(LOG_TRIM_INTERVAL)),

@@ -1,10 +1,9 @@
+import { Logging } from "@opencode/util/observability/logging"
 import { Teardown } from "@opencode/util/teardown"
 import { Duration, Effect } from "effect"
 
 /** After SIGTERM or SIGINT, teardown gets this long before the process reports what it is stuck on and exits. */
 export const DEADLINE = Duration.seconds(10)
-// The file logger batches writes for up to a second.
-const LOG_FLUSH = Duration.millis(1_500)
 
 /**
  * Bounds signal-initiated teardown. NodeRuntime.runMain interrupts the main fiber on SIGTERM or SIGINT and then waits
@@ -25,7 +24,6 @@ export const install = Effect.fnUntraced(function* (input: Duration.Input = DEAD
         deadline: Duration.format(deadline),
         pending: pending.map((item) => `${item.label} for ${item.ms}ms`),
       })
-      yield* Effect.sleep(LOG_FLUSH)
       yield* Effect.sync(() => process.exit(1))
     })
   const onSignal = (signal: NodeJS.Signals) => {
@@ -34,6 +32,9 @@ export const install = Effect.fnUntraced(function* (input: Duration.Input = DEAD
       process.exit(1)
     }
     started = true
+    // Before teardown starts: a parent that kills this process after its grace (the standalone server's, 3 s) would
+    // otherwise take the file log's last batch with it.
+    Logging.writeThroughFromNow()
     fork(expire(signal))
   }
   // Closing the terminal sends SIGHUP, whose default action exits without teardown. Treat it as SIGTERM, but only
@@ -47,8 +48,9 @@ export const install = Effect.fnUntraced(function* (input: Duration.Input = DEAD
   }
   yield* Effect.acquireRelease(
     Effect.sync(() => {
-      process.on("SIGTERM", onSignal)
-      process.on("SIGINT", onSignal)
+      // Ahead of runMain's own listener, whose interrupt can run teardown's first finalizers before later listeners.
+      process.prependListener("SIGTERM", onSignal)
+      process.prependListener("SIGINT", onSignal)
       if (hangup) process.on("SIGHUP", onHangup)
     }),
     // Once shutdown has started, keep listening: this release can run while a later finalizer is still stuck.
