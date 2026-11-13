@@ -23,6 +23,11 @@ export interface Interface {
   readonly isActive: (sessionID: SessionSchema.ID) => Effect.Effect<boolean>
   /** Starts execution while idle or joins the active execution. */
   readonly resume: (sessionID: SessionSchema.ID) => Effect.Effect<void, SessionRunner.RunError>
+  /**
+   * Continues a turn a dead server left claimed (the restart sweep's resume). Unlike `resume` it is not new work:
+   * it never ends a stop, and a stopped Session is not run (the sweep settles it instead).
+   */
+  readonly recover: (sessionID: SessionSchema.ID) => Effect.Effect<void, SessionRunner.RunError>
   /** Registers newly recorded work. Repeated wakeups may coalesce. */
   readonly wake: (sessionID: SessionSchema.ID) => Effect.Effect<void>
   /**
@@ -229,6 +234,8 @@ export const layer = Layer.effect(
         }),
       // New work ends a stop: the mark goes before the run starts, so its period reports as any other.
       resume: (sessionID) => kv.remove(STOPPED + sessionID).pipe(Effect.andThen(coordinator.run(sessionID))),
+      recover: (sessionID) =>
+        Effect.flatMap(stopped(sessionID), (mark) => (mark ? Effect.void : coordinator.run(sessionID))),
       wake: coordinator.wake,
       awaitIdle: coordinator.awaitIdle,
       stop: (sessionID) =>
@@ -272,6 +279,7 @@ export const noopLayer = Layer.succeed(
     active: Effect.succeed(new Set()),
     isActive: () => Effect.succeed(false),
     resume: () => Effect.void,
+    recover: () => Effect.void,
     wake: () => Effect.void,
     interrupt: () => Effect.succeed(false),
     awaitIdle: () => Effect.void,

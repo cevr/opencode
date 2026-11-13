@@ -73,6 +73,7 @@ const execution = Layer.succeed(
     awaitIdle: () => Effect.void,
     stop: () => Effect.succeed(false),
     stopped: () => Effect.succeed(false),
+    recover: () => Effect.void,
   }),
 )
 const enabledEntries = [

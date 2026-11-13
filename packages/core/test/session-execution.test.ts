@@ -97,6 +97,128 @@ describe("SessionExecution lifecycle", () => {
     }),
   )
 
+  it.effect("keeps a stop the server died inside: the sweep settles the stopped child instead of resuming it", () =>
+    Effect.gen(function* () {
+      const database = yield* Database.Service
+      const store = yield* SessionStore.Service
+      const kv = yield* KV.Service
+      const parent = Session.ID.make("ses_stop_restart_parent")
+      const child = Session.ID.make("ses_stop_restart_child")
+      yield* seedSessions(database, [parent])
+      yield* seedSessions(database, [child], { parent_id: parent })
+      const scope = yield* Scope.fork(yield* Effect.scope)
+      const running = yield* Deferred.make<void>()
+      const before = yield* buildExecution(scope, () =>
+        Deferred.succeed(running, undefined).pipe(Effect.andThen(Effect.never)),
+      )
+      yield* Context.get(before, SessionExecution.Service).resume(child).pipe(Effect.forkIn(scope))
+      yield* Deferred.await(running)
+      // SessionExecution.stop's first step, its durable mark; the server dies before the interrupt settles.
+      yield* kv.set("session.stopped:" + child, true)
+      yield* Scope.close(scope, Exit.void)
+      expect((yield* claims(database))[child]).toBe(true)
+
+      const drained: Session.ID[] = []
+      const after = yield* buildExecution(yield* Scope.fork(yield* Effect.scope), ({ sessionID }) =>
+        Effect.sync(() => void drained.push(sessionID)),
+      )
+      const restart = Context.get(after, SessionRestart.Service)
+      const execution = Context.get(after, SessionExecution.Service)
+      yield* restart.resumeSuspendedSessions
+      yield* Effect.yieldNow
+      yield* Effect.forEach([child, parent], execution.awaitIdle)
+      expect({ drained, stopped: yield* execution.stopped(child) }).toEqual({ drained: [], stopped: true })
+      expect(yield* claims(database)).toEqual({ [parent]: false, [child]: false })
+      expect((yield* store.context(child)).filter((message) => message.type === "synthetic")).toEqual([])
+      // A directly driven child reports nothing to its parent once stopped, as a settled stop does.
+      expect(yield* SessionInbox.list(database.db, parent)).toEqual([])
+      yield* restart.resumeSuspendedSessions
+      expect(drained).toEqual([])
+    }),
+  )
+
+  it.effect("recover continues a claimed turn but never runs or ends a stop; resume, new work, ends it", () =>
+    Effect.gen(function* () {
+      const database = yield* Database.Service
+      const kv = yield* KV.Service
+      const session = Session.ID.make("ses_recover_stopped")
+      yield* seedSessions(database, [session])
+      const drained: Session.ID[] = []
+      const context = yield* buildExecution(yield* Scope.fork(yield* Effect.scope), ({ sessionID }) =>
+        Effect.sync(() => void drained.push(sessionID)),
+      )
+      const execution = Context.get(context, SessionExecution.Service)
+      yield* kv.set("session.stopped:" + session, true)
+      yield* execution.recover(session)
+      expect({ drained, stopped: yield* execution.stopped(session) }).toEqual({ drained: [], stopped: true })
+      yield* execution.resume(session)
+      expect({ drained, stopped: yield* execution.stopped(session) }).toEqual({ drained: [session], stopped: false })
+      yield* execution.recover(session)
+      expect(drained).toEqual([session, session])
+    }),
+  )
+
+  it.effect("keeps a stop the server died inside: a stopped background child reports cancelled once", () =>
+    Effect.gen(function* () {
+      const database = yield* Database.Service
+      const jobs = yield* Job.Service
+      const kv = yield* KV.Service
+      const parent = Session.ID.make("ses_stop_restart_job_parent")
+      const child = Session.ID.make("ses_stop_restart_job_child")
+      yield* seedSessions(database, [parent])
+      yield* seedSessions(database, [child], { parent_id: parent, time_suspended: Date.now() })
+      // The child's subagent job is still running when the server dies inside the child's stop.
+      yield* jobs.start({
+        id: child,
+        type: "subagent",
+        recovery: {
+          kind: "subagent",
+          parentSessionID: parent,
+          childSessionID: child,
+          agent: "explore",
+          description: "Stopped inspection",
+        },
+        run: Effect.never,
+      })
+      yield* jobs.background(child)
+      yield* kv.set("session.stopped:" + child, true)
+
+      const drained: Session.ID[] = []
+      const parentWoken = yield* Deferred.make<void>()
+      const scope = yield* Scope.make()
+      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
+      const restarted = yield* Job.make.pipe(Effect.provideService(Scope.Scope, scope))
+      const context = yield* buildExecution(
+        scope,
+        ({ sessionID }) =>
+          Effect.sync(() => void drained.push(sessionID)).pipe(
+            Effect.andThen(sessionID === parent ? Deferred.succeed(parentWoken, undefined) : Effect.void),
+          ),
+        undefined,
+        restarted,
+      )
+      const restart = Context.get(context, SessionRestart.Service)
+      const execution = Context.get(context, SessionExecution.Service)
+      yield* restart.resumeSuspendedSessions
+      yield* Deferred.await(parentWoken)
+      yield* Effect.forEach([child, parent], execution.awaitIdle)
+      expect({ drained, stopped: yield* execution.stopped(child) }).toEqual({ drained: [parent], stopped: true })
+      expect(yield* claims(database)).toEqual({ [parent]: false, [child]: false })
+      expect(yield* SessionInbox.list(database.db, parent)).toMatchObject([
+        {
+          payload: {
+            text: expect.stringContaining("Subagent cancelled"),
+            metadata: { source: "subagent", childID: child, state: "cancelled" },
+          },
+        },
+      ])
+      expect(yield* restarted.pendingBackground).toEqual([])
+      yield* restart.resumeSuspendedSessions
+      expect(drained).toEqual([parent])
+      expect(yield* SessionInbox.list(database.db, parent)).toHaveLength(1)
+    }),
+  )
+
   it.effect("leaves a child parked when its parent is gone or its restart budget is exhausted", () =>
     Effect.gen(function* () {
       const database = yield* Database.Service

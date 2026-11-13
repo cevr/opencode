@@ -127,6 +127,7 @@ const execution = (llmClient: Layer.Layer<LLMClientService>) =>
         awaitIdle: coordinator.awaitIdle,
         stop: () => Effect.succeed(false),
         stopped: () => Effect.succeed(false),
+        recover: () => Effect.void,
       })
     }),
   ).pipe(Layer.provide(runnerLayer(llmClient)), Layer.orDie)
