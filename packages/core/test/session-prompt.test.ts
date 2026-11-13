@@ -55,6 +55,7 @@ const interruptCalls: Session.ID[] = []
 const interruptContinuations: Array<boolean | undefined> = []
 const wakeCalls: Session.ID[] = []
 const activeSessions = new Set<Session.ID>()
+const stoppedSessions = new Set<Session.ID>()
 const execution = Layer.succeed(
   SessionExecution.Service,
   SessionExecution.Service.of({
@@ -75,6 +76,12 @@ const execution = Layer.succeed(
         wakeCalls.push(sessionID)
       }),
     awaitIdle: () => Effect.void,
+    stop: (sessionID) =>
+      Effect.sync(() => {
+        stoppedSessions.add(sessionID)
+        return false
+      }),
+    stopped: (sessionID) => Effect.sync(() => stoppedSessions.has(sessionID)),
   }),
 )
 const mediaDirectory = "/media"
@@ -1298,6 +1305,27 @@ describe("Session.prompt", () => {
       expect(executionCalls).toEqual([])
       expect(wakeCalls).toEqual([sessionID])
     }),
+  )
+
+  it.effect(
+    "a stop drops the queued input; a stopped session keeps a notice without waking, and a prompt wakes it",
+    () =>
+      Effect.gen(function* () {
+        yield* setup
+        const session = yield* Session.Service
+        yield* session.prompt({ sessionID, text: "Queued behind the turn", delivery: "queue", resume: false })
+        expect(yield* session.inbox(sessionID)).toHaveLength(1)
+        wakeCalls.length = 0
+
+        expect(yield* session.stop(sessionID)).toBe(false)
+        expect(yield* session.inbox(sessionID)).toEqual([])
+        yield* session.synthetic({ sessionID, text: "Shell sh_1 cancelled" })
+        expect(wakeCalls).toEqual([])
+        expect(yield* session.inbox(sessionID)).toHaveLength(1)
+
+        yield* session.prompt({ sessionID, text: "Its owner asks" })
+        expect(wakeCalls).toEqual([sessionID])
+      }).pipe(Effect.ensuring(Effect.sync(() => stoppedSessions.clear()))),
   )
 
   it.effect("only records the prompt when resume is false", () =>

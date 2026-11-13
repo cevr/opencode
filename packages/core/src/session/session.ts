@@ -321,7 +321,9 @@ export const make = Effect.fn("Session.make")(function* () {
                 () => new SyntheticConflictError({ sessionID, inputID }),
               ),
             )
-          if (input.resume !== false && !(yield* get(sessionID)).revert) yield* execution.wake(sessionID)
+          // A stopped Session keeps a notice for its next task instead of running on it (SessionExecution.stop).
+          if (input.resume !== false && !(yield* get(sessionID)).revert && !(yield* execution.stopped(sessionID)))
+            yield* execution.wake(sessionID)
           return admitted
         }),
       ),

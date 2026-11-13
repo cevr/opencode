@@ -89,7 +89,7 @@ export const layer = (options?: Options) =>
 
       const wake = Effect.fnUntraced(function* (sessionID: SessionSchema.ID) {
         const owner = yield* store.get(sessionID)
-        if (owner && !owner.revert) yield* execution.wake(sessionID)
+        if (owner && !owner.revert && !(yield* execution.stopped(sessionID))) yield* execution.wake(sessionID)
       })
 
       const prepareResume = Effect.fnUntraced(function* (sessionID: SessionSchema.ID) {

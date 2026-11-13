@@ -167,6 +167,11 @@ export interface Interface {
   readonly backgroundAll: (input: BackgroundAllInput) => Effect.Effect<Info[]>
   readonly cancel: (id: string) => Effect.Effect<Info | undefined>
   readonly cancelSession: (sessionID: SessionSchema.ID) => Effect.Effect<Info[]>
+  /**
+   * Cancels each running job the Session owns, as `cancel` does one: its shells, images and its own subagents' jobs.
+   * Its own subagent job is its parent's (`ownerSessionID`), so it is left to settle and report to that parent.
+   */
+  readonly cancelOwned: (sessionID: SessionSchema.ID) => Effect.Effect<Info[]>
   readonly pendingBackground: Effect.Effect<readonly Background[]>
   readonly runningBackground: Effect.Effect<readonly Recovery[]>
   readonly backgroundJobs: Effect.Effect<readonly JobList.Item[]>
@@ -579,6 +584,19 @@ export const make = Effect.gen(function* () {
     return cancelled.filter((info): info is Info => info !== undefined)
   })
 
+  const cancelOwned: Interface["cancelOwned"] = Effect.fn("Job.cancelOwned")(function* (sessionID) {
+    const ids = [...(yield* SynchronizedRef.get(state.jobs)).values()]
+      .filter(
+        (job) =>
+          job.info.status === "running" &&
+          (job.info.metadata?.sessionID === sessionID ||
+            (job.recovery !== undefined && ownerSessionID(job.recovery) === sessionID)),
+      )
+      .map((job) => job.info.id)
+    const cancelled = yield* Effect.forEach(ids, (id) => cancelInternal(id, true))
+    return cancelled.filter((info): info is Info => info !== undefined)
+  })
+
   const pendingBackground: Interface["pendingBackground"] = Effect.gen(function* () {
     const rows = yield* db
       .select()
@@ -715,6 +733,7 @@ export const make = Effect.gen(function* () {
     backgroundAll,
     cancel,
     cancelSession,
+    cancelOwned,
     pendingBackground,
     runningBackground,
     backgroundJobs: JobList.read(db, state.jobs),

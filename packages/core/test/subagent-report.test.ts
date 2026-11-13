@@ -8,6 +8,7 @@ import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { Instance } from "@opencode/core/instance/service"
 import { Job } from "@opencode/core/job"
 import { JobTable } from "@opencode/core/job/sql"
+import { KV } from "@opencode/core/kv"
 import { LocationServiceMap } from "@opencode/core/location-service-map"
 import type { LocationServices } from "@opencode/core/location-services"
 import { Model } from "@opencode/core/model"
@@ -31,7 +32,15 @@ import { testEffect } from "./lib/effect"
 
 const it = testEffect(
   AppNodeBuilder.build(
-    LayerNode.group([Database.node, Bus.node, SessionStore.node, SessionInbox.node, SessionProjector.node, Job.node]),
+    LayerNode.group([
+      Database.node,
+      Bus.node,
+      SessionStore.node,
+      SessionInbox.node,
+      SessionProjector.node,
+      Job.node,
+      KV.node,
+    ]),
   ),
 )
 
@@ -348,6 +357,95 @@ describe("SubagentReport settlement", () => {
     }),
   )
 
+  it.effect(
+    "a stop cancels the child's background work, reports cancelled once, and silences the child until a resume",
+    () =>
+      Effect.gen(function* () {
+        const database = yield* Database.Service
+        const jobs = yield* Job.Service
+        const parent = sessionID("ses_stop_parent")
+        const child = sessionID("ses_stop_child")
+        const grandchild = sessionID("ses_stop_grandchild")
+        yield* seedSessions(database, [parent])
+        yield* seedSessions(database, [child], { parent_id: parent, agent: "explore", title: "Stopped audit" })
+        yield* seedSessions(database, [grandchild], { parent_id: child, agent: "explore", title: "Late helper" })
+
+        const killed: string[] = []
+        const shell = yield* jobs.start({
+          id: "sh_stop_shell",
+          type: "shell",
+          metadata: { sessionID: child, shellID: "sh_stop" },
+          recovery: { kind: "shell", sessionID: child, shellID: "sh_stop", command: "bun dev" },
+          background: true,
+          run: Effect.never,
+          cancel: Effect.sync(() => void killed.push("sh_stop")),
+        })
+        // A job it owns by its recovery alone, as an image generation is.
+        yield* jobs.start({
+          id: "image_stop",
+          type: "experimental_image_generate",
+          recovery: { kind: "image", sessionID: child, path: "/tmp/stop.png", model: "test/painter" },
+          background: true,
+          run: Effect.never,
+          cancel: Effect.sync(() => void killed.push("image_stop")),
+        })
+        const started = yield* Deferred.make<void>()
+        const drains: SessionID[] = []
+        const scope = yield* Scope.make()
+        yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
+        const context = yield* buildExecution(scope, ({ sessionID }) => {
+          drains.push(sessionID)
+          // The child's first period holds until the stop interrupts it.
+          if (sessionID === child && drains.filter((id) => id === child).length === 1)
+            return Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never))
+          return Effect.void
+        })
+        const execution = Context.get(context, SessionExecution.Service)
+        const subagent = (id: SessionID, owner: SessionID, description: string) =>
+          jobs.start({
+            id,
+            type: "subagent",
+            recovery: { kind: "subagent", parentSessionID: owner, childSessionID: id, agent: "explore", description },
+            background: true,
+            run: execution.resume(id).pipe(Effect.as("")),
+          })
+        yield* subagent(child, parent, "Stopped audit")
+        yield* Deferred.await(started)
+
+        expect(yield* execution.stop(child)).toBe(true)
+        expect(yield* execution.stopped(child)).toBe(true)
+        // Its own shell and image are cancelled through their jobs' cancel; its own subagent job settled as cancelled.
+        expect(killed).toEqual(["sh_stop", "image_stop"])
+        expect((yield* jobs.get(shell.id))?.status).toBe("cancelled")
+        const once = yield* SessionInbox.list(database.db, parent)
+        expect(once).toHaveLength(1)
+        expect(text(once[0])).toContain(`<subagent sessionID="${child}" state="cancelled"`)
+
+        // A subagent of the stopped child reports to it but does not wake it.
+        yield* seedAssistant(database, grandchild, 100, "Late result")
+        yield* subagent(grandchild, child, "Late helper")
+        yield* execution.awaitIdle(grandchild)
+        yield* Effect.yieldNow
+        expect(text((yield* SessionInbox.list(database.db, child)).at(-1))).toContain("Late result")
+        expect(drains.filter((id) => id === child)).toHaveLength(1)
+
+        // Its owner waking it runs a period whose answer is not the parent's to hear.
+        yield* seedAssistant(database, child, 200, "Answer after the stop")
+        yield* execution.wake(child)
+        yield* execution.awaitIdle(child)
+        expect(drains.filter((id) => id === child)).toHaveLength(2)
+        expect(yield* SessionInbox.list(database.db, parent)).toHaveLength(1)
+
+        // A resume (a parent's new task) ends the stop: the next answer reports again.
+        yield* seedAssistant(database, child, 300, "Answer to the new task")
+        yield* execution.resume(child)
+        expect(yield* execution.stopped(child)).toBe(false)
+        const after = yield* SessionInbox.list(database.db, parent)
+        expect(after).toHaveLength(2)
+        expect(text(after[1])).toContain("Answer to the new task")
+      }),
+  )
+
   it.effect("reports a creation-tick cancellation exactly once without a bound started event", () =>
     Effect.gen(function* () {
       const database = yield* Database.Service
@@ -477,6 +575,7 @@ describe("SubagentReport outbox", () => {
         jobs,
         inbox,
         draining: Effect.succeed(new Set()),
+        stopped: () => Effect.succeed(false),
         wake: (sessionID) => Effect.sync(() => void wakes.push(sessionID)),
       })
       const job = yield* jobs.start({
@@ -562,6 +661,7 @@ describe("SubagentReport outbox", () => {
         jobs,
         inbox,
         draining: Effect.succeed(new Set()),
+        stopped: () => Effect.succeed(false),
         wake: () => Effect.void,
       })
 

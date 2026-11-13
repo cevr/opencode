@@ -109,6 +109,8 @@ const executionNode = makeGlobalNode({
         wake: () => Effect.void,
         interrupt: () => Effect.succeed(false),
         awaitIdle: (sessionID) => complete(sessionID).pipe(Effect.exit, Effect.asVoid),
+        stop: () => Effect.succeed(false),
+        stopped: () => Effect.succeed(false),
       })
     }),
   ),
@@ -1023,6 +1025,8 @@ describe("SubagentJob cancellation", () => {
             return true
           }),
         awaitIdle: () => Effect.void,
+        stop: () => Effect.succeed(false),
+        stopped: () => Effect.succeed(false),
       })
       const jobs = yield* Job.make.pipe(Scope.provide(scope), Effect.provideService(Database.Service, database))
       const context = yield* Layer.buildWithScope(
