@@ -11,6 +11,7 @@ import { useStorage } from "../../../context/storage"
 import { Locale } from "../../../util/locale"
 import { Keymap } from "../../../context/keymap"
 import { useComposerTab } from "./context"
+import { Slot } from "../../../plugin/render"
 import { withTimestampedFallback } from "@opencode/util/session-title-fallback"
 import { sessionActivity, sessionFamily, type SessionActivity } from "../../../util/session"
 
@@ -43,27 +44,27 @@ export function SubagentsTab(props: { sessionID: string }) {
     if (!current) return []
 
     const sessions = data.session.list()
-    const activity = sessionActivity(sessions, data.session.status, (sessionID) =>
-      data.shell.listBySession(sessionID).filter((shell) => shell.status === "running").length,
+    const activity = sessionActivity(
+      sessions,
+      data.session.status,
+      (sessionID) => data.shell.listBySession(sessionID).filter((shell) => shell.status === "running").length,
     )
-    const result = sessionFamily<SessionInfo>(sessions, current.id).map(
-      ({ session, prefix }): SubagentEntry => {
-        const title = withTimestampedFallback(session)
-        const agentMatch = title.match(/@(\w+) subagent/)
-        return {
-          sessionID: session.id,
-          agent: session.agent
-            ? Locale.titlecase(session.agent)
-            : agentMatch
-              ? Locale.titlecase(agentMatch[1])
-              : "Subagent",
-          title: agentMatch ? title.replace(agentMatch[0], "").trim() || title : title,
-          activity: activity(session.id),
-          current: session.id === route.sessionID,
-          prefix,
-        }
-      },
-    )
+    const result = sessionFamily<SessionInfo>(sessions, current.id).map(({ session, prefix }): SubagentEntry => {
+      const title = withTimestampedFallback(session)
+      const agentMatch = title.match(/@(\w+) subagent/)
+      return {
+        sessionID: session.id,
+        agent: session.agent
+          ? Locale.titlecase(session.agent)
+          : agentMatch
+            ? Locale.titlecase(agentMatch[1])
+            : "Subagent",
+        title: agentMatch ? title.replace(agentMatch[0], "").trim() || title : title,
+        activity: activity(session.id),
+        current: session.id === route.sessionID,
+        prefix,
+      }
+    })
 
     // Active: its turn runs, or it waits on a shell or subagent of its own that still runs.
     return result.filter((entry) => (entry.activity !== undefined) === filter.active)
@@ -74,6 +75,7 @@ export function SubagentsTab(props: { sessionID: string }) {
   let scroll: ScrollBoxRenderable | undefined
 
   const selectedEntry = createMemo(() => entries()[store.selected])
+  const ids = createMemo(() => entries().map((entry) => entry.sessionID))
 
   createEffect(() => {
     const active = composer.active("subagents")
@@ -233,27 +235,44 @@ export function SubagentsTab(props: { sessionID: string }) {
                     navigate({ type: "session", sessionID: entry.sessionID })
                   }}
                 >
-                  <box flexGrow={1} minWidth={0} flexDirection="row">
-                    <text
-                      fg={
-                        active()
-                          ? theme.text.action.primary.focused
-                          : entry.current
-                            ? theme.text.action.primary.selected
-                            : theme.text.action.primary.base
-                      }
-                      attributes={active() ? TextAttributes.BOLD : undefined}
-                      wrapMode="none"
-                    >
-                      {entry.prefix}
-                      {entry.agent}: {entry.title}
-                    </text>
-                  </box>
-                  <Show when={status()}>
-                    <text fg={active() ? theme.text.action.primary.focused : theme.text.muted} wrapMode="none">
-                      {status()}
-                    </text>
-                  </Show>
+                  <Slot
+                    path="session.composer.panel.row"
+                    input={{
+                      sessionID: props.sessionID,
+                      tab: "subagents",
+                      id: entry.sessionID,
+                      get ids() {
+                        return ids()
+                      },
+                      label: `${entry.agent}: ${entry.title}`,
+                      get selected() {
+                        return active()
+                      },
+                      current: entry.current,
+                    }}
+                  >
+                    <box flexGrow={1} minWidth={0} flexDirection="row">
+                      <text
+                        fg={
+                          active()
+                            ? theme.text.action.primary.focused
+                            : entry.current
+                              ? theme.text.action.primary.selected
+                              : theme.text.action.primary.base
+                        }
+                        attributes={active() ? TextAttributes.BOLD : undefined}
+                        wrapMode="none"
+                      >
+                        {entry.prefix}
+                        {entry.agent}: {entry.title}
+                      </text>
+                    </box>
+                    <Show when={status()}>
+                      <text fg={active() ? theme.text.action.primary.focused : theme.text.muted} wrapMode="none">
+                        {status()}
+                      </text>
+                    </Show>
+                  </Slot>
                 </box>
               )
             }}
