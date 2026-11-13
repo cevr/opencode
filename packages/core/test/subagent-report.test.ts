@@ -380,6 +380,15 @@ describe("SubagentReport settlement", () => {
           run: Effect.never,
           cancel: Effect.sync(() => void killed.push("sh_stop")),
         })
+        // A job it owns by its recovery alone, as an image generation is.
+        yield* jobs.start({
+          id: "image_stop",
+          type: "experimental_image_generate",
+          recovery: { kind: "image", sessionID: child, path: "/tmp/stop.png", model: "test/painter" },
+          background: true,
+          run: Effect.never,
+          cancel: Effect.sync(() => void killed.push("image_stop")),
+        })
         const started = yield* Deferred.make<void>()
         const drains: SessionID[] = []
         const scope = yield* Scope.make()
@@ -405,8 +414,8 @@ describe("SubagentReport settlement", () => {
 
         expect(yield* execution.stop(child)).toBe(true)
         expect(yield* execution.stopped(child)).toBe(true)
-        // Its own shell is cancelled through the job's cancel; its own subagent job settled as cancelled.
-        expect(killed).toEqual(["sh_stop"])
+        // Its own shell and image are cancelled through their jobs' cancel; its own subagent job settled as cancelled.
+        expect(killed).toEqual(["sh_stop", "image_stop"])
         expect((yield* jobs.get(shell.id))?.status).toBe("cancelled")
         const once = yield* SessionInbox.list(database.db, parent)
         expect(once).toHaveLength(1)

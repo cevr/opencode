@@ -169,7 +169,7 @@ export interface Interface {
   readonly cancelSession: (sessionID: SessionSchema.ID) => Effect.Effect<Info[]>
   /**
    * Cancels each running job the Session owns, as `cancel` does one: its shells, images and its own subagents' jobs.
-   * Its own subagent job, which its parent owns and whose settlement reports to that parent, is left running.
+   * Its own subagent job is its parent's (`ownerSessionID`), so it is left to settle and report to that parent.
    */
   readonly cancelOwned: (sessionID: SessionSchema.ID) => Effect.Effect<Info[]>
   readonly pendingBackground: Effect.Effect<readonly Background[]>
@@ -589,7 +589,6 @@ export const make = Effect.gen(function* () {
       .filter(
         (job) =>
           job.info.status === "running" &&
-          job.info.id !== sessionID &&
           (job.info.metadata?.sessionID === sessionID ||
             (job.recovery !== undefined && ownerSessionID(job.recovery) === sessionID)),
       )
