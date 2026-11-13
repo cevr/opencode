@@ -51,7 +51,7 @@ test("a plugin draws the panel's tab bar, rows and footer from the slots' inputs
     const rows = await app.waitForFrame(
       (frame) => frame.includes(`Row subagents ${second.id}`) && frame.includes("Footer"),
     )
-    expect(rows).toContain("Tabs subagents|shell|terminals active subagents")
+    expect(rows).toContain("Tabs subagents|shell|terminals active subagents open")
     // The host's own tab bar is gone: its `esc` was the only one.
     expect(rows).not.toContain("esc")
     expect(rows).toContain(`Row subagents ${first.id} of 2 "Build: Fix the parser" selected`)

@@ -111,6 +111,9 @@ export function Composer(props: ComposerProps) {
               path="session.composer.panel.tabs"
               input={{
                 sessionID: props.sessionID,
+                get open() {
+                  return props.open
+                },
                 get tabs() {
                   return tabList().map((tab) => ({ id: tab.id, label: tab.label }))
                 },

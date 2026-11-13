@@ -203,6 +203,8 @@ export interface ComposerPanelHint {
 
 export interface ComposerPanelTabsInput {
   readonly sessionID: string
+  /** Whether the panel shows: the tab bar stays mounted while it is put away. */
+  readonly open: boolean
   /** Every tab, in the order ←/→ cycles them. */
   readonly tabs: readonly ComposerPanelTab[]
   /** The active tab's id. */

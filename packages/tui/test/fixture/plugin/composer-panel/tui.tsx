@@ -6,7 +6,9 @@ export default Plugin.define({
   setup(context) {
     context.ui.slot({
       replace: "session.composer.panel.tabs",
-      render: (input) => <text>{`Tabs ${input.tabs.map((tab) => tab.id).join("|")} active ${input.active}`}</text>,
+      render: (input) => (
+        <text>{`Tabs ${input.tabs.map((tab) => tab.id).join("|")} active ${input.active}${input.open ? " open" : ""}`}</text>
+      ),
     })
     context.ui.slot({
       replace: "session.composer.panel.row",
