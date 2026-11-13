@@ -19,6 +19,26 @@ const first = session("ses_panel_first", "Fix the parser", parent.id)
 const second = session("ses_panel_second", "Write the docs", parent.id)
 const sessions = [parent, first, second]
 const messages = [{ type: "user", id: "msg_ask", text: "Split the work", time: { created: 1 } }]
+const pty = (id: string, status: "running" | "exited", extra: Record<string, unknown>) => ({
+  id,
+  title: "zsh",
+  command: "/bin/zsh",
+  args: ["-l"],
+  cwd: directory,
+  status,
+  pid: 1,
+  sessionID: parent.id,
+  userTitle: null,
+  foregroundProcess: null,
+  size: { cols: 80, rows: 24 },
+  output: { head: 0, tail: 0 },
+  ...extra,
+})
+// One terminal runs a dev server in front; the other's shell exited with 1.
+const terminals = [
+  pty("pty_panel_live", "running", { userTitle: "server", foregroundProcess: "bun" }),
+  pty("pty_panel_done", "exited", { exitCode: 1 }),
+]
 
 // A plugin takes over the panel's tab bar, each row and the footer through the
 // three slots; the host keeps the panel's keys, so ↓ and → still act and the
@@ -42,6 +62,7 @@ test("a plugin draws the panel's tab bar, rows and footer from the slots' inputs
         if (url.pathname.endsWith("/message"))
           return json({ data: url.pathname.includes(parent.id) ? messages : [], cursor: {} })
         if (/^\/api\/session\/[^/]+\/(inbox|permission)$/.test(url.pathname)) return json({ data: [] })
+        if (url.pathname === `/api/experimental/session/${parent.id}/terminal`) return json({ data: terminals })
         return undefined
       },
     })
@@ -67,7 +88,16 @@ test("a plugin draws the panel's tab bar, rows and footer from the slots' inputs
     // → moves to the Shell tab; the tab bar's input follows.
     app.mockInput.pressArrow("right")
     await app.waitForFrame((frame) => frame.includes("active shell") && frame.includes("No shell commands"))
+    // → again: each Terminals row's input carries its terminal, its state and exit code with it; the new-terminal row none.
+    app.mockInput.pressArrow("right")
+    const tab = await app.waitForFrame(
+      (frame) => frame.includes("active terminals") && frame.includes("pty_panel_done"),
+    )
+    expect(tab).toContain(`Row terminals pty_panel_live of 2 "bun" terminal server [/bin/zsh -l] running fg bun`)
+    expect(tab).toContain(`Row terminals pty_panel_done of 2 "zsh" terminal zsh [/bin/zsh -l] exited 1`)
+    expect(tab).toMatch(/Row terminals {2}of 2 "\+ New terminal"(?! terminal)/)
   } finally {
     await fixture[Symbol.asyncDispose]()
   }
-})
+  // A full panel renders in about 4 s at a 1-minute load near 80; the default 5 s is too tight for a loaded host.
+}, 30_000)

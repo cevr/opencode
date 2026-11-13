@@ -101,6 +101,14 @@ export function TerminalsTab(props: { sessionID: string; visibleTerminalID?: str
                       return entries().map((each) => each.id)
                     },
                     label: terminal?.foregroundProcess ?? terminal?.title ?? "+ New terminal",
+                    terminal: terminal && {
+                      title: terminal.userTitle ?? terminal.title,
+                      command: [terminal.command, ...terminal.args].join(" "),
+                      cwd: terminal.cwd,
+                      status: terminal.status,
+                      ...(terminal.exitCode === undefined ? {} : { exitCode: terminal.exitCode }),
+                      ...(terminal.foregroundProcess ? { foregroundProcess: terminal.foregroundProcess } : {}),
+                    },
                     get selected() {
                       return active()
                     },

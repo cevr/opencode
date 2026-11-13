@@ -215,9 +215,30 @@ export interface ComposerPanelTabsInput {
   readonly dismiss: () => void
 }
 
-export interface ComposerPanelRowInput {
+/** What a Terminals row knows of its terminal: the host's persistent PTY record, without its start time (the PTY service keeps none). */
+export interface ComposerPanelTerminal {
+  /** The terminal's own title, or the one its user gave it. */
+  readonly title: string
+  readonly command: string
+  readonly cwd: string
+  readonly status: "running" | "exited"
+  /** Set once it exited. */
+  readonly exitCode?: number
+  /** The process in front, while one other than the shell runs. */
+  readonly foregroundProcess?: string
+}
+
+/** One row of the panel: its tab, and what that tab's row is about. */
+export type ComposerPanelRowInput =
+  | (ComposerPanelRowBase & { readonly tab: "subagents" | "shell" })
+  | (ComposerPanelRowBase & {
+      readonly tab: "terminals"
+      /** The row's terminal; absent on the tab's `+ New terminal` row. */
+      readonly terminal?: ComposerPanelTerminal
+    })
+
+export interface ComposerPanelRowBase {
   readonly sessionID: string
-  readonly tab: "subagents" | "shell" | "terminals"
   /** The row's subject: a session ID, a shell ID or a terminal ID; empty for the Terminals tab's new-terminal row. */
   readonly id: string
   /** The IDs of every row the tab lists now, in order, so a replacement can line its columns up across them. */
