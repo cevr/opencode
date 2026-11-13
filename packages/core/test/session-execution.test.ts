@@ -219,6 +219,145 @@ describe("SessionExecution lifecycle", () => {
     }),
   )
 
+  // The server serves while its sweep runs (packages/server/src/process.ts forks the sweep before the routes start),
+  // so a stop or a new task can land between the sweep's read of a stop mark and what it does with that read.
+  it.effect("a stop that lands just after the sweep read the mark settles the child: no run, claim released", () =>
+    Effect.gen(function* () {
+      const database = yield* Database.Service
+      const parent = Session.ID.make("ses_race_stop_parent")
+      const child = Session.ID.make("ses_race_stop_child")
+      yield* seedSessions(database, [parent])
+      yield* seedSessions(database, [child], { parent_id: parent, time_suspended: Date.now() })
+      const race = yield* raceOnMark(child)
+      const drained: Session.ID[] = []
+      const after = yield* buildExecution(
+        yield* Scope.fork(yield* Effect.scope),
+        ({ sessionID }) => Effect.sync(() => void drained.push(sessionID)),
+        undefined,
+        undefined,
+        undefined,
+        race.kv,
+      )
+      const execution = Context.get(after, SessionExecution.Service)
+      race.arm(execution.stop(child).pipe(Effect.asVoid))
+      yield* Context.get(after, SessionRestart.Service).resumeSuspendedSessions
+      yield* race.fired
+      // The sweep forks the direct resume: let it start before waiting for the child to settle.
+      yield* Effect.yieldNow
+      yield* Effect.forEach([child, parent], execution.awaitIdle)
+      expect({ drained, stopped: yield* execution.stopped(child) }).toEqual({ drained: [], stopped: true })
+      expect(yield* claims(database)).toEqual({ [parent]: false, [child]: false })
+      expect(yield* SessionInbox.list(database.db, parent)).toEqual([])
+    }),
+  )
+
+  it.effect("a stop that lands just after the sweep read a background child's mark reports cancelled once", () =>
+    Effect.gen(function* () {
+      const database = yield* Database.Service
+      const jobs = yield* Job.Service
+      const parent = Session.ID.make("ses_race_stop_job_parent")
+      const child = Session.ID.make("ses_race_stop_job_child")
+      yield* seedSessions(database, [parent])
+      yield* seedSessions(database, [child], { parent_id: parent, time_suspended: Date.now() })
+      yield* jobs.start({
+        id: child,
+        type: "subagent",
+        recovery: {
+          kind: "subagent",
+          parentSessionID: parent,
+          childSessionID: child,
+          agent: "explore",
+          description: "Raced inspection",
+        },
+        run: Effect.never,
+      })
+      yield* jobs.background(child)
+      const race = yield* raceOnMark(child)
+      const drained: Session.ID[] = []
+      const parentWoken = yield* Deferred.make<void>()
+      const scope = yield* Scope.make()
+      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
+      const restarted = yield* Job.make.pipe(Effect.provideService(Scope.Scope, scope))
+      const context = yield* buildExecution(
+        scope,
+        ({ sessionID }) =>
+          Effect.sync(() => void drained.push(sessionID)).pipe(
+            Effect.andThen(sessionID === parent ? Deferred.succeed(parentWoken, undefined) : Effect.void),
+          ),
+        undefined,
+        restarted,
+        undefined,
+        race.kv,
+      )
+      const restart = Context.get(context, SessionRestart.Service)
+      const execution = Context.get(context, SessionExecution.Service)
+      race.arm(execution.stop(child).pipe(Effect.asVoid))
+      yield* restart.resumeSuspendedSessions
+      yield* race.fired
+      yield* Deferred.await(parentWoken)
+      yield* Effect.forEach([child, parent], execution.awaitIdle)
+      expect({ drained, stopped: yield* execution.stopped(child) }).toEqual({ drained: [parent], stopped: true })
+      expect(yield* claims(database)).toEqual({ [parent]: false, [child]: false })
+      expect(yield* SessionInbox.list(database.db, parent)).toMatchObject([
+        {
+          payload: {
+            text: expect.stringContaining("Subagent cancelled"),
+            metadata: { source: "subagent", childID: child, state: "cancelled" },
+          },
+        },
+      ])
+      expect(yield* restarted.pendingBackground).toEqual([])
+      yield* restart.resumeSuspendedSessions
+      expect(drained).toEqual([parent])
+      expect(yield* SessionInbox.list(database.db, parent)).toHaveLength(1)
+    }),
+  )
+
+  it.effect("a new task that lands just after the sweep read the stop mark runs, and the sweep leaves it running", () =>
+    Effect.gen(function* () {
+      const database = yield* Database.Service
+      const kv = yield* KV.Service
+      const parent = Session.ID.make("ses_race_task_parent")
+      const child = Session.ID.make("ses_race_task_child")
+      yield* seedSessions(database, [parent])
+      yield* seedSessions(database, [child], { parent_id: parent, time_suspended: Date.now() })
+      // The server died inside the child's stop; the parent gives the child a new task at boot.
+      yield* kv.set("session.stopped:" + child, true)
+      const race = yield* raceOnMark(child)
+      const drained: Session.ID[] = []
+      const running = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+      const scope = yield* Scope.fork(yield* Effect.scope)
+      const after = yield* buildExecution(
+        scope,
+        ({ sessionID }) =>
+          Effect.sync(() => void drained.push(sessionID)).pipe(
+            Effect.andThen(Deferred.succeed(running, undefined)),
+            Effect.andThen(Deferred.await(release)),
+          ),
+        undefined,
+        undefined,
+        undefined,
+        race.kv,
+      )
+      const execution = Context.get(after, SessionExecution.Service)
+      race.arm(
+        execution.resume(child).pipe(Effect.ignore, Effect.forkIn(scope), Effect.andThen(Deferred.await(running))),
+      )
+      yield* Context.get(after, SessionRestart.Service).resumeSuspendedSessions
+      yield* race.fired
+      // The new task's turn holds its claim while it runs: the sweep must not settle it as the old stop.
+      expect({ claimed: (yield* claims(database))[child], stopped: yield* execution.stopped(child) }).toEqual({
+        claimed: true,
+        stopped: false,
+      })
+      yield* Deferred.succeed(release, undefined)
+      yield* execution.awaitIdle(child)
+      expect(drained).toEqual([child])
+      expect(yield* claims(database)).toEqual({ [parent]: false, [child]: false })
+    }),
+  )
+
   it.effect("leaves a child parked when its parent is gone or its restart budget is exhausted", () =>
     Effect.gen(function* () {
       const database = yield* Database.Service
@@ -2217,6 +2356,32 @@ function seedSessions(
   })
 }
 
+/**
+ * A KV that runs one armed action right after the next read of a Session's stop mark, before that read returns: a
+ * stop or a new task that lands just after the restart sweep looked at the mark.
+ */
+function raceOnMark(sessionID: Session.ID) {
+  return Effect.gen(function* () {
+    const kv = yield* KV.Service
+    const fired = yield* Deferred.make<void>()
+    const state: { action?: Effect.Effect<void> } = {}
+    const get: KV.Interface["get"] = (key) =>
+      kv.get(key).pipe(
+        Effect.tap(() => {
+          const action = state.action
+          if (key !== "session.stopped:" + sessionID || action === undefined) return Effect.void
+          state.action = undefined
+          return action.pipe(Effect.andThen(Deferred.succeed(fired, undefined)))
+        }),
+      )
+    return {
+      kv: KV.Service.of({ ...kv, get }),
+      arm: (action: Effect.Effect<void>) => void (state.action = action),
+      fired: Deferred.await(fired),
+    }
+  })
+}
+
 function claims(database: Database.Service["Service"]) {
   return database.db
     .select({ id: SessionTable.id, claimed: SessionTable.time_suspended })
@@ -2247,6 +2412,7 @@ function buildExecution(
   options?: SessionRestart.Options,
   overrideJobs?: Job.Interface,
   shell?: Shell.Interface,
+  kv?: KV.Interface,
 ) {
   return Effect.gen(function* () {
     const database = yield* Database.Service
@@ -2294,6 +2460,7 @@ function buildExecution(
         Layer.provide(Layer.succeed(Bus.Service, bus)),
         Layer.provide(Layer.succeed(SessionStore.Service, store)),
         Layer.provide(Layer.succeed(Job.Service, jobs)),
+        Layer.provide(Layer.succeed(KV.Service, kv ?? (yield* KV.Service))),
         Layer.provide(
           Layer.succeed(
             Shell.Daemon,

@@ -20,6 +20,7 @@ import {
   Stream,
 } from "effect"
 import { SimulationControlServer } from "../control-server"
+import { SimulationClock } from "./clock"
 import { SimulationProtocol } from "../protocol"
 
 export interface ProviderRequest {
@@ -150,7 +151,12 @@ class ToolControllerError extends Schema.TaggedError<ToolControllerError>()("Sim
   message: Schema.String,
 }) {}
 
-export const layerDrive = (options: { readonly endpoint: string; readonly version: string }) =>
+export const layerDrive = (options: {
+  readonly endpoint: string
+  readonly version: string
+  /** The server's clock, which `clock.advance` moves; a server without one refuses it. */
+  readonly clock?: SimulationClock.Interface
+}) =>
   Layer.effect(
     Service,
     Effect.gen(function* () {
@@ -276,7 +282,17 @@ export const layerDrive = (options: { readonly endpoint: string; readonly versio
         data: () => ({}),
         decode: SimulationProtocol.Backend.decodeRequestEffect,
         handle: (socket, request) =>
-          handle(driver, tools, fibers, activeController, controllerLock, socket, request, options.version),
+          handle(
+            driver,
+            tools,
+            fibers,
+            activeController,
+            controllerLock,
+            socket,
+            request,
+            options.version,
+            options.clock,
+          ),
         close: (socket) =>
           Effect.all([releaseController(activeController, controllerLock, socket), tools.release(socket)], {
             discard: true,
@@ -306,6 +322,7 @@ function handle(
   socket: ControlSocket,
   request: SimulationProtocol.Backend.Request,
   version: string,
+  clock: SimulationClock.Interface | undefined,
 ) {
   switch (request.method) {
     case "simulation.handshake":
@@ -361,6 +378,12 @@ function handle(
       return tools.finish(socket, request.params).pipe(Effect.as({ ok: true }))
     case "tool.fail":
       return tools.fail(socket, request.params).pipe(Effect.as({ ok: true }))
+    case "clock.advance":
+      if (!clock)
+        return Effect.fail(
+          new SimulationClock.AdvanceError({ message: "This simulated server has no clock to advance" }),
+        )
+      return clock.advance(request.params.ms).pipe(Effect.map((now) => ({ now })))
   }
 }
 

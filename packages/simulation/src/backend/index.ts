@@ -5,6 +5,7 @@ import { SdkPlugins } from "@opencode/core/plugin/sdk"
 import { Config, Effect, FileSystem, Layer } from "effect"
 import { HttpClient } from "effect/http"
 import { DriveManifest } from "../manifest"
+import { SimulationClock } from "./clock"
 import { SimulationNetwork } from "./network"
 import { SimulationOpenAI } from "./openai"
 import { SimulatedProvider } from "./simulated-provider"
@@ -18,13 +19,16 @@ import { SimulatedProvider } from "./simulated-provider"
  * - Network: all outbound HTTP resolves against the simulated route table;
  *   unknown destinations are denied. The driver-answered OpenAI endpoint is
  *   registered here as the first route.
+ * - Clock: the server runs on `app.clock` (the caller provides it to every
+ *   fiber); a Drive controller moves it with `clock.advance`.
  *
  */
 
 export const simulationReplacements: (app: {
   readonly version: string
+  readonly clock: SimulationClock.Interface
 }) => Effect.Effect<LayerNode.Replacements, Error, FileSystem.FileSystem> = Effect.fn("Simulation.replacements")(
-  function* (app: { readonly version: string }) {
+  function* (app: { readonly version: string; readonly clock: SimulationClock.Interface }) {
     // ModelsDev dies when its catalog fetch fails, so simulation answers it with
     // an empty catalog; providers come from seeded config instead.
     const models = SimulationNetwork.json("GET", "https://models.opencode.ai/experimental/v2.0/api.json", {})
@@ -44,6 +48,7 @@ export const simulationReplacements: (app: {
         SimulatedProvider.layerDrive({
           endpoint: manifest.endpoints.backend,
           version: app.version,
+          clock: app.clock,
         }),
       ),
       // The platform HTTP contract is infallible; a failed driver installation aborts startup.
@@ -58,4 +63,5 @@ export const simulationReplacements: (app: {
   },
 )
 
+export { SimulationClock } from "./clock"
 export * as Simulation from "./index"

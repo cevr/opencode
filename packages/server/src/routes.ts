@@ -40,7 +40,7 @@ import { Watcher } from "@opencode/core/filesystem/watcher"
 import { FileWatch } from "@opencode/core/filesystem/file-watch"
 import { HttpRouter } from "effect/http"
 import { HttpApiBuilder } from "effect/http-api"
-import { Context, Effect, Layer, Option } from "effect"
+import { Clock, Context, Effect, Layer, Option } from "effect"
 import { Api } from "./api"
 import { ServerAuth } from "./auth"
 import { CorsConfig } from "./cors"
@@ -169,9 +169,13 @@ function makeRoutes<AuthError, AuthServices>(
   const serviceLayer = options.simulation
     ? Layer.unwrap(
         Effect.gen(function* () {
-          const { simulationReplacements } = yield* Effect.promise(() => import("@opencode/simulation/backend"))
-          const simulation = yield* simulationReplacements({ version: App.make(options.app).version })
-          return build([...overrides, ...simulation])
+          const { simulationReplacements, SimulationClock } = yield* Effect.promise(
+            () => import("@opencode/simulation/backend"),
+          )
+          const clock = yield* SimulationClock.make()
+          const simulation = yield* simulationReplacements({ version: App.make(options.app).version, clock })
+          // Merged into the output too, so the router, request fibers and SDK runtime that capture it run on it.
+          return build([...overrides, ...simulation]).pipe(Layer.provideMerge(Layer.succeed(Clock.Clock, clock.clock)))
         }),
       )
     : build(overrides)
