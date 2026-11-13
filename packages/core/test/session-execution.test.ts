@@ -137,6 +137,27 @@ describe("SessionExecution lifecycle", () => {
     }),
   )
 
+  it.effect("recover continues a claimed turn but never runs or ends a stop; resume, new work, ends it", () =>
+    Effect.gen(function* () {
+      const database = yield* Database.Service
+      const kv = yield* KV.Service
+      const session = Session.ID.make("ses_recover_stopped")
+      yield* seedSessions(database, [session])
+      const drained: Session.ID[] = []
+      const context = yield* buildExecution(yield* Scope.fork(yield* Effect.scope), ({ sessionID }) =>
+        Effect.sync(() => void drained.push(sessionID)),
+      )
+      const execution = Context.get(context, SessionExecution.Service)
+      yield* kv.set("session.stopped:" + session, true)
+      yield* execution.recover(session)
+      expect({ drained, stopped: yield* execution.stopped(session) }).toEqual({ drained: [], stopped: true })
+      yield* execution.resume(session)
+      expect({ drained, stopped: yield* execution.stopped(session) }).toEqual({ drained: [session], stopped: false })
+      yield* execution.recover(session)
+      expect(drained).toEqual([session, session])
+    }),
+  )
+
   it.effect("keeps a stop the server died inside: a stopped background child reports cancelled once", () =>
     Effect.gen(function* () {
       const database = yield* Database.Service
