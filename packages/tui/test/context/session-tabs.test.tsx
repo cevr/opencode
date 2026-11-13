@@ -41,6 +41,7 @@ async function renderSessionTabs(
     newLocation?: "launch" | "inherit"
     launchDirectory?: string
     tabsEnabled?: boolean
+    scope?: "global" | "cwd" | "window"
     viewFailures?: number
     experimental?: Record<string, boolean>
   },
@@ -135,7 +136,7 @@ async function renderSessionTabs(
   let storage!: ReturnType<typeof useStorage>
   let config!: ReturnType<typeof useConfig>
   let configuration = {
-    tabs: { mode: options?.tabsEnabled === false ? ("off" as const) : ("on" as const) },
+    tabs: { mode: options?.tabsEnabled === false ? ("off" as const) : ("on" as const), scope: options?.scope },
     experimental: options?.experimental,
     session: { new_location: options?.newLocation ?? "launch" },
   }
@@ -725,6 +726,42 @@ test("closing a tab is not undone by another TUI viewing the same session", asyn
       2_000,
       "first client to observe reopen",
     )
+  } finally {
+    await Promise.allSettled(clients.map((client) => client.destroy()))
+  }
+})
+
+test("window scope keeps each TUI's tabs to the sessions opened in it", async () => {
+  await using temporary = await tmpdir()
+  const clients: Awaited<ReturnType<typeof renderSessionTabs>>[] = []
+  const ids = (client: Awaited<ReturnType<typeof renderSessionTabs>>) => client.tabs.tabs().map((tab) => tab.sessionID)
+
+  try {
+    const first = await renderSessionTabs("alpha", {
+      state: temporary.path,
+      scope: "window",
+      persisted: ["stale"],
+      sessionParents: { "alpha-child": "alpha" },
+    })
+    clients.push(first)
+    const second = await renderSessionTabs("beta", { state: temporary.path, scope: "window" })
+    clients.push(second)
+    await wait(() => ids(first).includes("alpha"), 2_000, "first tab to open")
+    await wait(() => ids(second).includes("beta"), 2_000, "second tab to open")
+
+    first.route.navigate({ type: "session", sessionID: "gamma" })
+    await wait(() => ids(first).includes("gamma"), 2_000, "first client to open gamma")
+    first.tabs.open("delta")
+    await wait(() => ids(first).includes("delta"), 2_000, "first client to open delta")
+    first.route.navigate({ type: "session", sessionID: "alpha-child" })
+    await wait(() => first.tabs.current() === "alpha", 2_000, "subagent view to select its root tab")
+    await Promise.all([first.flush(), second.flush()])
+    await Bun.sleep(200)
+
+    expect(ids(first)).toEqual(["alpha", "gamma", "delta"])
+    expect(ids(second)).toEqual(["beta"])
+    const stored = await Bun.file(path.join(temporary.path, "test", "tui", "tabs.json")).json()
+    expect(stored.cwd[directory].tabs.map((tab: { sessionID: string }) => tab.sessionID)).toEqual(["stale"])
   } finally {
     await Promise.allSettled(clients.map((client) => client.destroy()))
   }

@@ -193,8 +193,9 @@ export const Info = Schema.Struct({
       enabled: Schema.optional(Schema.Boolean).annotate({
         description: "Legacy tab toggle; use mode instead",
       }),
-      scope: Schema.optional(Schema.Literals(["global", "cwd"])).annotate({
-        description: "Share tabs globally or keep a separate set for each working directory",
+      scope: Schema.optional(Schema.Literals(["global", "cwd", "window"])).annotate({
+        description:
+          "Share tabs globally, keep a separate set for each working directory, or keep each TUI window's own tabs unshared and unsaved",
       }),
       layout: Schema.optional(Schema.Literals(["horizontal", "vertical"])).annotate({
         description: "Show tabs in a horizontal strip or vertical sidebar",
@@ -293,7 +294,7 @@ export type Resolved = Omit<Info, "attention" | "cursor" | "keybinds" | "leader"
   tabs: {
     mode: "auto" | "on" | "off"
     enabled: boolean
-    scope: "global" | "cwd"
+    scope: "global" | "cwd" | "window"
     layout: "horizontal" | "vertical"
     indicators: "status" | "numbers"
   }

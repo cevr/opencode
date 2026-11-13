@@ -173,10 +173,10 @@ export const settings: Setting[] = [
     title: "Scope",
     category: "Tabs",
     path: ["tabs", "scope"],
-    description: "Whether tabs are per directory or shared everywhere",
+    description: "Whether tabs are per directory, shared everywhere, or this window's own",
     default: "cwd",
-    values: ["cwd", "global"],
-    labels: ["current directory", "global"],
+    values: ["cwd", "global", "window"],
+    labels: ["current directory", "global", "this window"],
   },
   {
     title: "Layout",

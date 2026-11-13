@@ -81,6 +81,9 @@ export const { use: useSessionTabs, provider: SessionTabsProvider } = createSimp
       },
       key: "sessionID",
     })
+    // Window scope: this TUI's own tabs, neither read from nor written to the shared file, so
+    // other TUIs on the machine never add theirs.
+    const [windowStore, updateWindowStore] = storage.memory<TabsState>("tabs.window", { initial: empty() })
     const fallback = empty()
     const [promptPulses, setPromptPulses] = createSignal<Record<string, number>>({})
     let history: SessionTabHistory = { entries: [], index: -1 }
@@ -107,12 +110,14 @@ export const { use: useSessionTabs, provider: SessionTabsProvider } = createSimp
     })
 
     function state() {
+      if (config.tabs.scope === "window") return windowStore
       if (config.tabs.scope === "cwd") return store.cwd[paths.cwd] ?? fallback
       return store.global
     }
 
     function update(mutation: (draft: TabsState) => void) {
       const scope = config.tabs.scope
+      if (scope === "window") return updateWindowStore(mutation)
       void updateStore((draft) => mutation(scope === "cwd" ? (draft.cwd[paths.cwd] ??= empty()) : draft.global)).catch(
         // Failed writes lose only tab layout, but silence would hide tabs resetting every launch.
         (error) => console.error("Failed to persist session tabs", error),
