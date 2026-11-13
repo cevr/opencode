@@ -4678,6 +4678,28 @@ describe("SessionRunnerLLM", () => {
     expect(userTexts(s.requests[2])).toEqual(["Start working", "Wait until continuation ends"])
   })
 
+  scenario("the queue.deliver hook merges only the queued prompts before a queued control", function* (s) {
+    const hooks = yield* PluginHooks.Service
+    const bus = yield* Bus.Service
+    const seen: Array<ReadonlyArray<string>> = []
+    yield* hooks.register("session", "experimental.queue.deliver", (event) =>
+      Effect.sync(() => {
+        seen.push(event.prompts.map((prompt) => prompt.text))
+        event.take = event.prompts.length
+      }),
+    )
+    for (const text of ["A", "B"]) yield* s.session.prompt({ sessionID, text, delivery: "queue", resume: false })
+    const compaction = yield* s.session.compact({ sessionID, delivery: "queue" })
+    yield* s.session.prompt({ sessionID, text: "C", delivery: "queue", resume: false })
+
+    yield* SessionInbox.promote(s.db, bus, sessionID, "input", hooks)
+
+    expect(seen).toEqual([["A", "B"]])
+    expect((yield* s.messages).flatMap((message) => (message.type === "user" ? [message.text] : []))).toEqual(["A\nB"])
+    const left = yield* s.inbox
+    expect(left.map((item) => (item.type === "user" ? item.payload.text : item.id))).toEqual([compaction.id, "C"])
+  })
+
   for (const take of [3, 2, 1] as const)
     scenario(
       `delivers the ${take === 1 ? "oldest queued prompt alone" : `oldest ${take} queued prompts as one message`} when the queue.deliver hook takes ${take}`,
