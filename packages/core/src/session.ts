@@ -245,6 +245,12 @@ export interface Interface {
   readonly background: (sessionID: SessionSchema.ID) => Effect.Effect<void, NotFoundError>
   readonly resume: (sessionID: SessionSchema.ID) => Effect.Effect<void, NotFoundError | SessionRunner.RunError>
   readonly interrupt: (sessionID: SessionSchema.ID, options?: { readonly resume?: boolean }) => Effect.Effect<boolean>
+  /**
+   * Stops the Session until it is given work again (SessionExecution.stop): its active work, the background work it
+   * owns, and its queued input end; a subagent child reports cancelled to its parent once, and nothing after.
+   * Returns whether active work was interrupted. Experimental.
+   */
+  readonly stop: (sessionID: SessionSchema.ID) => Effect.Effect<boolean, NotFoundError>
   readonly synthetic: (
     input: Parameters<Session.Handle["synthetic"]>[0] & { sessionID: SessionSchema.ID },
   ) => ReturnType<Session.Handle["synthetic"]>
@@ -545,6 +551,24 @@ const layer = Layer.effect(
       resume: (sessionID) => sessions.forSession(sessionID).resume(),
       synthetic: (input) => sessions.forSession(input.sessionID).synthetic(input),
       interrupt: (sessionID, options) => sessions.forSession(sessionID).interrupt(options),
+      stop: Effect.fn("Session.stop")(function* (sessionID) {
+        yield* result.get(sessionID)
+        const interrupted = yield* execution.stop(sessionID)
+        // Queued input would run at its next task as if still wanted: it goes with the stop.
+        yield* Effect.forEach(
+          yield* result.inbox(sessionID),
+          (item) =>
+            result
+              .cancelInbox({ sessionID, inboxID: item.id })
+              .pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("stop: queued input not cancelled", { sessionID, cause }),
+                ),
+              ),
+          { discard: true },
+        )
+        return interrupted
+      }),
       revert: {
         stage: (input) => sessions.forSession(input.sessionID).revert.stage(input),
         clear: (sessionID) => sessions.forSession(sessionID).revert.clear(),

@@ -5,6 +5,7 @@ import { Bus } from "../bus.js"
 import { Database } from "../database/database.js"
 import { Job } from "../job.js"
 import { Instance } from "../instance/service.js"
+import { KV } from "../kv.js"
 import { makeGlobalNode } from "@opencode/util/effect/app-node"
 import { SessionEvent } from "./event.js"
 import { SessionInbox } from "./inbox.js"
@@ -38,7 +39,21 @@ export interface Interface {
   ) => Effect.Effect<boolean>
   /** Resolves once this process owns no active execution for the Session. Returns immediately when idle and never starts work. */
   readonly awaitIdle: (sessionID: SessionSchema.ID) => Effect.Effect<void>
+  /**
+   * Stops the Session until it is given work again: marks it stopped (durably), cancels the background work it owns
+   * (its shells, its own subagents' jobs; not its own subagent job), interrupts its active work and waits for that
+   * to settle. A running subagent child settles as cancelled and reports that to its parent once. While stopped, a
+   * notice admitted to it does not wake it, and a later period of it (its owner prompting it) reports nothing to its
+   * parent. A `resume` (a parent's subagent tool giving it a new task) ends the stop. Returns whether active work was
+   * interrupted. Queued input is the Session's to drop (`Session.stop`).
+   */
+  readonly stop: (sessionID: SessionSchema.ID) => Effect.Effect<boolean>
+  /** Whether the Session was stopped and not resumed since. */
+  readonly stopped: (sessionID: SessionSchema.ID) => Effect.Effect<boolean>
 }
+
+/** The KV key prefix of a stopped Session's mark. */
+const STOPPED = "session.stopped:"
 
 /** Routes execution from a Session ID to its selected instance's runner. */
 export class Service extends Context.Service<Service, Interface>()("@opencode/SessionExecution") {}
@@ -70,6 +85,9 @@ export const layer = Layer.effect(
     const jobs = yield* Job.Service
     const inbox = yield* SessionInbox.Service
     const db = (yield* Database.Service).db
+    const kv = yield* KV.Service
+    const stopped = (sessionID: SessionSchema.ID) =>
+      kv.get(STOPPED + sessionID).pipe(Effect.map((mark) => mark !== undefined))
     const reportLifecycle = <A>(sessionID: SessionSchema.ID, effect: Effect.Effect<A>) =>
       effect.pipe(
         Effect.tapCause((cause) =>
@@ -103,6 +121,7 @@ export const layer = Layer.effect(
       draining: Effect.suspend<ReadonlySet<SessionSchema.ID>, never, never>(() =>
         holder.coordinator ? holder.coordinator.draining : Effect.succeed(new Set<SessionSchema.ID>()),
       ),
+      stopped,
     })
     // Why a Session's execution is being interrupted, read from the coordinator once it exists.
     let interruption: (sessionID: SessionSchema.ID) => InterruptReason | undefined = () => undefined
@@ -208,9 +227,20 @@ export const layer = Layer.effect(
             yield* coordinator.wake(sessionID, "steer")
           return interrupted
         }),
-      resume: coordinator.run,
+      // New work ends a stop: the mark goes before the run starts, so its period reports as any other.
+      resume: (sessionID) => kv.remove(STOPPED + sessionID).pipe(Effect.andThen(coordinator.run(sessionID))),
       wake: coordinator.wake,
       awaitIdle: coordinator.awaitIdle,
+      stop: (sessionID) =>
+        Effect.gen(function* () {
+          // Marked first: a notice its cancelled work admits, or a report of its own subagents, must not wake it.
+          yield* kv.set(STOPPED + sessionID, true)
+          yield* jobs.cancelOwned(sessionID)
+          const interrupted = yield* coordinator.interrupt(sessionID, "user")
+          yield* coordinator.awaitIdle(sessionID)
+          return interrupted
+        }),
+      stopped,
     })
   }),
 )
@@ -232,7 +262,7 @@ function publishTerminal(
 export const node = makeGlobalNode({
   service: Service,
   layer,
-  deps: [SessionStore.node, Instance.node, Bus.node, Database.node, Job.node, SessionInbox.node],
+  deps: [SessionStore.node, Instance.node, Bus.node, Database.node, Job.node, SessionInbox.node, KV.node],
 })
 
 /** Low-level compatibility layer for callers that only need durable Session recording. */
@@ -245,5 +275,7 @@ export const noopLayer = Layer.succeed(
     wake: () => Effect.void,
     interrupt: () => Effect.succeed(false),
     awaitIdle: () => Effect.void,
+    stop: () => Effect.succeed(false),
+    stopped: () => Effect.succeed(false),
   }),
 )

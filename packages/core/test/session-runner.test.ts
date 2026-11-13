@@ -483,6 +483,8 @@ const layer = Layer.unwrap(
           wake: coordinator.wake,
           interrupt: (sessionID) => coordinator.interrupt(sessionID),
           awaitIdle: coordinator.awaitIdle,
+          stop: () => Effect.succeed(false),
+          stopped: () => Effect.succeed(false),
         })
       }),
     ).pipe(

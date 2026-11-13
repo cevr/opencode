@@ -75,6 +75,8 @@ const execution = Layer.succeed(
         wakeCalls.push(sessionID)
       }),
     awaitIdle: () => Effect.void,
+    stop: () => Effect.succeed(false),
+    stopped: () => Effect.succeed(false),
   }),
 )
 const mediaDirectory = "/media"

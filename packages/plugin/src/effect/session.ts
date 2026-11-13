@@ -8,7 +8,7 @@ import type { SessionInbox } from "@opencode/schema/session-inbox"
 import type { SessionError } from "@opencode/schema/session-error"
 import type { SessionMessage } from "@opencode/schema/session-message"
 import type { TokenUsage } from "@opencode/schema/token-usage"
-import type { JsonSchema, Types } from "effect"
+import type { Effect, JsonSchema, Types } from "effect"
 import type { ModelHooks } from "./registration.js"
 
 export interface SessionPrompt {
@@ -248,4 +248,13 @@ export type SessionDomain = Pick<
 > &
   Pick<ExperimentalSessionApi<unknown>, "wait" | "instructions"> & {
     readonly hook: ModelHooks<SessionHooks>
+    /**
+     * Stops the Session until it is given work again: interrupts its turn, cancels the background work it owns (its
+     * shells, its own subagents' jobs) and its queued input, and resolves once it has settled. A running subagent
+     * reports cancelled to its parent once; while stopped, a notice does not wake it and nothing more reaches its
+     * parent, until its parent's subagent tool gives it a new task. Experimental.
+     */
+    readonly stop: (input: {
+      readonly sessionID: Session.ID
+    }) => Effect.Effect<{ readonly interrupted: boolean }, unknown>
   }

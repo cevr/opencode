@@ -104,6 +104,8 @@ const setup = Effect.fnUntraced(function* (options?: {
         resumes.push(id)
       }),
     awaitIdle: () => Effect.void,
+    stop: () => Effect.succeed(false),
+    stopped: () => Effect.succeed(false),
     interrupt: () => Effect.succeed(false),
     wake: (id) =>
       Effect.gen(function* () {
@@ -637,6 +639,8 @@ describe("Session-owned handles", () => {
             }),
           wake: coordinator.wake,
           awaitIdle: coordinator.awaitIdle,
+          stop: () => Effect.succeed(false),
+          stopped: () => Effect.succeed(false),
           interrupt: (id, options) =>
             Effect.sync(() => void interrupts.push({ sessionID: id, options })).pipe(
               Effect.andThen(coordinator.interrupt(id)),

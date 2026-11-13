@@ -25,6 +25,11 @@ export type Deps = {
   readonly inbox: Inbox
   readonly wake: (sessionID: SessionSchema.ID) => Effect.Effect<void>
   readonly draining: Effect.Effect<ReadonlySet<SessionSchema.ID>>
+  /**
+   * Whether the Session was stopped (`SessionExecution.stop`) and not given work since. A stopped child reports to
+   * its parent only what a Job promised (the stop's own cancelled settlement), and a report does not wake it.
+   */
+  readonly stopped: (sessionID: SessionSchema.ID) => Effect.Effect<boolean>
 }
 
 /** Narrow inbox admission so delivery does not depend on the full lifecycle service shape. */
@@ -124,7 +129,7 @@ export const make = (deps: Deps) => {
     )
     if (!delivered) return
     const parent = yield* deps.store.get(parentID)
-    if (parent && !parent.revert) yield* deps.wake(parentID)
+    if (parent && !parent.revert && !(yield* deps.stopped(parentID))) yield* deps.wake(parentID)
   })
 
   const prepare = Effect.fnUntraced(function* (
@@ -135,7 +140,8 @@ export const make = (deps: Deps) => {
     periods.delete(sessionID)
     const jobState = yield* deps.jobs.prepareSubagentReport(sessionID, period?.boundGeneration)
     const initial = yield* deps.store.get(sessionID)
-    if (!initial?.parentID && jobState.mode === "none") {
+    // A stopped child's later periods, woken by its owner or a stray notice, are not its parent's to hear.
+    if (jobState.mode === "none" && (!initial?.parentID || (yield* deps.stopped(sessionID)))) {
       return {
         commit: () => deps.store.release(sessionID),
         deliver: Effect.void,
