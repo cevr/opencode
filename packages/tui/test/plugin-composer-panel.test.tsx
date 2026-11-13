@@ -102,8 +102,10 @@ test("a plugin draws the panel's tab bar, rows and footer from the slots' inputs
     expect(tab).toMatch(/Row terminals {2}of 2 "\+ New terminal"(?! terminal)/)
     // The server exits; the service sends no event for it. The open tab reads the list again and the row says so.
     stopped = true
-    await app.waitForFrame((frame) =>
-      frame.includes(`Row terminals pty_panel_live of 2 "zsh" terminal server [/bin/zsh -l] exited 0`),
+    // Past the tab's 2 s refresh period: the frame is only redrawn once the next list read lands.
+    await app.waitForFrame(
+      (frame) => frame.includes(`Row terminals pty_panel_live of 2 "zsh" terminal server [/bin/zsh -l] exited 0`),
+      { maxPasses: 200 },
     )
   } finally {
     await fixture[Symbol.asyncDispose]()
