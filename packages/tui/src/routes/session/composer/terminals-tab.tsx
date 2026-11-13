@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js"
+import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, untrack } from "solid-js"
 import { TextAttributes } from "@opentui/core"
 import { Keymap } from "../../../context/keymap"
 import { useSessionTerminals } from "../../../context/session-terminals"
@@ -6,6 +6,9 @@ import { useTheme } from "../../../context/theme"
 import { useToast } from "../../../ui/toast"
 import { useComposerTab } from "./context"
 import { Slot } from "../../../plugin/render"
+
+/** How often the Terminals tab reads its session's terminals again while it shows. */
+const REFRESH_MS = 2000
 
 export function TerminalsTab(props: { sessionID: string; visibleTerminalID?: string }) {
   const composer = useComposerTab()
@@ -20,6 +23,21 @@ export function TerminalsTab(props: { sessionID: string; visibleTerminalID?: str
   onMount(() => {
     const cleanup = composer.register({ id: "terminals", label: "Terminals" })
     onCleanup(cleanup)
+  })
+
+  // The service publishes no event when a terminal's process exits, so while the tab shows, its list is read
+  // again every REFRESH_MS: a row says `exited` soon after the process ends, not at the next unrelated event.
+  createEffect(() => {
+    if (!composer.active("terminals")) return
+    const sessionID = props.sessionID
+    // Untracked: the refresh reads the store it then writes, which would re-run this effect at once.
+    const refresh = () =>
+      untrack(
+        () => void terminals.refresh(sessionID).catch((error) => console.error("Failed to refresh terminals", error)),
+      )
+    refresh()
+    const timer = setInterval(refresh, REFRESH_MS)
+    onCleanup(() => clearInterval(timer))
   })
 
   createEffect(() => {

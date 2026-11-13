@@ -34,9 +34,11 @@ const pty = (id: string, status: "running" | "exited", extra: Record<string, unk
   output: { head: 0, tail: 0 },
   ...extra,
 })
-// One terminal runs a dev server in front; the other's shell exited with 1.
-const terminals = [
-  pty("pty_panel_live", "running", { userTitle: "server", foregroundProcess: "bun" }),
+// One terminal runs a dev server in front; the other's shell exited with 1. Once `stopped`, the server has exited 0.
+const terminals = (stopped: boolean) => [
+  stopped
+    ? pty("pty_panel_live", "exited", { userTitle: "server", exitCode: 0 })
+    : pty("pty_panel_live", "running", { userTitle: "server", foregroundProcess: "bun" }),
   pty("pty_panel_done", "exited", { exitCode: 1 }),
 ]
 
@@ -45,6 +47,7 @@ const terminals = [
 // slots' inputs follow them.
 test("a plugin draws the panel's tab bar, rows and footer from the slots' inputs", async () => {
   const fixture = await copyPlugin("composer-panel")
+  let stopped = false
   try {
     await using app = await createAppFixture({
       width: 120,
@@ -62,7 +65,8 @@ test("a plugin draws the panel's tab bar, rows and footer from the slots' inputs
         if (url.pathname.endsWith("/message"))
           return json({ data: url.pathname.includes(parent.id) ? messages : [], cursor: {} })
         if (/^\/api\/session\/[^/]+\/(inbox|permission)$/.test(url.pathname)) return json({ data: [] })
-        if (url.pathname === `/api/experimental/session/${parent.id}/terminal`) return json({ data: terminals })
+        if (url.pathname === `/api/experimental/session/${parent.id}/terminal`)
+          return json({ data: terminals(stopped) })
         return undefined
       },
     })
@@ -96,6 +100,11 @@ test("a plugin draws the panel's tab bar, rows and footer from the slots' inputs
     expect(tab).toContain(`Row terminals pty_panel_live of 2 "bun" terminal server [/bin/zsh -l] running fg bun`)
     expect(tab).toContain(`Row terminals pty_panel_done of 2 "zsh" terminal zsh [/bin/zsh -l] exited 1`)
     expect(tab).toMatch(/Row terminals {2}of 2 "\+ New terminal"(?! terminal)/)
+    // The server exits; the service sends no event for it. The open tab reads the list again and the row says so.
+    stopped = true
+    await app.waitForFrame((frame) =>
+      frame.includes(`Row terminals pty_panel_live of 2 "zsh" terminal server [/bin/zsh -l] exited 0`),
+    )
   } finally {
     await fixture[Symbol.asyncDispose]()
   }
