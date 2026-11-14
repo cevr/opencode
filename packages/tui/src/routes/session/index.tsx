@@ -257,8 +257,12 @@ export function Session(props: {
     // A subagent's view opens on its picker; Escape dismisses it to show the prompt, which messages the subagent.
     dismissed: false,
   })
+  // A plugin may have a subagent's view open on its prompt instead (the layout's `composer.subagentPicker`).
+  const subagentPicker = createMemo(() => plugins.layout().composer?.subagentPicker !== "closed")
   const picker = createMemo(
-    () => composer.open || (!!session()?.parentID && !composer.dismissed && forms().length === 0),
+    () =>
+      composer.open ||
+      (!!session()?.parentID && subagentPicker() && !composer.dismissed && forms().length === 0),
   )
   props.onTerminalPicker?.(() => setComposer({ open: true, tab: "terminals" }))
   onCleanup(() => props.onTerminalPicker?.(undefined))

@@ -659,8 +659,13 @@ export interface Layout {
    * metadata row. "rail" is a bare
    * left rail in the text colour (the warning colour in shell mode) with no
    * fill, padding or metadata row.
+   *
+   * `subagentPicker` is how a subagent's view opens. "open" is the host
+   * default: on the background-work panel's Subagents tab, in place of the
+   * prompt. "closed" opens it on the prompt, as a root session's view opens;
+   * Down on the empty prompt still shows the panel.
    */
-  readonly composer?: { readonly chrome: "bar" } | { readonly chrome: "rail" }
+  readonly composer?: { readonly chrome?: "bar" | "rail"; readonly subagentPicker?: "open" | "closed" }
   /**
    * Transcript defaults for users who have not chosen. The user's `session`
    * config wins over them. Fields merge across plugins one by one.
