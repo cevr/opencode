@@ -89,6 +89,14 @@ test("resolves automatic tabs from the terminal environment", () => {
   expect(resolve({}, { terminalSuspend: true, environment: { HERDR_ENV: "1" } }).tabs.enabled).toBe(false)
   expect(resolve({}, { terminalSuspend: true, environment: { HC_TERMINAL_ID: "t1" } }).tabs.enabled).toBe(false)
   expect(resolve({}, { terminalSuspend: true, environment: { HC_TERMINAL_ID: "" } }).tabs.enabled).toBe(true)
+  // A Rex pane, by its session or its terminal's program, holds one session per pane as herdr does.
+  expect(resolve({}, { terminalSuspend: true, environment: { REX_SESSION: "session:01a1" } }).tabs.enabled).toBe(false)
+  expect(resolve({}, { terminalSuspend: true, environment: { TERM_PROGRAM: "rex" } }).tabs.enabled).toBe(false)
+  expect(resolve({}, { terminalSuspend: true, environment: { REX_SESSION: "" } }).tabs.enabled).toBe(true)
+  expect(resolve({}, { terminalSuspend: true, environment: { TERM_PROGRAM: "ghostty" } }).tabs.enabled).toBe(true)
+  expect(
+    resolve({ tabs: { mode: "on" } }, { terminalSuspend: true, environment: { REX_SESSION: "session:01a1" } }).tabs.enabled,
+  ).toBe(true)
   expect(
     resolve({ tabs: { mode: "on" } }, { terminalSuspend: true, environment: { HERDR_ENV: "1" } }).tabs.enabled,
   ).toBe(true)

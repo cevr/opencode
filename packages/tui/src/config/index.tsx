@@ -300,6 +300,15 @@ export type Resolved = Omit<Info, "attention" | "cursor" | "keybinds" | "leader"
   }
 }
 
+/**
+ * Whether the TUI runs in a pane of a multiplexer that already holds one session per pane: herdr
+ * (`HERDR_ENV=1`), a herdr-core terminal (`HC_TERMINAL_ID`) or Rex (`REX_SESSION`, or its terminal's
+ * `TERM_PROGRAM=rex`). There, `tabs.mode` `"auto"` leaves OpenCode's own tab strip off.
+ */
+export function multiplexed(env: Readonly<Record<string, string | undefined>>): boolean {
+  return env.HERDR_ENV === "1" || !!env.HC_TERMINAL_ID || !!env.REX_SESSION || env.TERM_PROGRAM === "rex"
+}
+
 export function resolve(
   input: Info,
   options: { terminalSuspend: boolean; environment?: Readonly<Record<string, string | undefined>> },
@@ -344,7 +353,7 @@ export function resolve(
     tabs: {
       ...input.tabs,
       mode: tabsMode,
-      enabled: tabsMode === "on" || (tabsMode === "auto" && env.HERDR_ENV !== "1" && !env.HC_TERMINAL_ID),
+      enabled: tabsMode === "on" || (tabsMode === "auto" && !multiplexed(env)),
       scope: input.tabs?.scope ?? "cwd",
       layout: input.tabs?.layout ?? "horizontal",
       indicators: input.tabs?.indicators ?? "status",
