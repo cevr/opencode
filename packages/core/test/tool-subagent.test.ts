@@ -523,8 +523,10 @@ describe("SubagentTool", () => {
           })
 
           expect(outputSessionID(second.metadata)).toBe(childID)
-          expect((yield* sessions.list({ parentID: parent.id })).data).toHaveLength(1)
-          expect((yield* sessions.get(childID)).title).toBe("review")
+          const children = (yield* sessions.list({ parentID: parent.id })).data
+          expect(children).toHaveLength(1)
+          expect(children[0]?.title).toBe("follow up")
+          expect((yield* sessions.get(childID)).title).toBe("follow up")
           expect(
             (yield* sessions.inbox(childID)).flatMap((message) =>
               message.type === "user" ? [message.payload.text] : [],

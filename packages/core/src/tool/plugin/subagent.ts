@@ -165,9 +165,12 @@ export const Plugin = {
               if (existing !== undefined) {
                 const switched = existing.agent !== agent.id
                 const model = override ?? (switched ? agent.model : undefined)
+                // A reused child takes the new description as its title, so lists show its current task.
+                const retitled = input.description.trim() !== "" && existing.title !== input.description
                 yield* Effect.all([
                   switched ? sessions.switchAgent({ sessionID: existing.id, agent: agent.id }) : Effect.void,
                   model === undefined ? Effect.void : sessions.switchModel({ sessionID: existing.id, model }),
+                  retitled ? sessions.rename({ sessionID: existing.id, title: input.description }) : Effect.void,
                 ]).pipe(
                   Effect.mapError(
                     (error) => new ToolFailure({ message: `Failed to switch subagent session: ${existing.id}`, error }),
