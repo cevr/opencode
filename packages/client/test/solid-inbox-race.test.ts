@@ -201,3 +201,27 @@ test("a transcript read clears an accepted prompt whose events were all missed",
     setup.dispose()
   }
 })
+
+test("a cancel waits for the admission of the prompt it cancels: the server never sees it first", async () => {
+  const admission = Promise.withResolvers<Response>()
+  const seen: string[] = []
+  const setup = fixture((request) => {
+    seen.push(request.method)
+    if (request.method === "POST") return admission.promise
+    return Promise.resolve(new Response(null, { status: 204 }))
+  })
+  try {
+    const sent = setup.data.session.prompt({ sessionID: item.sessionID, id: "msg_queued", text: "Then tag it.", delivery: "queue" })
+    // Shown at once, before the server holds it: what a take-back reads.
+    expect(setup.data.session.pending.list(item.sessionID).map((entry) => entry.id)).toEqual(["msg_queued"])
+    const cancelled = setup.data.session.pending.cancel(item.sessionID, "msg_queued")
+    await Bun.sleep(10)
+    expect(seen).toEqual(["POST"])
+    admission.resolve(Response.json({ data: { id: "msg_queued" } }))
+    await Promise.all([sent, cancelled])
+    expect(seen).toEqual(["POST", "DELETE"])
+  } finally {
+    admission.resolve(Response.json({ data: { id: "msg_queued" } }))
+    setup.dispose()
+  }
+})

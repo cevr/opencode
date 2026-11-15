@@ -1765,6 +1765,12 @@ export function createData(config: CreateDataInput) {
         invalidate(sessionID: string) {
           sync.invalidate(`session.pending:${sessionID}`)
         },
+        // Cancels a pending item once every admission this client sent the session before has settled. The list
+        // shows a prompt as soon as it is sent; a cancel that overtook its admission would find no row, which the
+        // server answers as done, and the prompt admitted after it would still be delivered.
+        cancel(sessionID: string, inboxID: string) {
+          return sendAdmission(sessionID, () => api().session.inbox.cancel({ sessionID, inboxID }))
+        },
       },
       // Optimistic session creation: admit a local record under a
       // client-minted ID so a session view can mount immediately, then create

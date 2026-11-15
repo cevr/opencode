@@ -250,7 +250,7 @@ export function createPluginContext(input: {
               pending: (sessionID) => host.data.session.pending.list(sessionID),
               restore: (prompt) => host.restorePrompt(prompt),
               cancel: (sessionID, inboxID) =>
-                host.client.api.session.inbox.cancel({ sessionID, inboxID }).then(
+                host.data.session.pending.cancel(sessionID, inboxID).then(
                   () => true,
                   () => false,
                 ),
