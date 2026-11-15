@@ -305,6 +305,7 @@ export function resolve(
   options: { terminalSuspend: boolean; environment?: Readonly<Record<string, string | undefined>> },
 ): Resolved {
   const tabsMode = input.tabs?.mode ?? (input.tabs?.enabled === undefined ? "auto" : input.tabs.enabled ? "on" : "off")
+  const env = options.environment ?? process.env
   const keybinds: TuiKeybind.KeybindOverrides = { ...input.keybinds }
   if (!options.terminalSuspend) {
     keybinds["terminal.suspend"] = "none"
@@ -343,7 +344,7 @@ export function resolve(
     tabs: {
       ...input.tabs,
       mode: tabsMode,
-      enabled: tabsMode === "on" || (tabsMode === "auto" && (options.environment ?? process.env).HERDR_ENV !== "1"),
+      enabled: tabsMode === "on" || (tabsMode === "auto" && env.HERDR_ENV !== "1" && !env.HC_TERMINAL_ID),
       scope: input.tabs?.scope ?? "cwd",
       layout: input.tabs?.layout ?? "horizontal",
       indicators: input.tabs?.indicators ?? "status",

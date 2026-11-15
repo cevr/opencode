@@ -87,8 +87,13 @@ test("resolves nested config and keybind defaults", () => {
 test("resolves automatic tabs from the terminal environment", () => {
   expect(resolve({}, { terminalSuspend: true, environment: {} }).tabs.enabled).toBe(true)
   expect(resolve({}, { terminalSuspend: true, environment: { HERDR_ENV: "1" } }).tabs.enabled).toBe(false)
+  expect(resolve({}, { terminalSuspend: true, environment: { HC_TERMINAL_ID: "t1" } }).tabs.enabled).toBe(false)
+  expect(resolve({}, { terminalSuspend: true, environment: { HC_TERMINAL_ID: "" } }).tabs.enabled).toBe(true)
   expect(
     resolve({ tabs: { mode: "on" } }, { terminalSuspend: true, environment: { HERDR_ENV: "1" } }).tabs.enabled,
+  ).toBe(true)
+  expect(
+    resolve({ tabs: { mode: "on" } }, { terminalSuspend: true, environment: { HC_TERMINAL_ID: "t1" } }).tabs.enabled,
   ).toBe(true)
   expect(resolve({ tabs: { mode: "off" } }, { terminalSuspend: true, environment: {} }).tabs.enabled).toBe(false)
   expect(resolve({ tabs: { enabled: false } }, { terminalSuspend: true, environment: {} }).tabs).toMatchObject({
