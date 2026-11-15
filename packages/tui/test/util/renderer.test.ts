@@ -9,7 +9,7 @@ test("sets a title that contains control characters", async () => {
   expect(() => setTerminalTitle(setup.renderer, "Fix parser bug\nin tokenizer")).not.toThrow()
 })
 
-test("clears the terminal title before destroying the renderer", () => {
+test("clears the terminal title and every program status record before destroying the renderer", () => {
   const calls: string[] = []
   destroyRenderer({
     isDestroyed: false,
@@ -17,11 +17,15 @@ test("clears the terminal title before destroying the renderer", () => {
     setTerminalTitle(title) {
       calls.push(`title:${title}`)
     },
+    setProgramStatus(status) {
+      calls.push(`status:${JSON.stringify(status)}`)
+      return true
+    },
     destroy() {
       calls.push("destroy")
     },
   })
-  expect(calls).toEqual(["title:", "destroy"])
+  expect(calls).toEqual(["title:", 'status:{"state":"clear"}', "destroy"])
 })
 
 test("skips the title from suspend until resume completes and destroys a suspended renderer", async () => {
