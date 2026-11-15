@@ -767,6 +767,46 @@ test("window scope keeps each TUI's tabs to the sessions opened in it", async ()
   }
 })
 
+test("window scope shows the strip only once the window has a second session to switch to", async () => {
+  const setup = await renderSessionTabs("alpha", { scope: "window", sessionParents: { "alpha-child": "alpha" } })
+  const ids = () => setup.tabs.tabs().map((tab) => tab.sessionID)
+
+  try {
+    // The session the window started on is in its list, and the strip stays hidden: nothing to switch to.
+    await wait(() => ids().includes("alpha"), 2_000, "the started session's tab")
+    expect(setup.tabs.shown()).toBe(false)
+    // A subagent's view is its root's tab.
+    setup.route.navigate({ type: "session", sessionID: "alpha-child" })
+    await wait(() => setup.tabs.current() === "alpha", 2_000, "the subagent's root")
+    expect(setup.tabs.shown()).toBe(false)
+    // A second session opened in the window shows the strip.
+    setup.route.navigate({ type: "session", sessionID: "beta" })
+    await wait(() => ids().includes("beta"), 2_000, "the second session's tab")
+    expect(setup.tabs.shown()).toBe(true)
+    // Closing it leaves one again.
+    setup.tabs.close("beta")
+    await wait(() => setup.tabs.current() === "alpha" && !ids().includes("beta"), 2_000, "back on the first")
+    expect(setup.tabs.shown()).toBe(false)
+    // The new-session slot beside the one tab is a second place to switch to.
+    setup.tabs.add()
+    await wait(() => setup.route.data.type === "home", 2_000, "the new-session slot")
+    expect(setup.tabs.shown()).toBe(true)
+  } finally {
+    await setup.destroy()
+  }
+})
+
+test("a shared scope shows the strip with its one tab", async () => {
+  const setup = await renderSessionTabs("alpha", { scope: "cwd" })
+
+  try {
+    await wait(() => setup.tabs.tabs().some((tab) => tab.sessionID === "alpha"), 2_000, "the session's tab")
+    expect(setup.tabs.shown()).toBe(true)
+  } finally {
+    await setup.destroy()
+  }
+})
+
 test("user prompt admissions pulse an already-busy background tab", async () => {
   const setup = await renderSessionTabs("background", { persisted: ["background"] })
 

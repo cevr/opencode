@@ -660,7 +660,7 @@ function App() {
   const pasteSummaryEnabled = () => config.data.prompt?.paste !== "full"
   const tabsVertical = () =>
     config.data.tabs.layout === "vertical" && sessionTabsFitVertically(dimensions().width, tabsResize.size())
-  const tabsAvailable = () => sessionTabs.enabled() && sessionTabs.tabs().length > 0 && route.data.type !== "plugin"
+  const tabsAvailable = () => sessionTabs.enabled() && sessionTabs.shown() && route.data.type !== "plugin"
   const fullscreenPanel = () =>
     route.data.type === "session" &&
     panels.current()?.sessionID === route.data.sessionID &&

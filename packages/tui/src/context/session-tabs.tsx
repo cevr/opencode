@@ -401,6 +401,16 @@ export const { use: useSessionTabs, provider: SessionTabsProvider } = createSimp
       tabs() {
         return state().tabs
       },
+      /**
+       * Whether the strip has anything to switch to. A window's own list (scope "window") always holds the
+       * session it shows, so it shows once a second session is opened in that window, or while the
+       * window is away from its one tab (the new-session slot, a closed tab's home).
+       */
+      shown() {
+        const tabs = state().tabs
+        if (config.tabs.scope !== "window") return tabs.length > 0
+        return tabs.length > 1 || (tabs.length === 1 && (newTab() || tabs[0]!.sessionID !== current()))
+      },
       recentlyClosed() {
         return closedTabs()
           .filter((entry) => !state().tabs.some((tab) => tab.sessionID === entry.tab.sessionID))
