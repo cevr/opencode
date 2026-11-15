@@ -17,7 +17,13 @@ import { tint } from "../../src/theme/color"
 const BACKGROUND = RGBA.fromHex("#101010")
 
 async function mount(
-  props: () => { active: boolean; enabled?: boolean; glow?: boolean; onLevel?: (level: number) => void },
+  props: () => {
+    active: boolean
+    enabled?: boolean
+    glow?: boolean
+    glowMuted?: boolean
+    onLevel?: (level: number) => void
+  },
 ) {
   const clock = new ManualClock()
   const app = await testRender(
@@ -26,6 +32,7 @@ async function mount(
         enabled={props().enabled}
         active={props().active}
         glow={props().glow}
+        glowMuted={props().glowMuted}
         color={RGBA.fromHex("#ffcc00")}
         backgroundColor={BACKGROUND}
         onLevel={props().onLevel}
@@ -104,6 +111,45 @@ test("the sweep shows the same colors at the same time at any frame rate", async
     expect(slow.colors()).toEqual(fast.colors())
     expect(new Set(slow.colors()).size).toBeGreaterThan(1)
   }
+})
+
+test("a muted glow goes out and comes back at once, with no frames after", async () => {
+  const [muted, setMuted] = createSignal(false)
+  await using pulse = await mount(() => ({ active: false, glow: true, glowMuted: muted() }))
+  // Past the glow's ignition, at its resting level.
+  await pulse.run(650)
+  await pulse.renderOnce()
+  const lit = pulse.colors()
+  expect(new Set(lit).size).toBeGreaterThan(1)
+  setMuted(true)
+  await pulse.renderOnce()
+  // Nothing drawn: no glow over the background.
+  expect(new Set(pulse.colors()).size).toBe(1)
+  expect(pulse.clock.pendingTimerCount).toBe(0)
+  expect(await pulse.run(500)).toBe(0)
+  setMuted(false)
+  await pulse.renderOnce()
+  expect(pulse.colors()).toEqual(lit)
+  expect(pulse.clock.pendingTimerCount).toBe(0)
+  expect(await pulse.run(500)).toBe(0)
+})
+
+test("a glow lit while muted stays out, and its status still fades it once unmuted", async () => {
+  const [glow, setGlow] = createSignal(false)
+  const [muted, setMuted] = createSignal(true)
+  await using pulse = await mount(() => ({ active: false, glow: glow(), glowMuted: muted() }))
+  setGlow(true)
+  await pulse.renderOnce()
+  expect(new Set(pulse.colors()).size).toBe(1)
+  expect(pulse.clock.pendingTimerCount).toBe(0)
+  setMuted(false)
+  await pulse.renderOnce()
+  expect(new Set(pulse.colors()).size).toBeGreaterThan(1)
+  // A status change still moves: the release runs, then the pulse goes idle.
+  setGlow(false)
+  expect(await pulse.run(500)).toBeGreaterThan(0)
+  await pulse.run(600)
+  expect(pulse.clock.pendingTimerCount).toBe(0)
 })
 
 test("a pulse stops requesting frames when the run ends", async () => {

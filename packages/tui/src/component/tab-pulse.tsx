@@ -12,6 +12,8 @@ type TabPulseOptions = RenderableOptions<TabPulseRenderable> & {
   outerComplete?: boolean
   glow?: boolean
   outerGlow?: boolean
+  /** Hides the glow at once, with no ignition or release: the tab's selection, not its status, changed. */
+  glowMuted?: boolean
   color?: RGBA
   outerColor?: RGBA
   glowColor?: RGBA
@@ -248,6 +250,7 @@ type PulseStateOptions = {
   promptPulse: number
   complete: boolean
   glow: boolean
+  muted?: boolean
 }
 
 class PulseState {
@@ -256,6 +259,7 @@ class PulseState {
   private promptPulse: number
   private complete: boolean
   private glow: boolean
+  private muted: boolean
   private completionPending = false
   private sweepClock = 0
   // Two gated voices: the running sweep and the unread glow. One-shots handle flash and completion.
@@ -273,11 +277,12 @@ class PulseState {
     this.promptPulse = options.promptPulse
     this.complete = options.complete
     this.glow = options.glow
+    this.muted = options.muted ?? false
     // A glow that exists at mount holds sustain without an ignition flash, even when animations are off.
     this.glowEnvelope = new GatedEnvelope(
       { duration: GLOW_IGNITION_DURATION, shape: glowIgnitionLevel },
       { duration: GLOW_RELEASE_DURATION, shape: glowReleaseDrain },
-      options.glow ? "sustain" : "idle",
+      this.glows ? "sustain" : "idle",
     )
     if (this.enabled && this.active) this.runEnvelope.trigger()
   }
@@ -326,7 +331,7 @@ class PulseState {
     this.enabled = value
     if (!value) {
       this.runEnvelope.settle("idle")
-      this.glowEnvelope.settle(this.glow ? "sustain" : "idle")
+      this.glowEnvelope.settle(this.glows ? "sustain" : "idle")
       this.completionPulse.stop()
       this.edgeFlash.stop()
       this.completionPending = false
@@ -375,16 +380,31 @@ class PulseState {
     return true
   }
 
+  /** Whether the glow shows: lit by its status and not muted. */
+  private get glows() {
+    return this.glow && !this.muted
+  }
+
   setGlow(value: boolean) {
     if (value === this.glow) return false
+    const shown = this.glows
     this.glow = value
+    if (this.glows === shown) return true
     // Without animations the glow still holds statically; it just skips the ignition and release motion.
     if (!this.enabled) {
-      this.glowEnvelope.settle(value ? "sustain" : "idle")
+      this.glowEnvelope.settle(this.glows ? "sustain" : "idle")
       return true
     }
-    if (value) this.glowEnvelope.trigger()
+    if (this.glows) this.glowEnvelope.trigger()
     else this.glowEnvelope.release()
+    return true
+  }
+
+  // A mute (the tab's selection) cuts the glow or brings it back at once: motion is for status changes.
+  setMuted(value: boolean) {
+    if (value === this.muted) return false
+    this.muted = value
+    this.glowEnvelope.settle(this.glows ? "sustain" : "idle")
     return true
   }
 
@@ -452,6 +472,7 @@ class TabPulseRenderable extends Renderable {
     const edge = options.edge
     const outerActive = options.outerActive ?? active
     const outerGlow = options.outerGlow ?? glow
+    const muted = options.glowMuted ?? false
     super(ctx, { ...options, height: 1 })
     this._enabled = enabled
     this.inner = new PulseState({
@@ -460,6 +481,7 @@ class TabPulseRenderable extends Renderable {
       promptPulse: options.promptPulse ?? 0,
       complete: options.complete ?? false,
       glow,
+      muted,
     })
     this.outer = new PulseState({
       enabled: enabled && edge !== undefined,
@@ -467,6 +489,7 @@ class TabPulseRenderable extends Renderable {
       promptPulse: options.outerPromptPulse ?? options.promptPulse ?? 0,
       complete: options.outerComplete ?? options.complete ?? false,
       glow: outerGlow,
+      muted,
     })
     this._color = options.color ?? RGBA.defaultForeground()
     this._outerColor = options.outerColor ?? this._color
@@ -536,6 +559,12 @@ class TabPulseRenderable extends Renderable {
 
   set outerGlow(value: boolean) {
     if (this.outer.setGlow(value)) this.changed()
+  }
+
+  set glowMuted(value: boolean) {
+    const inner = this.inner.setMuted(value)
+    const outer = this.outer.setMuted(value)
+    if (inner || outer) this.changed()
   }
 
   // The level and the clock follow every state change, outside the paint, so onLevel's color update needs no frame.
@@ -770,6 +799,7 @@ export function TabPulse(props: {
   outerComplete?: boolean
   glow?: boolean
   outerGlow?: boolean
+  glowMuted?: boolean
   color: RGBA
   outerColor?: RGBA
   glowColor?: RGBA
@@ -800,6 +830,7 @@ export function TabPulse(props: {
       outerComplete={props.outerComplete ?? props.complete ?? false}
       glow={props.glow ?? false}
       outerGlow={props.outerGlow ?? props.glow ?? false}
+      glowMuted={props.glowMuted ?? false}
       color={props.color}
       outerColor={props.outerColor ?? props.color}
       glowColor={props.glowColor ?? props.color}

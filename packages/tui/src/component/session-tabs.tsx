@@ -1550,9 +1550,10 @@ function HorizontalSessionTabs(props: {
         {(tab) => {
           const selected = () => activeID() === tab.sessionID
           const status = () => statuses().get(tab.sessionID)!
-          const width = () => visuals().get(tab.sessionID)?.width ?? 1
-          const selection = () => visuals().get(tab.sessionID)?.selection ?? Number(selected())
-          const activity = () => visuals().get(tab.sessionID)?.activity ?? Number(status().complete)
+          // Memos: a spring tick rebuilds `visuals` for every tab, but only the tabs whose values moved redraw.
+          const width = createMemo(() => visuals().get(tab.sessionID)?.width ?? 1)
+          const selection = createMemo(() => visuals().get(tab.sessionID)?.selection ?? Number(selected()))
+          const activity = createMemo(() => visuals().get(tab.sessionID)?.activity ?? Number(status().complete))
           const dragged = () => dragging() === tab.sessionID
           const background = createMemo(() => {
             const lifted = (hovered() === tab.sessionID || dragged()) && !selected()
@@ -1673,7 +1674,10 @@ function HorizontalSessionTabs(props: {
                 active={status().busy && !status().attention}
                 promptPulse={status().promptPulse}
                 complete={status().complete && !status().attention}
-                glow={glows()}
+                // An unread glow lights and fades with the tab's status; selecting the tab only hides it, at
+                // once, so a switch leaves no glow animating after it (`glows` is the two combined).
+                glow={Boolean(status().attention || (!status().busy && status().unread !== undefined))}
+                glowMuted={selected() && !status().attention}
                 color={pulseColor()}
                 glowColor={glowColor()}
                 flashColor={flashColor()}
