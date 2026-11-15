@@ -587,7 +587,18 @@ describe("ShellTool scanner permissions", () => {
 })
 
 describe("ShellTool conditional process substitution", () => {
-  const test = isWindows || !Bun.which("bash") ? permissionIt.live.skip : permissionIt.live
+  const bash = Bun.which("bash")
+  const test = isWindows || !bash ? permissionIt.live.skip : permissionIt.live
+  // `wait "$!"` on a process substitution needs bash 4.4; macOS's /bin/bash 3.2 exits 127 ("not a child of this shell").
+  const version = bash
+    ? Bun.spawnSync([bash, "-c", 'echo "${BASH_VERSINFO[0]} ${BASH_VERSINFO[1]}"'])
+        .stdout.toString()
+        .trim()
+        .split(" ")
+        .map(Number)
+    : []
+  const waits = (version[0] ?? 0) > 4 || (version[0] === 4 && (version[1] ?? 0) >= 4)
+  const waitTest = waits ? test : permissionIt.live.skip
   test("a nested deny prevents the substitution from running", () =>
     withScanner(
       (registry, directory) =>
@@ -618,7 +629,9 @@ describe("ShellTool conditional process substitution", () => {
     ))
 
   for (const reply of ["reject", "once", "always"] as const) {
-    test(`conditional substitutions respect ${reply}`, () =>
+    // A reject never runs the command, so it needs no wait.
+    const run = reply === "reject" ? test : waitTest
+    run(`conditional substitutions respect ${reply}`, () =>
       withScanner(
         (registry, directory) =>
           Effect.gen(function* () {
