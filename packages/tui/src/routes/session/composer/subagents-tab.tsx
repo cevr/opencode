@@ -40,6 +40,9 @@ export function SubagentsTab(props: { sessionID: string }) {
   const [filter, updateFilter] = useStorage().memory("subagents-filter", { initial: { active: true } })
 
   const entries = createMemo<SubagentEntry[]>(() => {
+    // Every session's activity, walked again on each status change in any session: only while the tab shows.
+    // Closed, the panel mounts with each session view and would pay the walk on every tab switch.
+    if (!composer.active("subagents")) return []
     const current = session()
     if (!current) return []
 

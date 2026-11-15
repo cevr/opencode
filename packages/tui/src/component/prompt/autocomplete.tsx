@@ -975,8 +975,9 @@ export function Autocomplete(props: {
         scrollbarOptions={{ visible: false }}
         scrollAcceleration={scrollAcceleration()}
       >
+        {/* Hidden, the popup keeps no rows: every slash command would otherwise mount with each composer. */}
         <Index
-          each={options()}
+          each={store.visible === false ? [] : options()}
           fallback={
             <AutocompleteRail enabled={newDesigns()}>
               <box
