@@ -565,8 +565,10 @@ describe("SubagentReport outbox", () => {
       const inbox = yield* SessionInbox.Service
       const parent = sessionID("ses_outbox_parent")
       const child = sessionID("ses_outbox_child")
+      const grandchild = sessionID("ses_outbox_grandchild")
       yield* seedSessions(database, [parent])
       yield* seedSessions(database, [child], { parent_id: parent, agent: "explore", title: "Outbox audit" })
+      yield* seedSessions(database, [grandchild], { parent_id: child, agent: "explore", title: "Check logs" })
       yield* seedAssistant(database, child, 100, "Outbox report")
       yield* store.claim(child)
 
@@ -575,7 +577,7 @@ describe("SubagentReport outbox", () => {
         store,
         jobs,
         inbox,
-        draining: Effect.succeed(new Set()),
+        draining: Effect.succeed(new Set([grandchild])),
         stopped: () => Effect.succeed(false),
         wake: (sessionID) => Effect.sync(() => void wakes.push(sessionID)),
       })
@@ -608,6 +610,11 @@ describe("SubagentReport outbox", () => {
           session_id: parent,
           status: "completed",
           output: "Outbox report",
+          recovery: {
+            outstanding: [
+              { kind: "subagent", sessionID: child, childSessionID: grandchild, agent: "explore", description: "Check logs" },
+            ],
+          },
         },
       ])
 
