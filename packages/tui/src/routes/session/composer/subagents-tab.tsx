@@ -11,7 +11,7 @@ import { useStorage } from "../../../context/storage"
 import { Locale } from "../../../util/locale"
 import { Keymap } from "../../../context/keymap"
 import { useComposerTab } from "./context"
-import { Slot } from "../../../plugin/render"
+import { PanelSlot as Slot } from "./panel-slot"
 import { withTimestampedFallback } from "@opencode/util/session-title-fallback"
 import { sessionActivity, sessionFamily, type SessionActivity } from "../../../util/session"
 

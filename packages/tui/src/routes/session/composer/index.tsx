@@ -10,7 +10,7 @@ import { TerminalsTab } from "./terminals-tab"
 import { PluginTab } from "./plugin-tab"
 import type { ComposerTab as PluginComposerTab } from "@opencode/plugin/tui/context"
 import { ComposerContext, type ComposerTab } from "./context"
-import { Slot } from "../../../plugin/render"
+import { PanelSlot as Slot } from "./panel-slot"
 
 export type ComposerProps = {
   sessionID: string

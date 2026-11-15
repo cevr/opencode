@@ -814,6 +814,11 @@ export function useLayout(): () => Layout {
   return value ? value.layout : () => ({})
 }
 
+/** Whether a PluginProvider encloses the caller; a part a test renders on its own (the composer panel) has none. */
+export function hasPlugins() {
+  return useContext(PluginContext) !== undefined
+}
+
 export function usePlugin() {
   const value = useContext(PluginContext)
   if (!value) throw new Error("PluginProvider is missing")

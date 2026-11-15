@@ -5,7 +5,7 @@ import { useSessionTerminals } from "../../../context/session-terminals"
 import { useTheme } from "../../../context/theme"
 import { useToast } from "../../../ui/toast"
 import { useComposerTab } from "./context"
-import { Slot } from "../../../plugin/render"
+import { PanelSlot as Slot } from "./panel-slot"
 
 /** How often the Terminals tab reads its session's terminals again while it shows. */
 const REFRESH_MS = 2000

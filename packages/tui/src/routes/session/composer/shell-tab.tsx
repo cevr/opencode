@@ -6,7 +6,7 @@ import { useClient } from "../../../context/client"
 import { useTheme } from "../../../context/theme"
 import { Keymap } from "../../../context/keymap"
 import { useComposerTab } from "./context"
-import { Slot } from "../../../plugin/render"
+import { PanelSlot as Slot } from "./panel-slot"
 import { useDialog } from "../../../ui/dialog"
 import { DialogShellOutput } from "../../../component/dialog-shell-output"
 
