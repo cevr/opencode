@@ -22,6 +22,7 @@ import { Model } from "../model.js"
 import { Mcp } from "../mcp/index.js"
 import { Session } from "../session.js"
 import { InstructionEntry } from "../session/instruction-entry.js"
+import { SessionTitle } from "../session/title.js"
 import { PersistentPty } from "../persistent-pty.js"
 import { Provider } from "../provider.js"
 import { Reference } from "../reference.js"
@@ -596,8 +597,13 @@ export const make = Effect.fn("PluginHost.make")(function* (plugin: Pick<Interfa
       command: (input) => sessions.command({ ...input, command: input.name }),
       compact: sessions.compact,
       update: Effect.fn(function* (input) {
-        yield* sessions.get(input.sessionID)
-        if (input.title !== undefined) yield* sessions.rename({ sessionID: input.sessionID, title: input.title })
+        const info = yield* sessions.get(input.sessionID)
+        // As over HTTP (`session.update`): an empty title asks the session's location to generate one again.
+        if (input.title === "")
+          yield* SessionTitle.Service.use((title) => title.generate(input.sessionID)).pipe(
+            Effect.provide(locations.get(info.location)),
+          )
+        else if (input.title !== undefined) yield* sessions.rename({ sessionID: input.sessionID, title: input.title })
         if (input.metadata !== undefined)
           yield* sessions.setMetadata({ sessionID: input.sessionID, metadata: input.metadata })
         if (input.permissions !== undefined)
