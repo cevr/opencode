@@ -1,6 +1,6 @@
 import type { ProgramStatus, ProgramStatusKind } from "@opentui/core"
 import { createHash } from "node:crypto"
-import { createEffect, onCleanup } from "solid-js"
+import { createEffect, createSignal, onCleanup } from "solid-js"
 
 export type PendingSession = { id: string; title?: string } & (
   | { state: "blocked"; kind: ProgramStatusKind; message?: string }
@@ -12,11 +12,45 @@ const ROOT = ""
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 
+export type ProgramStatusClaim = {
+  /** Writes one OSC 7501 report while the claim holds; false once released, or when the renderer did not queue it. */
+  report(status: ProgramStatus): boolean
+  /** Hands program status back to the host, once; its records are cleared and the host writes its own again. */
+  release(): void
+}
+
+// Who writes the terminal's program status: the host, or the plugins that claimed it. Claiming and
+// releasing each clear every record at once, before anyone writes again, so the host's records and a
+// claimant's never mix.
+export function createProgramStatusClaims(renderer: { setProgramStatus(status: ProgramStatus): boolean }) {
+  const [count, setCount] = createSignal(0)
+  return {
+    claimed: () => count() > 0,
+    claim(): ProgramStatusClaim {
+      let held = true
+      renderer.setProgramStatus({ state: "clear" })
+      setCount((value) => value + 1)
+      return {
+        report: (status) => held && renderer.setProgramStatus(status),
+        release() {
+          if (!held) return
+          held = false
+          renderer.setProgramStatus({ state: "clear" })
+          setCount((value) => value - 1)
+        },
+      }
+    },
+  }
+}
+
 // Mirrors pending session state into OSC 7501 records: one root summary plus one child record per
-// pending session. Terminals drop working and blocked records when the process exits.
+// pending session. Terminals drop working and blocked records when the process exits. While a plugin
+// has claimed program status (`claimed`), the host writes nothing, and writes all its records again
+// once the claim is released.
 export function createProgramStatus(input: {
   renderer: { setProgramStatus(status: ProgramStatus): boolean }
   sessions: () => PendingSession[]
+  claimed?: () => boolean
 }) {
   const sent = new Map<string, string>()
 
@@ -30,6 +64,11 @@ export function createProgramStatus(input: {
   }
 
   createEffect(() => {
+    if (input.claimed?.()) {
+      // The claim cleared every record; the host's are written again in full after it.
+      sent.clear()
+      return
+    }
     const reports = programStatusReports(input.sessions())
     Array.from(sent.keys())
       .filter((key) => key !== ROOT && !reports.has(key))
@@ -39,7 +78,9 @@ export function createProgramStatus(input: {
     })
   })
 
-  onCleanup(() => send(ROOT, { state: "clear" }))
+  onCleanup(() => {
+    if (!input.claimed?.()) send(ROOT, { state: "clear" })
+  })
 }
 
 export function programStatusReports(sessions: PendingSession[]) {

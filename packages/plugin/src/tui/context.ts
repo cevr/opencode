@@ -24,7 +24,7 @@ import type {
   VcsInfo,
 } from "@opencode/client"
 import type { ResolvedTheme } from "@opencode/theme/tui"
-import type { CliRenderer, KeyEvent, MarkdownCodeBlockRenderer, Renderable, RGBA } from "@opentui/core"
+import type { CliRenderer, KeyEvent, MarkdownCodeBlockRenderer, ProgramStatus, Renderable, RGBA } from "@opentui/core"
 import type { JSX } from "@opentui/solid"
 import type { Store } from "solid-js/store"
 
@@ -759,6 +759,14 @@ export type CodeProps = {
   readonly bg?: RGBA
 }
 
+/** A plugin's hold on the terminal's program status; see UI.programStatus. */
+export interface ProgramStatusClaim {
+  /** Writes one OSC 7501 report while the claim holds; false once released, or when the renderer did not queue it. */
+  report(status: ProgramStatus): boolean
+  /** Hands program status back to the host, once. */
+  release(): void
+}
+
 export interface UI {
   readonly dialog: Dialog
   readonly toast: Toast
@@ -846,6 +854,16 @@ export interface UI {
    * runs; see ComposerTab. Tabs follow the host's, in enable order.
    */
   readonly composerTab: (tab: ComposerTab) => () => void
+  /**
+   * The terminal's OSC 7501 program status. The host reports its sessions
+   * there (working, blocked, idle); `claim()` takes that over: every record is
+   * cleared, the host writes none while any claim holds, and the claimant
+   * reports instead. Releasing it (or the plugin being disabled) clears the
+   * claimant's records and the host reports again.
+   */
+  readonly programStatus: {
+    claim(): ProgramStatusClaim
+  }
   /** The host's markdown renderer, for text that should read like the transcript. */
   readonly Markdown: (props: MarkdownProps) => JSX.Element
   /** The host's code renderer, for source that should read like the transcript's. */

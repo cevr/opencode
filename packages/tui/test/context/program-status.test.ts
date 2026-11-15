@@ -1,7 +1,12 @@
 import { expect, test } from "bun:test"
 import type { ProgramStatus } from "@opentui/core"
 import { createRoot, createSignal } from "solid-js"
-import { createProgramStatus, programStatusReports, type PendingSession } from "../../src/context/program-status"
+import {
+  createProgramStatus,
+  createProgramStatusClaims,
+  programStatusReports,
+  type PendingSession,
+} from "../../src/context/program-status"
 
 function setup(initial: PendingSession[] = []) {
   return createRoot((dispose) => {
@@ -53,6 +58,61 @@ test("summarizes several pending sessions and clears resolved ones", () => {
   status.reports.length = 0
 
   status.dispose()
+  expect(status.reports).toEqual([{ state: "clear" }])
+})
+
+function claimable(initial: PendingSession[] = []) {
+  return createRoot((dispose) => {
+    const reports: ProgramStatus[] = []
+    const renderer = {
+      setProgramStatus(status: ProgramStatus) {
+        reports.push(status)
+        return true
+      },
+    }
+    const [sessions, setSessions] = createSignal(initial)
+    const claims = createProgramStatusClaims(renderer)
+    createProgramStatus({ renderer, sessions, claimed: claims.claimed })
+    return { reports, setSessions, claims, dispose }
+  })
+}
+
+test("a claim silences the host until it is released, then the host writes all its records again", () => {
+  const status = claimable([{ id: "ses_a", state: "working" }])
+  status.reports.length = 0
+
+  const claim = status.claims.claim()
+  expect(status.reports).toEqual([{ state: "clear" }])
+  status.reports.length = 0
+
+  status.setSessions([{ id: "ses_a", state: "blocked", kind: "question" }])
+  expect(claim.report({ state: "working", app: "opencode", title: "bash" })).toBe(true)
+  expect(status.reports).toEqual([{ state: "working", app: "opencode", title: "bash" }])
+  status.reports.length = 0
+
+  claim.release()
+  claim.release()
+  expect(claim.report({ state: "idle" })).toBe(false)
+  expect(status.reports).toEqual([
+    { state: "clear" },
+    { state: "blocked", kind: "question", app: "opencode", title: undefined, message: undefined },
+    { state: "blocked", kind: "question", id: "ses_a", app: "opencode", title: undefined, message: undefined },
+  ])
+  status.dispose()
+})
+
+test("the host keeps quiet while any of several claims holds and leaves the claimant's clear on exit", () => {
+  const status = claimable()
+  const first = status.claims.claim()
+  const second = status.claims.claim()
+  first.release()
+  status.reports.length = 0
+  status.setSessions([{ id: "ses_a", state: "working" }])
+  expect(status.reports).toEqual([])
+
+  status.dispose()
+  expect(status.reports).toEqual([])
+  second.release()
   expect(status.reports).toEqual([{ state: "clear" }])
 })
 

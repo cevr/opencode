@@ -14,7 +14,7 @@ import { useStorage } from "./storage"
 import { useTuiPaths } from "./runtime"
 import { newSessionLocation } from "../config/new-session-location"
 import { createSessionRetention } from "@opencode/client/solid"
-import { createProgramStatus, type PendingSession } from "./program-status"
+import { createProgramStatus, createProgramStatusClaims, type PendingSession } from "./program-status"
 import { anchorKey, type AnchorTarget } from "../routes/session/anchors"
 import { sessionActivity } from "../util/session"
 import {
@@ -195,8 +195,10 @@ export const { use: useSessionTabs, provider: SessionTabsProvider } = createSimp
       }
     }
 
+    const programStatus = createProgramStatusClaims(renderer)
     createProgramStatus({
       renderer,
+      claimed: programStatus.claimed,
       sessions: () => {
         const viewed = route.data.type === "session" && route.data.sessionID !== "dummy" ? current() : undefined
         const tabs = enabled() ? state().tabs.map((tab) => tab.sessionID) : []
@@ -526,6 +528,8 @@ export const { use: useSessionTabs, provider: SessionTabsProvider } = createSimp
         const tab = state().tabs[index]
         if (tab) route.navigate({ type: "session", sessionID: tab.sessionID })
       },
+      /** Takes the terminal's program status from the host until the claim is released (a plugin's `ui.programStatus.claim()`). */
+      claimProgramStatus: programStatus.claim,
     }
   },
 })

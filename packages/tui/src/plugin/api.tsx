@@ -395,6 +395,13 @@ export function createPluginContext(input: {
         })
         return registration("composer", tab.id)
       },
+      programStatus: {
+        claim() {
+          const claim = host.sessionTabs.claimProgramStatus()
+          input.owned.push(async () => claim.release())
+          return claim
+        },
+      },
       Markdown: PluginMarkdown,
       Code: PluginCode,
     },
