@@ -59,11 +59,18 @@ test("Escape dismisses a subagent's picker to its prompt, without leaving the su
 })
 
 // The layout's `composer.subagentPicker: "closed"`: the view opens on the prompt, and Down still shows the picker.
-test("a plugin has a subagent's view open on its prompt, the picker one Down away", async () => {
+test("a plugin has a subagent's view open on its prompt, the picker one Down away and Up past its top back", async () => {
   await using fixture = await copyPlugin("subagent-picker-closed")
   await using setup = await openChild([fixture.directory])
   await setup.ready
   await setup.waitForFrame((frame) => frame.includes("Child brief") && !frame.includes("Subagents"))
+
+  // Up past the first row of the panel Down opened puts it away over the prompt; the view stays on the subagent
+  // (where the picker that is the view itself goes back to the parent).
+  setup.mockInput.pressArrow("down")
+  await setup.waitForFrame((frame) => frame.includes("Subagents"))
+  setup.mockInput.pressArrow("up")
+  expect(await setup.waitForFrame((frame) => !frame.includes("Subagents"))).toContain("Child brief")
 
   // The prompt has the keyboard: what is typed lands there.
   await setup.mockInput.typeText("steer it")

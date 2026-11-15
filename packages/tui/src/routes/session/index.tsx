@@ -1740,6 +1740,12 @@ export function Session(props: {
                   defaultTab={composer.tab ?? (session()?.parentID ? "subagents" : undefined)}
                   onClose={() => {
                     const parent = session()?.parentID
+                    // The picker is the subagent's view, so leaving it goes back; a view open on its
+                    // prompt (subagentPicker "closed") had the panel over the prompt, so it goes back there.
+                    if (parent && !subagentPicker()) {
+                      setComposer({ open: false, dismissed: true })
+                      return
+                    }
                     if (parent) {
                       navigate({ type: "session", sessionID: parent })
                       return
