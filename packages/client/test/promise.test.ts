@@ -177,6 +177,7 @@ test("exposes every standard HTTP API group", () => {
     "file",
     "persistentPty",
     "media",
+    "blob",
     "schedule",
     "artifacts",
     "job",
