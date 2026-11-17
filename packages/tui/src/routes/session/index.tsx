@@ -230,7 +230,6 @@ export function Session(props: {
     return data.session.family(route.sessionID).filter((id) => id !== route.sessionID)
   })
   const permissions = createMemo(() => {
-    if (session()?.parentID) return []
     return [route.sessionID, ...descendantSessionIDs()].flatMap(
       (sessionID) => data.session.permission.list(sessionID) ?? [],
     )
@@ -260,10 +259,12 @@ export function Session(props: {
   })
   // A plugin may have a subagent's view open on its prompt instead (the layout's `composer.subagentPicker`).
   const subagentPicker = createMemo(() => plugins.layout().composer?.subagentPicker !== "closed")
+  // A permission a subagent asks for is shown in place of the panel (upstream's composerVisible).
   const picker = createMemo(
     () =>
-      composer.open ||
-      (!!session()?.parentID && subagentPicker() && !composer.dismissed && forms().length === 0),
+      promptedPermissions().length === 0 &&
+      (composer.open ||
+        (!!session()?.parentID && subagentPicker() && !composer.dismissed && forms().length === 0)),
   )
   props.onTerminalPicker?.(() => setComposer({ open: true, tab: "terminals" }))
   onCleanup(() => props.onTerminalPicker?.(undefined))

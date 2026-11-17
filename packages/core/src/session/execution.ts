@@ -2,6 +2,7 @@ export * as SessionExecution from "./execution.js"
 
 import { Cause, Context, Effect, Exit, Layer } from "effect"
 import { Bus } from "../bus.js"
+import { CodeModeJob } from "../codemode/job.js"
 import { Database } from "../database/database.js"
 import { Job } from "../job.js"
 import { Instance } from "../instance/service.js"
@@ -14,6 +15,7 @@ import { SessionRunCoordinator } from "./run-coordinator.js"
 import { SessionRunner } from "./runner/index.js"
 import { SessionSchema } from "./schema.js"
 import { SessionStore } from "./store.js"
+import { SessionSynthetic } from "./synthetic.js"
 import { toSessionError } from "./to-session-error.js"
 
 export interface Interface {
@@ -91,6 +93,7 @@ export const layer = Layer.effect(
     const bus = yield* Bus.Service
     const jobs = yield* Job.Service
     const inbox = yield* SessionInbox.Service
+    const scope = yield* Effect.scope
     const db = (yield* Database.Service).db
     const kv = yield* KV.Service
     const stopped = (sessionID: SessionSchema.ID) =>
@@ -119,12 +122,17 @@ export const layer = Layer.effect(
     const holder: {
       coordinator?: SessionRunCoordinator.Coordinator<SessionSchema.ID, SessionRunner.RunError, InterruptReason>
     } = {}
+    const wake = (sessionID: SessionSchema.ID) =>
+      Effect.suspend(() => (holder.coordinator ? holder.coordinator.wake(sessionID) : Effect.void))
+    // A stopped Session keeps a notice for its next task instead of running on it (stop).
+    const wakeUnlessStopped = (sessionID: SessionSchema.ID) =>
+      stopped(sessionID).pipe(Effect.flatMap((held) => (held ? Effect.void : wake(sessionID))))
+    const background = CodeModeJob.make(jobs, SessionSynthetic.make(store, inbox, wakeUnlessStopped), scope)
     const subagentReport = SubagentReport.make({
       store,
       jobs,
       inbox,
-      wake: (sessionID) =>
-        Effect.suspend(() => (holder.coordinator ? holder.coordinator.wake(sessionID) : Effect.void)),
+      wake,
       draining: Effect.suspend<ReadonlySet<SessionSchema.ID>, never, never>(() =>
         holder.coordinator ? holder.coordinator.draining : Effect.succeed(new Set<SessionSchema.ID>()),
       ),
@@ -153,6 +161,7 @@ export const layer = Layer.effect(
           interruption: () => interruption(sessionID),
         }),
       ).pipe(
+        Effect.provideServiceEffect(CodeModeJob.Current, background),
         instances.provide(session),
         Effect.tapCause((cause) =>
           Cause.hasInterruptsOnly(cause)

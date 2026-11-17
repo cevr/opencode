@@ -12,6 +12,7 @@ import { makeGlobalNode, makeLocationNode } from "@opencode/util/effect/app-node
 import { filesystem } from "@opencode/util/effect/app-node-platform"
 import { Database } from "@opencode/core/database/database"
 import { Bus } from "@opencode/core/bus"
+import { CodeModeCatalog } from "@opencode/core/codemode/catalog"
 import { Config } from "@opencode/core/config"
 import { Environment } from "@opencode/core/environment/index"
 import { FSUtil } from "@opencode/util/fs-util"
@@ -181,9 +182,9 @@ const replacements = [
   PersistentPty.node.replace(disabledPersistentPtyLayer),
 ] satisfies LayerNode.Replacements
 const productionIt = testEffect(AppNodeBuilder.build(nodes, replacements))
-const it = testEffect(
-  AppNodeBuilder.build(nodes, [...replacements, PluginSupervisor.node.replace(shellPluginSupervisor)]),
-)
+const shellLayer = AppNodeBuilder.build(nodes, [...replacements, PluginSupervisor.node.replace(shellPluginSupervisor)])
+const it = testEffect(shellLayer)
+const codeModeIt = testEffect(shellLayer.pipe(Layer.provide(Layer.succeed(Flag.Overrides, "full_codemode"))))
 // On the real process daemon (when its binary is compatible; otherwise this falls back to spawning).
 const daemonIt = testEffect(
   AppNodeBuilder.build(nodes, [...daemonReplacements, PluginSupervisor.node.replace(shellPluginSupervisor)]),
@@ -915,6 +916,64 @@ describe("ShellTool", () => {
             { id: expect.stringMatching(/^sh_/), state: "exited", exitCode: 0, output: "one", truncated: false },
             { id: expect.stringMatching(/^sh_/), state: "exited", exitCode: 0, output: "two", truncated: false },
           ])
+        }),
+      )
+    }),
+  )
+
+  codeModeIt.live("runs parallel Code Mode shells with the long default and notifies after a shorter timeout", () =>
+    withTempDir((tmp) => {
+      reset()
+      return withSession(tmp.path, (registry) =>
+        Effect.gen(function* () {
+          const snapshot = yield* registry.snapshot()
+          // Pinned: listed even when the catalog has no room for other tools, with the result contract in the field
+          // annotations.
+          const pinned = CodeModeCatalog.summarize(snapshot.codeModeCatalog!, { budget: 0 }).namespaces.flatMap(
+            (namespace) => namespace.entries,
+          )
+          expect(pinned.map((entry) => entry.path)).toEqual(["shell"])
+          // The fork's shell keeps its handle input and output in Code Mode.
+          expect(pinned[0]!.line).toContain("Execute a shell command and return its handle")
+          const timeouts: number[] = []
+          const hooks = yield* PluginHooks.Service
+          yield* hooks.register("shell", "create.before", (event) =>
+            Effect.sync(() => {
+              timeouts.push(event.timeout)
+            }),
+          )
+          const bus = yield* Bus.Service
+          const notice = yield* bus.subscribe(SessionEvent.InboxEnqueued).pipe(
+            Stream.filter((event) => event.data.sessionID === sessionID && event.data.item.type === "synthetic"),
+            Stream.runHead,
+            Effect.forkScoped({ startImmediately: true }),
+          )
+          const quick = JSON.stringify({ command: bodyExitCommand })
+          const long = JSON.stringify({ command: progressOverflowCommand(6, "release"), timeout: 10 })
+          const result = yield* executeTool(registry, {
+            sessionID,
+            ...toolIdentity,
+            call: {
+              type: "tool-call",
+              id: "call-parallel-shells",
+              name: "execute",
+              input: { code: `return await Promise.all([tools.shell(${quick}), tools.shell(${long})])` },
+            },
+          }).pipe(Effect.timeout("3 seconds"))
+          expect(result.status).toBe("completed")
+          const [completed, running] = JSON.parse(result.output.output)
+          const runningID: string = running.id
+          // Handles: the quick one ended in the foreground, the long one moved to the background at its 10 ms limit.
+          expect(completed).toMatchObject({ state: "exited", exitCode: 7, output: "body" })
+          expect(running).toMatchObject({ id: expect.stringMatching(/^sh_/), state: "running", backgrounded: "limit" })
+          // A foreground command is never killed by its limit: it moves to the background instead.
+          expect(timeouts).toEqual([0, 0])
+          yield* Effect.promise(() => Bun.write(path.join(tmp.path, "release"), ""))
+          expect((yield* Fiber.join(notice)).valueOrUndefined?.data.item.payload).toMatchObject({
+            // The handle already showed its output, so the notice shows none new.
+            text: expect.stringContaining(`${runningID} · exited 0`),
+            metadata: { source: "shell", shellID: runningID, state: "completed", exit: 0 },
+          })
         }),
       )
     }),

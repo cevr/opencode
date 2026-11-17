@@ -31,6 +31,8 @@ const INTERRUPT_WAIT = "500 millis"
 // How long a foreground command runs before it moves to the background and its call returns its handle (upstream's
 // default timeout); `experimental.shell_background_after` replaces it (0: never), a call's `timeout` overrides both.
 export const DEFAULT_TIMEOUT_MS = 2 * 60 * 1_000
+// Under full_codemode, upstream's longer foreground default.
+const CODE_MODE_TIMEOUT_MS = 10 * 60 * 1_000
 // How long a `wait` action waits by default.
 const DEFAULT_WAIT_MS = 10 * 60 * 1_000
 // The output a handle shows: the tail of a command that moved to the background or started there, and the
@@ -52,7 +54,7 @@ const OS =
 
 const minutes = (ms: number) => (ms % 60_000 === 0 ? `${ms / 60_000} min` : `${Math.round(ms / 1_000)} s`)
 
-const description = (shell?: string) =>
+const description = (shell?: string, codeMode = false) =>
   [
     "Execute a shell command and return its handle: its shell ID, state (running, exited, killed), exit code, runtime and output.",
     ...(shell ? [`Commands run on ${OS} using ${shell}.`] : []),
@@ -61,7 +63,7 @@ const description = (shell?: string) =>
     "When output is large, the full result is saved to a file and a truncated preview is returned.",
     "Rely on automatic truncation unless filtering the output is more useful.",
     "A command that ends in the foreground returns its handle already exited, with its output.",
-    `One still running after its timeout (default ${minutes(DEFAULT_TIMEOUT_MS)}) moves to the background: the call returns its running handle with the output so far, and the command keeps running.`,
+    `One still running after its timeout (default ${minutes(codeMode ? CODE_MODE_TIMEOUT_MS : DEFAULT_TIMEOUT_MS)}) moves to the background: the call returns its running handle with the output so far, and the command keeps running.`,
     "background: true returns the handle at once.",
     "You are notified when a background command ends.",
     'Act on a handle with this same tool, its action and its id: { action: "check", id } shows its state and the output since your last look, { action: "wait", id, ms } waits up to ms for it to end, { action: "kill", id } stops it.',
@@ -481,7 +483,9 @@ export const Plugin = {
 
     const backgroundAfter = Effect.fnUntraced(function* (input: Input) {
       if (input.timeout !== undefined) return input.timeout
-      return Config.latest(yield* config.entries(), "experimental")?.shell_background_after ?? DEFAULT_TIMEOUT_MS
+      // Under full_codemode a slow script backgrounds as a whole (CodeModeJob), so its shell waits longer, as upstream's.
+      const fallback = flags.resolve(loaded.entries).full_codemode.enabled ? CODE_MODE_TIMEOUT_MS : DEFAULT_TIMEOUT_MS
+      return Config.latest(yield* config.entries(), "experimental")?.shell_background_after ?? fallback
     })
 
     const outputLimits = Effect.fnUntraced(function* () {
@@ -552,7 +556,6 @@ export const Plugin = {
     // Internal plugins are not re-run on config changes, so reload the tool transform instead.
     const loaded = yield* ConfigEntryObserver.observe(config, ctx.event, ctx.tool.reload())
     const flags = yield* Flag.Service
-    const fullCodeMode = () => flags.resolve(loaded.entries).full_codemode.enabled
 
     const prepare = Effect.fn("ShellTool.prepare")(function* (invocation: ShellCreateBefore, context: Tool.Context) {
       const target = yield* access.resolve({ path: invocation.cwd, kind: "directory" })
@@ -852,12 +855,15 @@ export const Plugin = {
     })
 
     yield* ctx.tool
-      .transform((editor) =>
+      .transform((editor) => {
+        const codeMode = flags.resolve(loaded.entries).full_codemode.enabled
         editor.add({
           name,
-          // With full_codemode, shell is called as `tools.shell` inside `execute` instead of as a direct tool.
-          options: { codemode: fullCodeMode() },
-          description: description(),
+          // With full_codemode, shell is called as `tools.shell` inside `execute` instead of as a direct tool, and is
+          // pinned so the Code Mode catalog always lists it, however many other tools there are. The fork keeps its
+          // one handle-shaped input and output in both modes.
+          options: codeMode ? { codemode: true, pinned: true } : { codemode: false },
+          description: description(undefined, codeMode),
           input: Input,
           output: Output,
           execute: (input, context) => {
@@ -907,15 +913,18 @@ export const Plugin = {
               Effect.mapError(toolFailure(`Unable to execute command: ${form.command}`)),
             )
           },
-        }),
-      )
+        })
+      })
       .pipe(Effect.orDie)
 
     const hook = (event: SessionHooks["context"]) =>
       Effect.gen(function* () {
         const tool = event.tools[name]
         if (!tool) return
-        tool.description = description(ShellSelect.name(yield* compatibleShell))
+        tool.description = description(
+          ShellSelect.name(yield* compatibleShell),
+          flags.resolve(loaded.entries).full_codemode.enabled,
+        )
       })
     yield* ctx.session.hook("context", hook)
     yield* ctx.session.hook("compaction", hook)
