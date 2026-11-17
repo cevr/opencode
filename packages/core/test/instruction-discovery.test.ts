@@ -62,7 +62,8 @@ const instructionLayer = (input: {
           input.config || input.home
             ? Global.layerWith({
                 ...(input.config ? { config: input.config } : {}),
-                ...(input.home ? { home: input.home } : {}),
+                // Never the real home: its ~/.claude/CLAUDE.md would join every test's instructions.
+                home: input.home ?? path.join(input.config!, "home"),
               })
             : tempGlobalLayer,
         ),

@@ -12,6 +12,8 @@ export const tempGlobalLayer = Layer.unwrap(
       const data = path.join(tmp.path, "data")
       const cache = path.join(tmp.path, "cache")
       return Global.layerWith({
+        // A scratch home, so nothing under the real one (~/.claude/CLAUDE.md) reaches a test.
+        home: path.join(tmp.path, "home"),
         data,
         cache,
         config: path.join(tmp.path, "config"),
