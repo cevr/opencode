@@ -4084,7 +4084,12 @@ export type MessageListInput = {
 
 export type MessageListOutput = SessionMessagesResponse
 
-export type MessageOutlineInput = { readonly sessionID: string; readonly after?: string | undefined }
+export type MessageOutlineInput = {
+  readonly sessionID: string
+  readonly after?: string | undefined
+  readonly before?: string | undefined
+  readonly limit?: number | undefined
+}
 
 export type MessageOutlineOutput = SessionOutlineResponse["data"]
 

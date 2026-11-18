@@ -56,23 +56,14 @@ export type MessagesInput = {
  * One message as a transcript map reads it: its kind and time, a one-line summary and an assistant step's counts,
  * never its body, so a whole session's outline costs a small fraction of its messages.
  */
-export type OutlineEntry = {
-  readonly id: SessionMessage.ID
-  readonly type: SessionMessage.Type
-  readonly time: number
-  /** When an assistant step completed. */
-  readonly completed?: number
-  /**
-   * At most {@link SessionOutline.SummaryLength} characters a reader knows the message by: a prompt's first line, a
-   * notice's title, the first sentence of an assistant step's last text, a shell's command, a skill's name.
-   */
-  readonly summary?: string
-  /** `metadata.source`, naming who sent a synthetic message (a subagent, a monitor, another session). */
-  readonly source?: string
-  /** An assistant step's tool calls. */
-  readonly tools?: number
-  /** An assistant step's thoughts: its reasoning parts with words in them. */
-  readonly thoughts?: number
+export type OutlineEntry = SessionOutline.Entry<SessionMessage.ID, SessionMessage.Type>
+
+/** Which part of a session's outline to read: see {@link Interface.outline}. */
+export type OutlineInput = {
+  readonly sessionID: Session.ID
+  readonly after?: SessionMessage.ID
+  readonly before?: SessionMessage.ID
+  readonly limit?: number
 }
 
 export interface Interface {
@@ -85,13 +76,11 @@ export interface Interface {
   readonly descendants: (sessionID: Session.ID) => Effect.Effect<Session.Info[]>
   readonly messages: (input: MessagesInput) => Effect.Effect<SessionMessage.Info[], MessageDecodeError>
   /**
-   * Every message of a session, oldest first, as {@link OutlineEntry}s; with `after`, only those after that message.
-   * Undefined when `after` names no message of the session.
+   * Every message of a session, oldest first, as {@link OutlineEntry}s; with `after`, only those after that message;
+   * with `before`, only those before it. With `limit`, at most that many: the newest of them (the ones nearest
+   * `before`), or the oldest after `after`. Undefined when `after` or `before` names no message of the session.
    */
-  readonly outline: (input: {
-    readonly sessionID: Session.ID
-    readonly after?: SessionMessage.ID
-  }) => Effect.Effect<OutlineEntry[] | undefined>
+  readonly outline: (input: OutlineInput) => Effect.Effect<OutlineEntry[] | undefined>
   readonly context: (sessionID: Session.ID) => Effect.Effect<SessionMessage.Info[], MessageDecodeError>
   /**
    * The newest completed, error-free assistant message above the sequence
@@ -274,15 +263,21 @@ const layer = Layer.effect(
         return yield* SessionHistory.decodeMessageRowsWithRefs(db, yield* messageRows(input))
       }),
       outline: Effect.fn("SessionStore.outline")(function* (input) {
-        const anchor = input.after
-          ? yield* db
-              .select({ seq: SessionMessageTable.seq })
-              .from(SessionMessageTable)
-              .where(and(eq(SessionMessageTable.session_id, input.sessionID), eq(SessionMessageTable.id, input.after)))
-              .get()
-              .pipe(Effect.orDie)
-          : undefined
-        if (input.after && !anchor) return undefined
+        const seqOf = (id: SessionMessage.ID | undefined) =>
+          id
+            ? db
+                .select({ seq: SessionMessageTable.seq })
+                .from(SessionMessageTable)
+                .where(and(eq(SessionMessageTable.session_id, input.sessionID), eq(SessionMessageTable.id, id)))
+                .get()
+                .pipe(Effect.orDie)
+            : Effect.succeed(undefined)
+        const after = yield* seqOf(input.after)
+        const before = yield* seqOf(input.before)
+        if ((input.after && !after) || (input.before && !before)) return undefined
+        // A page without `after` is the newest messages (before `before`, else the session's end): read newest first,
+        // then put back in order.
+        const newest = input.limit !== undefined && input.after === undefined
         const message = SessionMessageTable
         const part = SessionPartTable
         // An assistant step's content lives in `session_part` rows, or inline in `data.content` for rows written
@@ -309,7 +304,7 @@ const layer = Layer.effect(
           sql`trim(replace(coalesce(json_extract(${value}, '$.text'), ''), '[REDACTED]', '')) <> ''`
         const field = (path: string) =>
           sql<string | null>`substr(json_extract(${message.data}, ${path}), 1, ${excerpt})`
-        const rows = yield* db
+        const query = db
           .select({
             id: message.id,
             type: message.type,
@@ -336,25 +331,27 @@ const layer = Layer.effect(
             thoughts: sql<number | null>`CASE ${message.type} WHEN 'assistant' THEN ${count("reasoning", worded)} END`,
           })
           .from(message)
-          .where(and(eq(message.session_id, input.sessionID), anchor ? gt(message.seq, anchor.seq) : undefined))
-          .orderBy(asc(message.seq))
-          .all()
-          .pipe(Effect.orDie)
+          .where(
+            and(
+              eq(message.session_id, input.sessionID),
+              after ? gt(message.seq, after.seq) : undefined,
+              before ? lt(message.seq, before.seq) : undefined,
+            ),
+          )
+          .orderBy(newest ? desc(message.seq) : asc(message.seq))
+        const read = yield* (input.limit === undefined ? query.all() : query.limit(input.limit).all()).pipe(
+          Effect.orDie,
+        )
+        const rows = newest ? read.toReversed() : read
         const text = (value: unknown) => (typeof value === "string" ? value : undefined)
         return rows.map((row): OutlineEntry => {
-          const summary =
-            row.type === "assistant"
-              ? SessionOutline.firstSentence(row.text)
-              : row.type === "synthetic"
-                ? SessionOutline.noticeTitle({
-                    description: row.text,
-                    source: text(row.source),
-                    agent: text(row.agent),
-                    state: text(row.state),
-                  })
-                : row.type === "shell" || row.type === "skill"
-                  ? SessionOutline.firstLine(row.text, { verbatim: true })
-                  : SessionOutline.firstLine(row.text)
+          const summary = SessionOutline.summary({
+            type: row.type,
+            text: row.text,
+            source: text(row.source),
+            agent: text(row.agent),
+            state: text(row.state),
+          })
           return {
             id: row.id,
             type: row.type,

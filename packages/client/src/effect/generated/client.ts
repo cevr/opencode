@@ -931,7 +931,10 @@ const EndpointMessageList = (raw: RawClient["server.message"]) => (input: Messag
 
 const EndpointMessageOutline = (raw: RawClient["server.message"]) => (input: MessageOutlineInput) =>
   preserveEffect<MessageOutlineOutput>()(
-    raw["session.outline"]({ params: { sessionID: input["sessionID"] }, query: { after: input["after"] } }).pipe(
+    raw["session.outline"]({
+      params: { sessionID: input["sessionID"] },
+      query: { after: input["after"], before: input["before"], limit: input["limit"] },
+    }).pipe(
       Effect.mapError(mapClientError),
       Effect.map((value) => value.data),
     ),

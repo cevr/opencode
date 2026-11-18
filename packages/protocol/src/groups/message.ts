@@ -101,6 +101,13 @@ export const SessionOutlineQuery = Schema.Struct({
   after: Schema.optional(SessionMessage.ID).annotate({
     description: "Return only the messages after this one, to extend an outline read before.",
   }),
+  before: Schema.optional(SessionMessage.ID).annotate({
+    description: "Return only the messages before this one, to read the outline of the older messages a client lacks.",
+  }),
+  limit: Schema.optional(Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1))).annotate({
+    description:
+      "Return at most this many messages: without `after`, the newest of them (a page back from `before` or the session's end), still oldest first.",
+  }),
 }).annotate({ identifier: "SessionOutlineQuery" })
 
 export const SessionOutlineEntry = Schema.Struct({

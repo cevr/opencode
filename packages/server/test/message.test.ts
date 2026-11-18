@@ -1,5 +1,6 @@
 import { expect } from "bun:test"
 import { OpenCode, type SessionMessageInfo } from "@opencode/client"
+import { SessionOutline } from "@opencode/core/session/outline"
 import { Session } from "@opencode/schema/session"
 import { Effect } from "effect"
 import { it } from "../../core/test/lib/effect"
@@ -129,6 +130,7 @@ it.live("outlines a session's messages without their bodies, and extends an outl
         model: { providerID: "test", id: "test" },
         content: [
           { type: "reasoning", text: "Thinking it over" },
+          { type: "reasoning", text: " [REDACTED] " },
           {
             type: "tool",
             id: "call_1",
@@ -157,6 +159,7 @@ it.live("outlines a session's messages without their bodies, and extends an outl
         metadata: { source: "subagent" },
         time: { created: 400 },
       },
+      { id: "msg_3s", type: "system", text: "Context changed\nThe rest", time: { created: 450 } },
       { id: "msg_4", type: "idle", outcome: "succeeded", time: { created: 500 } },
     ]
     yield* Effect.promise(async () => {
@@ -184,9 +187,20 @@ it.live("outlines a session's messages without their bodies, and extends an outl
           summary: "Subagent finished · implementor fix r1",
           source: "subagent",
         },
+        { id: "msg_3s", type: "system", time: 450, summary: "Context changed" },
         { id: "msg_4", type: "idle", time: 500 },
       ])
       expect(await api.message.outline({ sessionID: session.id, after: "msg_2" })).toEqual(outline.slice(2))
+      // A page back from a message: the newest ones before it, still oldest first; with no `before`, the newest.
+      expect(await api.message.outline({ sessionID: session.id, before: "msg_4", limit: 2 })).toEqual(
+        outline.slice(2, 4),
+      )
+      expect(await api.message.outline({ sessionID: session.id, limit: 1 })).toEqual(outline.slice(4))
+      expect(await api.message.outline({ sessionID: session.id, before: "msg_2" })).toEqual(outline.slice(0, 1))
+      expect(await api.message.outline({ sessionID: session.id, before: "msg_1", limit: 5 })).toEqual([])
+      // A client folds the messages it already holds into the very entries the server reads.
+      const held = await api.message.list({ sessionID: session.id, order: "asc" })
+      expect(held.data.map((message) => SessionOutline.entry(message))).toEqual(outline)
       const unknown = await handler(
         new Request(`http://opencode.local/api/session/${session.id}/outline?after=msg_gone`),
       )

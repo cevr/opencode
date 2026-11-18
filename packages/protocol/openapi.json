@@ -5008,6 +5008,123 @@
         "summary": "Get session messages"
       }
     },
+    "/api/session/{sessionID}/outline": {
+      "get": {
+        "tags": ["session"],
+        "operationId": "session.message.outline",
+        "parameters": [
+          {
+            "name": "sessionID",
+            "in": "path",
+            "schema": {
+              "$ref": "#/components/schemas/Session.ID"
+            },
+            "required": true
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Session.Message.ID"
+                }
+              ],
+              "description": "Return only the messages after this one, to extend an outline read before."
+            },
+            "required": false
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Session.Message.ID"
+                }
+              ],
+              "description": "Return only the messages before this one, to read the outline of the older messages a client lacks."
+            },
+            "required": false
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                }
+              ],
+              "description": "Return at most this many messages: without `after`, the newest of them (a page back from `before` or the session's end), still oldest first."
+            },
+            "required": false
+          }
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "SessionOutlineResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionOutlineResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "InvalidCursorError | InvalidRequestError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/InvalidCursorErrorEncoded"
+                    },
+                    {
+                      "$ref": "#/components/schemas/InvalidRequestErrorEncoded"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedErrorEncoded"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "SessionNotFoundError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionNotFoundErrorEncoded"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "UnknownError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnknownErrorEncoded"
+                }
+              }
+            }
+          }
+        },
+        "description": "Every message of a session, oldest first, without its body: its type, time, and a short excerpt of its text. A transcript map reads a long session from it at a small fraction of the cost of its messages.",
+        "summary": "Get a session's outline"
+      }
+    },
     "/api/model": {
       "get": {
         "tags": ["model"],
@@ -25315,6 +25432,123 @@
           }
         },
         "required": ["_tag", "sessionID", "message"],
+        "additionalProperties": false
+      },
+      "SessionOutlineEntry": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/Session.Message.ID"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "agent-switched",
+              "model-switched",
+              "location-switched",
+              "user",
+              "synthetic",
+              "system",
+              "skill",
+              "shell",
+              "assistant",
+              "compaction",
+              "idle"
+            ]
+          },
+          "time": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string",
+                "enum": ["Infinity", "-Infinity", "NaN"]
+              }
+            ]
+          },
+          "completed": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string",
+                "enum": ["Infinity", "-Infinity", "NaN"]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When an assistant step completed, in epoch milliseconds."
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "At most 120 characters the message is known by: a prompt's first line, a notice's title, the first sentence of an assistant step's last text, a shell's command, a skill's name."
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Who sent a synthetic message (`metadata.source`)."
+          },
+          "tools": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string",
+                "enum": ["Infinity", "-Infinity", "NaN"]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "An assistant step's tool calls."
+          },
+          "thoughts": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string",
+                "enum": ["Infinity", "-Infinity", "NaN"]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "An assistant step's thoughts: its reasoning parts with words in them."
+          }
+        },
+        "required": ["id", "type", "time"],
+        "additionalProperties": false
+      },
+      "SessionOutlineResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SessionOutlineEntry"
+            }
+          }
+        },
+        "required": ["data"],
         "additionalProperties": false
       },
       "SessionStats.Activity": {

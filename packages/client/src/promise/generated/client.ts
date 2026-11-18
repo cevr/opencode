@@ -1845,7 +1845,7 @@ export function make(options: ClientOptions) {
           {
             method: "GET",
             path: `/api/session/${encodeURIComponent(input.sessionID)}/outline`,
-            query: { after: input["after"] },
+            query: { after: input["after"], before: input["before"], limit: input["limit"] },
             successStatus: 200,
             declaredStatuses: [400, 401, 404, 500],
             empty: false,

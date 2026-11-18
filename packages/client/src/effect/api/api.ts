@@ -1495,7 +1495,12 @@ export type MessageListOutput = {
 }
 export type MessageListOperation<E = never> = (input: MessageListInput) => Effect.Effect<MessageListOutput, E>
 
-export type MessageOutlineInput = { readonly sessionID: Session.ID; readonly after?: SessionMessage.ID | undefined }
+export type MessageOutlineInput = {
+  readonly sessionID: Session.ID
+  readonly after?: SessionMessage.ID | undefined
+  readonly before?: SessionMessage.ID | undefined
+  readonly limit?: number | undefined
+}
 export type MessageOutlineOutput = ReadonlyArray<{
   readonly id: SessionMessage.ID
   readonly type:

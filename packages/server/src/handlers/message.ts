@@ -37,9 +37,14 @@ export const MessageHandler = HttpApiBuilder.group(Api, "server.message", (handl
         "session.outline",
         Effect.fn(function* (ctx) {
           const entries = yield* session
-            .outline({ sessionID: ctx.params.sessionID, after: ctx.query.after })
+            .outline({
+              sessionID: ctx.params.sessionID,
+              after: ctx.query.after,
+              before: ctx.query.before,
+              limit: ctx.query.limit,
+            })
             .pipe(Effect.catchTag("Session.NotFoundError", missingSession))
-          if (!entries) return yield* new InvalidCursorError({ message: "Unknown message in after" })
+          if (!entries) return yield* new InvalidCursorError({ message: "Unknown message in after or before" })
           return { data: entries }
         }),
       )

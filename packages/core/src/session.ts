@@ -149,10 +149,9 @@ export interface Interface {
     input: SessionStore.MessagesInput,
   ) => Effect.Effect<SessionMessage.Info[], NotFoundError | MessageDecodeError>
   /** {@link SessionStore.Interface.outline}: a session's messages without their bodies, for a transcript map. */
-  readonly outline: (input: {
-    readonly sessionID: SessionSchema.ID
-    readonly after?: SessionMessage.ID
-  }) => Effect.Effect<SessionStore.OutlineEntry[] | undefined, NotFoundError>
+  readonly outline: (
+    input: SessionStore.OutlineInput,
+  ) => Effect.Effect<SessionStore.OutlineEntry[] | undefined, NotFoundError>
   readonly message: (input: {
     sessionID: SessionSchema.ID
     messageID: SessionMessage.ID
