@@ -436,10 +436,17 @@ test("the wheel, the page keys and the scrollbar's box scroll the folded transcr
 
   await view.openMap()
   const folded = frame()
-  // The turn the map opened at is the one selected: its row's own background.
-  const start = folded.findIndex((line) => line.trim() !== "")
-  const opened = firstTopic(folded[start]!)!
-  const kind = /Look into|Answer about/.exec(folded[start]!)![0]
+  // Opened at the transcript's bottom, the map sits at its own as the transcript does: the last turn on the line the
+  // transcript's last row was on, the turns before it filling the screen above.
+  const lastRow = (rows: string[]) =>
+    rows.slice(0, 23).findLastIndex((line) => line.trim() !== "" && !line.includes("┃  "))
+  expect(lastRow(folded)).toBe(lastRow(bottom))
+  expect(folded[lastRow(folded)]).toContain(`Answer about ${topic(TURNS - 1)}.`)
+  expect(folded[0]!.trim()).not.toBe("")
+  // The turn at the transcript's top is the one selected: its row's own background.
+  const opened = firstTopic(bottom.join("\n"))!
+  const start = folded.findIndex((line) => line.includes(`Look into ${opened}`))
+  const kind = "Look into"
   const selectedBg = cellBg(app.captureSpans().lines, start, folded[start]!.indexOf(opened))
   const plainBg = (lines: Spans, rows: string[], except: number) => {
     const y = rows.findIndex((line, index) => index !== except && index !== 5 && line.includes(kind))
@@ -464,7 +471,9 @@ test("the wheel, the page keys and the scrollbar's box scroll the folded transcr
   app.mockInput.pressKey("\x1b[5~") // PgUp
   await settle()
   const paged = frame()
-  expect(shift(up, paged, row)).toBe(page)
+  // Read off a prompt near the top, which stays on screen as the rows move down a page.
+  const near = `Look into ${firstTopic(up.slice(1).join("\n"))}`
+  expect(shift(up, paged, near)).toBe(page)
   app.mockInput.pressKey("\x1b[5~") // PgUp
   await settle()
   app.mockInput.pressKey("\x1b[6~") // PgDn

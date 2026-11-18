@@ -1037,7 +1037,10 @@ export function Session(props: {
   // Map mode: the turn list takes the transcript's place. The transcript stays mounted and hidden, so leaving the map
   // without a jump shows it where it was; a jump reveals a turn anywhere in the session, mounting only its rows.
   const [mapOpen, setMapOpen] = createSignal(false)
-  const [mapStart, setMapStart] = createSignal<{ messageID?: string; row: number }>({ row: 0 })
+  const [mapStart, setMapStart] = createSignal<{ messageID?: string; row: number; atBottom: boolean }>({
+    row: 0,
+    atBottom: false,
+  })
   // The map's scroll box while it is shown: the session's page keys scroll it in the transcript's place.
   let mapScroll: ScrollBoxRenderable | undefined
   /**
@@ -1061,7 +1064,7 @@ export function Session(props: {
   }
   const openMap = () => {
     dialog.clear()
-    setMapStart(topMessage() ?? { row: 0 })
+    setMapStart({ ...(topMessage() ?? { row: 0 }), atBottom: !scroll || scroll.isDestroyed || !isAwayFromBottom() })
     setMapOpen(true)
   }
   const closeMap = () => {
@@ -1864,6 +1867,7 @@ export function Session(props: {
                   sessionID={route.sessionID}
                   startMessageID={mapStart().messageID}
                   startRow={mapStart().row}
+                  atBottom={mapStart().atBottom}
                   scrollbar={showScrollbar()}
                   scrollAcceleration={scrollAcceleration()}
                   scrollRef={(box) => (mapScroll = box)}
