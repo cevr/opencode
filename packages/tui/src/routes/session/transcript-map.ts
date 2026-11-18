@@ -135,12 +135,20 @@ const formats = {
   short: new Intl.DateTimeFormat("en-US", { timeZoneName: "short" }),
 }
 
+// The zone's name by its offset from UTC: a session's turns share one or two (daylight saving), so each is read once.
+const zones = new Map<number, string>()
+
 /** A zone's short name: the generic one where it is short (`ET`, `PT`), else the standard one (`UTC`, `GMT+1`). */
 function zone(time: number) {
+  const offset = new Date(time).getTimezoneOffset()
+  const known = zones.get(offset)
+  if (known !== undefined) return known
   const name = (format: Intl.DateTimeFormat) =>
     format.formatToParts(time).find((part) => part.type === "timeZoneName")?.value ?? ""
   const generic = name(formats.generic)
-  return /^[A-Z]{1,4}$/.test(generic) ? generic : name(formats.short)
+  const label = /^[A-Z]{1,4}$/.test(generic) ? generic : name(formats.short)
+  zones.set(offset, label)
+  return label
 }
 
 /** `12:02 PM ET`, local time, as the transcript writes a turn's end. */
