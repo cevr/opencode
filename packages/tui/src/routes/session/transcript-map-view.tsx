@@ -1,5 +1,5 @@
 import { RGBA, TextAttributes, type KeyEvent } from "@opentui/core"
-import { useKeyboard, useRenderer } from "@opentui/solid"
+import { useKeyboard } from "@opentui/solid"
 import type { SessionOutlineEntry } from "@opencode/client"
 import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js"
 import { useClient } from "../../context/client"
@@ -59,7 +59,6 @@ export function TranscriptMapView(props: {
   onClose: () => void
 }) {
   const client = useClient()
-  const renderer = useRenderer()
   const keymap = Keymap.use()
   const theme = useTheme()
   const dialog = useDialog()
@@ -74,14 +73,9 @@ export function TranscriptMapView(props: {
   const [height, setHeight] = createSignal(0)
   const [top, setTop] = createSignal(0)
 
-  // Keys belong to the map while it is open: the session's own bindings sit in the base mode, and the composer
-  // gives up its focus so typed letters filter the map.
+  // Keys belong to the map while it is open: the session's own bindings sit in the base mode, and the session
+  // disables its prompt (no focus) for as long as the map is shown, so typed letters filter the map.
   onCleanup(keymap.mode.push("modal", () => true))
-  const focused = renderer.currentFocusedRenderable
-  focused?.blur()
-  onCleanup(() => {
-    if (focused && !focused.isDestroyed) focused.focus()
-  })
 
   void loadOutline(client, props.sessionID).then(setEntries, (error: unknown) =>
     setFailed(error instanceof Error ? error.message : String(error)),

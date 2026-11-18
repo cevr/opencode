@@ -1932,7 +1932,9 @@ export function Session(props: {
               <Show when={!locationMissing()}>
                 <Prompt
                   visible={!covered()}
-                  disabled={covered()}
+                  // The map holds the keys while it is shown: the prompt stays in view but takes no focus, so a
+                  // dialog closing over the map cannot hand it the keys; it takes its focus back when the map closes.
+                  disabled={covered() || mapOpen()}
                   ref={bind}
                   muted={props.promptMuted}
                   onSubmit={() => {

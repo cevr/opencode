@@ -193,6 +193,13 @@ test("leaving the map shows the transcript where it was; enter on the turn it op
   await app.waitForFrame((frame) => frame.includes("Sessions"))
   app.mockInput.pressEscape()
   await app.waitForFrame((frame) => !frame.includes("Sessions") && frame.includes("Transcript map"))
+  // The dialog hands focus back a tick after it closes: the composer behind the map must not take it.
+  await Bun.sleep(20)
+  await app.renderOnce()
+  expect(composer()).toBeUndefined()
+  app.mockInput.pressKey("x", { ctrl: true })
+  app.mockInput.pressKey("u")
+  app.mockInput.pressKey("x")
   app.mockInput.pressKey("j")
   await app.renderOnce()
   expect(app.captureCharFrame()).toContain("Transcript map")
