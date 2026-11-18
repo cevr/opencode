@@ -162,6 +162,8 @@ test("the transcript map takes the transcript's place, filters, and goes to an o
 test("leaving the map shows the transcript where it was; enter on the turn it opened at goes to its start", async () => {
   await using view = await open()
   const { app } = view
+  const composer = () => app.renderer.currentFocusedEditor?.plainText
+  expect(composer()).toBe("")
   // Somewhere up the loaded rows, not at the bottom.
   for (let step = 0; step < 6; step++) {
     await app.mockMouse.scroll(10, 5, "up")
@@ -178,19 +180,38 @@ test("leaving the map shows the transcript where it was; enter on the turn it op
   app.mockInput.pressKey("\x1b[5~") // PgUp
   app.mockInput.pressKey("g")
   await app.waitForFrame((frame) => frame.includes(topic(0)))
+  // The session's own chords are off in the map (undo, copy, a chord's miss): they leave it open and type nothing.
+  for (const key of ["u", "y", "k"]) {
+    app.mockInput.pressKey("x", { ctrl: true })
+    app.mockInput.pressKey(key)
+    await app.renderOnce()
+  }
+  expect(app.captureCharFrame()).toContain("Transcript map")
+  // An app-wide one still opens its dialog over the map; closing the dialog leaves the map with the keys.
+  app.mockInput.pressKey("x", { ctrl: true })
+  app.mockInput.pressKey("l")
+  await app.waitForFrame((frame) => frame.includes("Sessions"))
+  app.mockInput.pressEscape()
+  await app.waitForFrame((frame) => !frame.includes("Sessions") && frame.includes("Transcript map"))
+  app.mockInput.pressKey("j")
+  await app.renderOnce()
+  expect(app.captureCharFrame()).toContain("Transcript map")
   app.mockInput.pressEscape()
   await app.waitForFrame((frame) => !frame.includes("Transcript map"))
   await app.waitForVisualIdle({ quietFrames: 3 })
   expect(transcript(app.captureCharFrame())).toBe(before)
   expect(view.older()).toBe(0)
+  // The composer has its focus back, and no key the map took reached it.
+  expect(composer()).toBe("")
 
-  // The toggle leaves it the same way.
+  // The toggle leaves it the same way, its second key spent on the toggle, not typed into the draft.
   await view.openMap()
   app.mockInput.pressKey("x", { ctrl: true })
   app.mockInput.pressKey("g")
   await app.waitForFrame((frame) => !frame.includes("Transcript map"))
   await app.waitForVisualIdle({ quietFrames: 3 })
   expect(transcript(app.captureCharFrame())).toBe(before)
+  expect(composer()).toBe("")
 
   // It opens on the turn at the transcript's top; enter goes to that turn's start.
   await view.openMap()
@@ -205,4 +226,5 @@ test("leaving the map shows the transcript where it was; enter on the turn it op
   expect([top, topic(Number(top!.slice("topic-".length)) - 1)]).toContain(opened)
   const first = after.split("\n").find((line) => line.trim() !== "")
   expect(first).toContain(opened)
+  expect(composer()).toBe("")
 }, 30_000)

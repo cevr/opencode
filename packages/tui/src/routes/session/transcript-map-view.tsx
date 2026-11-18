@@ -5,6 +5,7 @@ import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "so
 import { useClient } from "../../context/client"
 import { Keymap } from "../../context/keymap"
 import { useTheme } from "../../context/theme"
+import { useDialog } from "../../ui/dialog"
 import { Spinner } from "../../component/spinner"
 import { TranscriptMap } from "./transcript-map"
 
@@ -61,6 +62,9 @@ export function TranscriptMapView(props: {
   const renderer = useRenderer()
   const keymap = Keymap.use()
   const theme = useTheme()
+  const dialog = useDialog()
+  // A dialog opened over the map (the session list, the palette) holds the keys until it closes.
+  const free = () => dialog.stack.length === 0
   const [entries, setEntries] = createSignal(cachedOutline(client, props.sessionID))
   const [failed, setFailed] = createSignal<string>()
   const [query, setQuery] = createSignal("")
@@ -158,6 +162,7 @@ export function TranscriptMapView(props: {
   // `/` starts typing a filter, vim-style: enter keeps it and returns the letters to moving, escape drops it.
   Keymap.createLayer(() => ({
     mode: "modal",
+    enabled: free,
     commands: [
       {
         bind: "escape",
@@ -184,7 +189,7 @@ export function TranscriptMapView(props: {
   }))
   Keymap.createLayer(() => ({
     mode: "modal",
-    enabled: () => !typing(),
+    enabled: () => free() && !typing(),
     commands: [
       { bind: "k", title: "Previous turn", group: "Transcript map", run: () => move(-1) },
       { bind: "j", title: "Next turn", group: "Transcript map", run: () => move(1) },
@@ -208,7 +213,7 @@ export function TranscriptMapView(props: {
   }
   // While a filter is typed, every printable key goes into it.
   useKeyboard((event: KeyEvent) => {
-    if (!typing() || event.defaultPrevented) return
+    if (!typing() || !free() || event.defaultPrevented) return
     if (event.name === "backspace") {
       event.preventDefault()
       if (query() === "") return setTyping(false)

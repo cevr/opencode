@@ -1041,9 +1041,16 @@ export function Session(props: {
     setMapStart(topMessageID())
     setMapOpen(true)
   }
-  const closeMap = () => setMapOpen(false)
-  // In map mode the session's keys are off (the map holds the modal mode); its toggle stays on.
-  Keymap.createLayer(() => ({ mode: "modal", enabled: mapOpen, bindings: ["session.timeline"] }))
+  const closeMap = () => {
+    setMapOpen(false)
+  }
+  // In map mode the session's keys are off (the map holds the modal mode); its toggle stays on, unless a dialog
+  // over the map holds the keys.
+  Keymap.createLayer(() => ({
+    mode: "modal",
+    enabled: () => mapOpen() && dialog.stack.length === 0,
+    bindings: ["session.timeline"],
+  }))
   const revealMessage = (messageID: string) => {
     const index = rows.findIndex((row) => rowHoldsMessage(row, messageID))
     if (index === -1) return jumpToMessage(messageID)
@@ -1288,7 +1295,12 @@ export function Session(props: {
       id: "session.timeline",
       group: "Session",
       slash: { name: "timeline", aliases: ["map"] },
-      run: () => (mapOpen() ? closeMap() : openMap()),
+      // A command that returns false declines its key, which then goes on to the composer the map just gave its
+      // focus back to: the toggle returns nothing, so its chord's last key is spent on it.
+      run: () => {
+        if (mapOpen()) closeMap()
+        else openMap()
+      },
     },
     {
       title: "Fork session",
