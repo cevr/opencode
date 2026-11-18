@@ -1026,8 +1026,24 @@ export function Session(props: {
       alignMessage(messageID, Math.max(0, y - (message?.type === "assistant" ? 1 : 0)))
     })
 
-  // The transcript map's jump: a turn anywhere in the session, mounting only the rows around it.
+  // Map mode: the turn list takes the transcript's place. The transcript stays mounted and hidden, so leaving the map
+  // without a jump shows it where it was; a jump reveals a turn anywhere in the session, mounting only its rows.
   const [mapOpen, setMapOpen] = createSignal(false)
+  const [mapStart, setMapStart] = createSignal<string>()
+  /** The message at the top of the transcript's view. */
+  const topMessageID = () => {
+    if (!scroll || scroll.isDestroyed) return undefined
+    const positions = anchors.messagePositions()
+    return positions.findLast((position) => position.y <= scroll.viewport.y)?.id ?? positions[0]?.id
+  }
+  const openMap = () => {
+    dialog.clear()
+    setMapStart(topMessageID())
+    setMapOpen(true)
+  }
+  const closeMap = () => setMapOpen(false)
+  // In map mode the session's keys are off (the map holds the modal mode); its toggle stays on.
+  Keymap.createLayer(() => ({ mode: "modal", enabled: mapOpen, bindings: ["session.timeline"] }))
   const revealMessage = (messageID: string) => {
     const index = rows.findIndex((row) => rowHoldsMessage(row, messageID))
     if (index === -1) return jumpToMessage(messageID)
@@ -1272,10 +1288,7 @@ export function Session(props: {
       id: "session.timeline",
       group: "Session",
       slash: { name: "timeline", aliases: ["map"] },
-      run: () => {
-        dialog.clear()
-        setMapOpen(true)
-      },
+      run: () => (mapOpen() ? closeMap() : openMap()),
     },
     {
       title: "Fork session",
@@ -1750,6 +1763,8 @@ export function Session(props: {
                 stickyScroll={!navigationMessage() && !navigationSlack()}
                 stickyStart="bottom"
                 flexGrow={1}
+                // Map mode puts the turn list in the transcript's place; the transcript stays mounted, at its position.
+                visible={!mapOpen()}
                 scrollAcceleration={scrollAcceleration()}
                 onMouseScroll={(event) => {
                   if (firstJump()) clearMessageNavigation()
@@ -1791,7 +1806,7 @@ export function Session(props: {
                   {(height) => <box id={NAVIGATION_SLACK_ID} height={height()} flexShrink={0} />}
                 </Show>
               </scrollbox>
-              <box position="absolute" top={0} left={0} width="100%" flexDirection="column">
+              <box position="absolute" top={0} left={0} width="100%" flexDirection="column" visible={!mapOpen()}>
                 <Slot
                   path="session.transcript.overlay"
                   input={{
@@ -1805,13 +1820,14 @@ export function Session(props: {
               <Show when={mapOpen()}>
                 <TranscriptMapView
                   sessionID={route.sessionID}
-                  onClose={() => setMapOpen(false)}
+                  startMessageID={mapStart()}
+                  onClose={closeMap}
                   onJump={(turn) => {
-                    setMapOpen(false)
+                    closeMap()
                     jumpToTurn(turn.id)
                   }}
                   onActions={(turn) => {
-                    setMapOpen(false)
+                    closeMap()
                     const sessionID = route.sessionID
                     // The actions read the message, so it is loaded (and shown) first.
                     jumpToTurn(turn.id, () =>
@@ -1825,7 +1841,7 @@ export function Session(props: {
               <Show when={firstJump()}>
                 <text fg={theme.text.feedback.info.base}>Loading session history…</text>
               </Show>
-              <Show when={!firstJump() && awayFromBottom()}>
+              <Show when={!firstJump() && !mapOpen() && awayFromBottom()}>
                 <box
                   id="session-jump-to-latest"
                   paddingLeft={1}

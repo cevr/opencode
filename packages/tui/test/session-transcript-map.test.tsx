@@ -90,7 +90,7 @@ async function open() {
     async openMap() {
       app.mockInput.pressKey("x", { ctrl: true })
       app.mockInput.pressKey("g")
-      await app.waitForFrame((frame) => frame.includes("/ to filter by text") && frame.includes(topic(TURNS - 1)))
+      await app.waitForFrame((frame) => frame.includes("/ filters by text"))
     },
     async [Symbol.asyncDispose]() {
       release.resolve()
@@ -99,11 +99,20 @@ async function open() {
   }
 }
 
-test("the transcript map lists every turn, filters, and jumps to an old one", async () => {
+/** The transcript's rows as the frame shows them, without the composer and footer below. */
+const transcript = (frame: string) => frame.split("\n").slice(0, 20).join("\n")
+/** The first topic a frame shows. */
+const firstTopic = (frame: string) => /topic-\d{3}/.exec(frame)?.[0]
+
+test("the transcript map takes the transcript's place, filters, and goes to an old turn", async () => {
   await using view = await open()
   const { app } = view
   await view.openMap()
+  await app.waitForFrame((frame) => frame.includes(`Look into ${topic(TURNS - 1)}`))
   const map = app.captureCharFrame()
+  // In the transcript's place: the composer and its footer stay; the transcript's rows are gone.
+  expect(map).toContain("shift+tab agents")
+  expect(map).not.toContain("More detail follows")
   // Newest at the bottom, one line each, with the day it fell on.
   expect(map).toContain(`you         Look into ${topic(TURNS - 1)}`)
   expect(map).toContain(`agent       Answer about ${topic(TURNS - 1)}.`)
@@ -121,7 +130,7 @@ test("the transcript map lists every turn, filters, and jumps to an old one", as
   await app.renderOnce()
   app.mockInput.pressEnter()
 
-  // The turn is pages back: the transcript says so while they load.
+  // The turn is pages back: the transcript, back in its place, says so while they load.
   await app.waitForFrame((frame) => frame.includes("Loading earlier messages…") && !frame.includes("Transcript map"))
   expect(view.older()).toBeGreaterThan(0)
   view.release()
@@ -129,24 +138,55 @@ test("the transcript map lists every turn, filters, and jumps to an old one", as
     (frame) => frame.includes(`Look into ${topic(7)}`) && frame.includes(`Answer about ${topic(7)}`),
   )
   await app.waitForVisualIdle({ quietFrames: 3 })
+  // The turn's start is the transcript's first topic.
+  expect(firstTopic(transcript(app.captureCharFrame()))).toBe(topic(7))
   expect(app.captureCharFrame()).not.toContain(topic(TURNS - 1))
 }, 30_000)
 
-test("escape closes the map without moving, and a second open reads only what is new", async () => {
+test("leaving the map shows the transcript where it was; enter on the turn it opened at goes to its start", async () => {
   await using view = await open()
   const { app } = view
+  // Somewhere up the loaded rows, not at the bottom.
+  for (let step = 0; step < 6; step++) {
+    await app.mockMouse.scroll(10, 5, "up")
+    await app.renderOnce()
+  }
+  await app.waitForVisualIdle({ quietFrames: 3 })
+  const before = transcript(app.captureCharFrame())
+  const top = firstTopic(before)
+  expect(top).toBeDefined()
+  expect(before).not.toContain(`Answer about ${topic(TURNS - 1)}`)
+
+  // Esc: back where it was, though the map moved.
   await view.openMap()
-  // The map's keys move the map, not the transcript behind it.
   app.mockInput.pressKey("\x1b[5~") // PgUp
-  app.mockInput.pressKey("\x1b[5~")
-  await app.waitForFrame((frame) => frame.includes("Transcript map") && !frame.includes(`Look into ${topic(TURNS - 1)}`))
   app.mockInput.pressKey("g")
   await app.waitForFrame((frame) => frame.includes(topic(0)))
   app.mockInput.pressEscape()
   await app.waitForFrame((frame) => !frame.includes("Transcript map"))
   await app.waitForVisualIdle({ quietFrames: 3 })
-  expect(app.captureCharFrame()).toContain(`Answer about ${topic(TURNS - 1)}`)
+  expect(transcript(app.captureCharFrame())).toBe(before)
   expect(view.older()).toBe(0)
+
+  // The toggle leaves it the same way.
   await view.openMap()
-  expect(view.outlines()).toBe(2)
+  app.mockInput.pressKey("x", { ctrl: true })
+  app.mockInput.pressKey("g")
+  await app.waitForFrame((frame) => !frame.includes("Transcript map"))
+  await app.waitForVisualIdle({ quietFrames: 3 })
+  expect(transcript(app.captureCharFrame())).toBe(before)
+
+  // It opens on the turn at the transcript's top; enter goes to that turn's start.
+  await view.openMap()
+  expect(view.outlines()).toBe(3)
+  app.mockInput.pressEnter()
+  await app.waitForFrame((frame) => !frame.includes("Transcript map"))
+  await app.waitForVisualIdle({ quietFrames: 3 })
+  const after = transcript(app.captureCharFrame())
+  // The turn at the top was the one whose rows filled it: the first topic shown, or the answer above it whose
+  // start had scrolled out. Either way the transcript now starts at that turn's first line.
+  const opened = firstTopic(after)!
+  expect([top, topic(Number(top!.slice("topic-".length)) - 1)]).toContain(opened)
+  const first = after.split("\n").find((line) => line.trim() !== "")
+  expect(first).toContain(opened)
 }, 30_000)
