@@ -1037,10 +1037,9 @@ export function Session(props: {
   // Map mode: the turn list takes the transcript's place. The transcript stays mounted and hidden, so leaving the map
   // without a jump shows it where it was; a jump reveals a turn anywhere in the session, mounting only its rows.
   const [mapOpen, setMapOpen] = createSignal(false)
-  const [mapStart, setMapStart] = createSignal<{ messageID?: string; row: number; rightGap: number }>({
-    row: 0,
-    rightGap: 0,
-  })
+  const [mapStart, setMapStart] = createSignal<{ messageID?: string; row: number }>({ row: 0 })
+  // The map's scroll box while it is shown: the session's page keys scroll it in the transcript's place.
+  let mapScroll: ScrollBoxRenderable | undefined
   /**
    * The message whose rows fill the transcript's top line (a run's folded activity row counts as its message's), and
    * the screen line its row starts on (0 when it starts above the top).
@@ -1062,12 +1061,7 @@ export function Session(props: {
   }
   const openMap = () => {
     dialog.clear()
-    // The map's rows end where the transcript's do, left of its scrollbar.
-    const rightGap =
-      scroll && !scroll.isDestroyed && transcriptStart && !transcriptStart.isDestroyed
-        ? Math.max(0, scroll.x + scroll.width - (transcriptStart.x + transcriptStart.width))
-        : 0
-    setMapStart({ ...(topMessage() ?? { row: 0 }), rightGap })
+    setMapStart(topMessage() ?? { row: 0 })
     setMapOpen(true)
   }
   const closeMap = () => {
@@ -1162,7 +1156,14 @@ export function Session(props: {
     }, 50)
   }
 
+  /** The box the page keys scroll: the map while it is shown in the transcript's place, else the transcript. */
+  const paged = () => (mapOpen() && mapScroll && !mapScroll.isDestroyed ? mapScroll : scroll)
+
   function moveTranscript(delta: number) {
+    if (mapOpen()) {
+      if (mapScroll && !mapScroll.isDestroyed) mapScroll.scrollBy(delta)
+      return
+    }
     clearMessageNavigation()
     if (delta < 0 && revealOlderRows(delta)) {
       dialog.clear()
@@ -1183,14 +1184,14 @@ export function Session(props: {
       title: "Page up",
       group: "Session",
       palette: undefined,
-      run: () => moveTranscript(-scroll.height / 2),
+      run: () => moveTranscript(-paged().height / 2),
     },
     {
       id: "session.page.down",
       title: "Page down",
       group: "Session",
       palette: undefined,
-      run: () => moveTranscript(scroll.height / 2),
+      run: () => moveTranscript(paged().height / 2),
     },
     {
       id: "session.line.up",
@@ -1211,14 +1212,14 @@ export function Session(props: {
       title: "Half page up",
       group: "Session",
       palette: undefined,
-      run: () => moveTranscript(-scroll.height / 4),
+      run: () => moveTranscript(-paged().height / 4),
     },
     {
       id: "session.half.page.down",
       title: "Half page down",
       group: "Session",
       palette: undefined,
-      run: () => moveTranscript(scroll.height / 4),
+      run: () => moveTranscript(paged().height / 4),
     },
   ]
 
@@ -1863,7 +1864,9 @@ export function Session(props: {
                   sessionID={route.sessionID}
                   startMessageID={mapStart().messageID}
                   startRow={mapStart().row}
-                  rightGap={mapStart().rightGap}
+                  scrollbar={showScrollbar()}
+                  scrollAcceleration={scrollAcceleration()}
+                  scrollRef={(box) => (mapScroll = box)}
                   onClose={closeMap}
                   // Expanding lands the turn's start on the line its collapsed row was on: the map unfolds in place.
                   onJump={(turn, line) => {

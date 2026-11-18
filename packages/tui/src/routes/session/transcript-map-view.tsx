@@ -1,7 +1,25 @@
-import { RGBA, type KeyEvent } from "@opentui/core"
+import {
+  RGBA,
+  type BoxRenderable,
+  type KeyEvent,
+  type ScrollAcceleration,
+  type ScrollBoxRenderable,
+} from "@opentui/core"
 import { useKeyboard } from "@opentui/solid"
 import type { SessionOutlineEntry } from "@opencode/client"
-import { createEffect, createMemo, createSignal, For, Match, onCleanup, Show, Switch } from "solid-js"
+import {
+  batch,
+  createEffect,
+  createMemo,
+  createSignal,
+  For,
+  Match,
+  on,
+  onCleanup,
+  Show,
+  Switch,
+  untrack,
+} from "solid-js"
 import { useClient } from "../../context/client"
 import { useData } from "../../context/data"
 import { Keymap } from "../../context/keymap"
@@ -43,14 +61,18 @@ export function cachedOutline(client: Client, sessionID: string) {
   return outlines.get(client)?.get(sessionID)
 }
 
-const PAGE = 10
-const WHEEL = 3
+/** Rows mounted on each side of where the map opens, and added each time the reader scrolls near an end. */
+const CHUNK = 200
+/** The loading row's lines at the top while older rows wait to mount: its spinner and a blank line, as the transcript's. */
+const LOADING = 2
+const LOADING_ID = "transcript-map-earlier"
 const transparent = RGBA.fromInts(0, 0, 0, 0)
 
 /**
- * The session's transcript with every turn collapsed to one line, in the transcript's own place and look: a prompt
- * as the transcript draws a prompt, an agent's run as its first sentence and its work, a notice as the transcript
- * heads it. There is no chrome of its own; a filter line shows only while one is typed or kept.
+ * The session's transcript with every turn collapsed to one line, in the transcript's own place, look and scrolling: a
+ * prompt as the transcript draws a prompt, an agent's run as its first sentence and its work, a notice as the
+ * transcript heads it. The wheel, the page keys and the scrollbar scroll it as they scroll the transcript; a click
+ * unfolds the transcript at a turn. There is no chrome of its own; a filter line shows only while one is typed or kept.
  */
 export function TranscriptMapView(props: {
   sessionID: string
@@ -58,8 +80,11 @@ export function TranscriptMapView(props: {
   startMessageID?: string
   /** The screen line that message's turn started on in the transcript, kept for its collapsed line. */
   startRow?: number
-  /** Cells right of the transcript's rows (its scrollbar), so a right-aligned time lines up with the transcript's. */
-  rightGap?: number
+  /** The transcript's scrollbar setting and wheel speed, so the folded transcript scrolls as the transcript does. */
+  scrollbar?: boolean
+  scrollAcceleration?: ScrollAcceleration
+  /** The map's scroll box while it is shown: the session's page keys scroll it. */
+  scrollRef?: (scroll: ScrollBoxRenderable | undefined) => void
   /** Expands the transcript at the turn; `row` is the line its collapsed row was on, where its start should land. */
   onJump: (turn: TranscriptMap.Turn, row: number) => void
   /** The turn's message actions (revert, copy, fork), the timeline's old Enter. */
@@ -77,12 +102,22 @@ export function TranscriptMapView(props: {
   const [failed, setFailed] = createSignal<string>()
   const [query, setQuery] = createSignal("")
   const [typing, setTyping] = createSignal(false)
-  // The selected turn, by id, so a refreshed outline keeps the reader's place.
+  // The selected turn, by id, so a refreshed outline keeps the reader's place. Only the keys move it.
   const [selectedID, setSelectedID] = createSignal<string>()
+  // The turn under the mouse, lit as the selected one is.
+  const [hoveredID, setHoveredID] = createSignal<string>()
+  // The scroll box's height: the lines the folded transcript shows.
   const [height, setHeight] = createSignal(0)
-  // The first row on the map's top line; below zero while the opening turn keeps a line lower than the rows above it
-  // could fill.
-  const [top, setTop] = createSignal(0)
+  // The rows mounted, as the transcript mounts its own: a span around where the map opened, grown as the reader
+  // scrolls near either end.
+  const [range, setRange] = createSignal<{ start: number; end: number }>()
+  // Blank lines above the first row and below the last, so the turn the map opened at can keep its line when the rows
+  // above or below it could not fill the screen. The ones below give way as the reader scrolls up.
+  const [lead, setLead] = createSignal(0)
+  const [tail, setTail] = createSignal(0)
+  let scroll: ScrollBoxRenderable | undefined
+  // Turn rows by id, to read where one is on screen.
+  const nodes = new Map<string, BoxRenderable>()
 
   // Keys belong to the map while it is open: the session's own bindings sit in the base mode, and the session
   // disables its prompt (no focus) for as long as the map is shown, so typed letters filter the map.
@@ -127,57 +162,151 @@ export function TranscriptMapView(props: {
     })
     return result
   })
+  // The rows themselves, not wrappers, so the rows already mounted stay mounted as the span grows.
+  const mounted = createMemo(() => {
+    const span = range()
+    return span ? rows().slice(span.start, span.end) : []
+  })
 
   const filtering = () => typing() || query() !== ""
-  const body = () => Math.max(0, height() - (filtering() ? 1 : 0))
-  // The first time the map has rows and room, the opening turn takes the line it started on in the transcript, so the
-  // transcript reads as folding in place; after that, the selected turn is kept in view with the least scrolling.
-  let placed = false
-  createEffect(() => {
-    const turn = shown()[selected()]
-    const size = body()
-    if (!turn || size <= 0) return
-    const row = rowOf().get(turn.id) ?? 0
-    if (!placed) {
-      // A copy read before that lacks the opening turn waits for the fresh read rather than placing the wrong one.
-      if (props.startMessageID && !query() && opening() === -1 && !fresh() && !failed()) return
-      placed = true
-      return setTop(row - Math.max(0, Math.min(size - 1, props.startRow ?? 0)))
-    }
-    const current = top()
-    // Scrolling up to a day's first turn brings its day's label into view with it.
-    if (row < current) setTop(rows()[row - 1]?.type === "day" ? row - 1 : row)
-    else if (row >= current + size) setTop(row - size + 1)
-  })
-  const window = createMemo(() => {
+  const chunk = () => Math.max(CHUNK, height() * 2)
+  // Until a placement has laid out, the box's sizes are the rows before it: its scroll events say nothing yet.
+  let settled = false
+  /** Mounts the rows around `row` and scrolls so it sits on screen line `line`. */
+  const place = (row: number, line: number) => {
     const list = rows()
-    const start = top()
-    const result: (TranscriptMap.MapRow | undefined)[] = []
-    for (let line = start; line < start + body(); line++) result.push(list[line])
-    // A row past the ends is a blank line: the turns the map opened at keep their line.
-    return result.map((row) => row ?? ({ type: "gap" } as const))
-  })
-  /** The screen line a turn's collapsed row is on. */
-  const lineOf = (turn: TranscriptMap.Turn) => Math.max(0, (rowOf().get(turn.id) ?? 0) - top())
+    const size = height()
+    const start = Math.max(0, row - chunk())
+    const end = Math.min(list.length, row + chunk())
+    const above = (start === 0 ? Math.max(0, line - row) : 0) + (start > 0 ? LOADING : 0) + row - start
+    const top = Math.max(0, above - line)
+    settled = false
+    batch(() => {
+      setRange({ start, end })
+      setLead(start === 0 ? Math.max(0, line - row) : 0)
+      setTail(end === list.length ? Math.max(0, top + size - (above + end - row)) : 0)
+    })
+    if (!scroll || scroll.isDestroyed) return
+    scroll.scrollTo(top)
+    scroll.afterLayout(() => {
+      // The rows are laid out: the place holds now, before the blank lines below may be trimmed against it.
+      scroll!.scrollTop = top
+      settled = true
+      grow()
+    })
+  }
 
-  const move = (delta: number) => {
-    const list = shown()
-    if (list.length === 0) return
-    const next = Math.max(0, Math.min(list.length - 1, selected() + delta))
-    setSelectedID(list[next]!.id)
+  // The first time the map has rows and room, the opening turn takes the line it started on in the transcript, so the
+  // transcript reads as folding in place.
+  createEffect(() => {
+    if (range()) return
+    const turn = shown()[selected()]
+    const size = height()
+    if (!turn || size <= 0) return
+    // A copy read before that lacks the opening turn waits for the fresh read rather than placing the wrong one.
+    if (props.startMessageID && !query() && opening() === -1 && !fresh() && !failed()) return
+    const row = rowOf().get(turn.id) ?? 0
+    untrack(() => place(row, Math.max(0, Math.min(size - 1, props.startRow ?? 0))))
+  })
+  // A filter typed or dropped shows its rows from the selected turn; an outline read again keeps the rows in view and
+  // mounts the turns it adds at the end when the end was mounted.
+  createEffect(
+    on([rows, query], ([list, filter], previous) => {
+      const span = untrack(range)
+      if (!span || !previous) return
+      const [before, last] = previous
+      if (filter !== last) {
+        const turn = untrack(() => shown()[selected()])
+        const row = turn ? (untrack(rowOf).get(turn.id) ?? 0) : 0
+        return untrack(() => place(row, Math.min(height() - 1, row)))
+      }
+      setRange({
+        start: Math.min(span.start, list.length),
+        end: span.end >= before.length ? list.length : Math.min(span.end, list.length),
+      })
+    }),
+  )
+
+  /** Mounts more rows when the reader nears either end of the mounted ones; trims the blank lines left below. */
+  let growing = false
+  const grow = () => {
+    if (!settled || growing || !scroll || scroll.isDestroyed) return
+    const span = range()
+    if (!span) return
+    const size = scroll.viewport.height
+    const spare = tail()
+    if (spare > 0) {
+      const needed = Math.max(0, scroll.scrollTop + size - (scroll.scrollHeight - spare))
+      if (needed < spare) setTail(needed)
+    }
+    // Within two screens of the top, as the transcript asks for its older page, so a fast wheel finds rows there.
+    if (span.start > 0 && scroll.scrollTop <= size * 2) {
+      growing = true
+      // The rows on screen keep their place as rows mount above them and the loading row goes.
+      const node = scroll
+        .getChildren()
+        .find((node) => node.id !== LOADING_ID && node.height > 0 && node.y + node.height > scroll!.viewport.y)
+      const release = node ? scroll.anchor(node) : undefined
+      setRange({ start: Math.max(0, span.start - chunk()), end: span.end })
+      scroll.afterLayout(() => {
+        release?.()
+        growing = false
+        grow()
+      })
+      return
+    }
+    if (span.end < rows().length && scroll.scrollTop + size >= scroll.scrollHeight - size * 2)
+      setRange({ start: span.start, end: Math.min(rows().length, span.end + chunk()) })
+  }
+  const onScroll = () => {
+    // The rows moved under the mouse: what it was over is no longer under it. The renderer lights the row now under
+    // it after the frame.
+    setHoveredID(undefined)
+    grow()
+  }
+  onCleanup(() => {
+    scroll?.verticalScrollBar.off("change", onScroll)
+    props.scrollRef?.(undefined)
+  })
+
+  /** The screen line a turn's collapsed row is on. */
+  const lineOf = (turn: TranscriptMap.Turn) => {
+    const node = nodes.get(turn.id)
+    if (!node || node.isDestroyed || !scroll || scroll.isDestroyed) return 0
+    return Math.max(0, node.y - scroll.viewport.y)
+  }
+  /** Scrolls the least that shows the selected turn, and its day's label when it is the day's first. */
+  const reveal = (index: number, direction: number) => {
+    const turn = shown()[index]
+    const row = turn ? rowOf().get(turn.id) : undefined
+    if (row === undefined || !scroll || scroll.isDestroyed) return
+    const labelled = rows()[row - 1]?.type === "day"
+    const span = range()
+    if (!span || row < span.start || row >= span.end) {
+      // Far from what is mounted: mount around it, at the top when it lies above, else at the bottom.
+      return place(row, direction < 0 ? (labelled ? 1 : 0) : Math.max(0, height() - 1))
+    }
+    if (labelled && direction < 0) scroll.scrollChildIntoView(`transcript-map-day-${row - 1}`, { align: "nearest" })
+    scroll.scrollChildIntoView(`transcript-map-turn-${turn!.id}`, { align: "nearest" })
   }
   const moveTo = (index: number) => {
-    const turn = shown()[index]
-    if (turn) setSelectedID(turn.id)
+    const list = shown()
+    if (list.length === 0) return
+    const next = Math.max(0, Math.min(list.length - 1, index))
+    const direction = next - selected()
+    setSelectedID(list[next]!.id)
+    reveal(next, direction)
   }
-  const jump = () => {
-    const turn = shown()[selected()]
+  const move = (delta: number) => moveTo(selected() + delta)
+  // The row a mouse button went down on.
+  let pressed: string | undefined
+  const jump = (turn = shown()[selected()]) => {
     if (!turn) return
     props.onJump(turn, lineOf(turn))
   }
 
-  const page = () => Math.max(1, body() - 1 || PAGE)
-  // `/` starts typing a filter, vim-style: enter keeps it and returns the letters to moving, escape drops it.
+  // `/` starts typing a filter, vim-style: enter keeps it and returns the letters to moving, escape drops it. The page
+  // keys are the session's own: they scroll the folded transcript as they scroll the transcript.
   Keymap.createLayer(() => ({
     mode: "modal",
     enabled: free,
@@ -199,8 +328,6 @@ export function TranscriptMapView(props: {
       },
       { bind: "up,ctrl+p", title: "Previous turn", group: "Transcript map", run: () => move(-1) },
       { bind: "down,ctrl+n", title: "Next turn", group: "Transcript map", run: () => move(1) },
-      { bind: "pageup", title: "Page up", group: "Transcript map", run: () => move(-page()) },
-      { bind: "pagedown", title: "Page down", group: "Transcript map", run: () => move(page()) },
       { bind: "home", title: "First turn", group: "Transcript map", run: () => moveTo(0) },
       { bind: "end", title: "Last turn", group: "Transcript map", run: () => moveTo(shown().length - 1) },
     ],
@@ -242,48 +369,77 @@ export function TranscriptMapView(props: {
     const char = event.sequence
     if (!char || char.length !== 1 || char < " ") return
     event.preventDefault()
-    setQuery((value) => value + char)
-    setSelectedID(undefined)
+    batch(() => {
+      setQuery((value) => value + char)
+      setSelectedID(undefined)
+    })
   })
 
   return (
-    <box id="transcript-map" flexGrow={1} minHeight={0} flexDirection="column" paddingRight={props.rightGap ?? 0}>
-      <box
-        flexGrow={1}
-        minHeight={0}
-        flexDirection="column"
-        onSizeChange={function () {
-          setHeight(this.height)
-        }}
-        onMouseScroll={(event) => {
-          if (event.scroll?.direction === "up") move(-WHEEL)
-          if (event.scroll?.direction === "down") move(WHEEL)
-        }}
+    <box id="transcript-map" flexGrow={1} minHeight={0} flexDirection="column">
+      <Show
+        when={entries() !== undefined}
+        fallback={
+          <box paddingLeft={gutter()} flexGrow={1} minHeight={0}>
+            <Show when={failed()} fallback={<Spinner color={theme.text.muted}>Reading the session…</Spinner>}>
+              {(message) => <text fg={theme.text.feedback.error.base}>{message()}</text>}
+            </Show>
+          </box>
+        }
       >
-        <Show
-          when={entries() !== undefined}
-          fallback={
-            <box paddingLeft={gutter()}>
-              <Show when={failed()} fallback={<Spinner color={theme.text.muted}>Reading the session…</Spinner>}>
-                {(message) => <text fg={theme.text.feedback.error.base}>{message()}</text>}
-              </Show>
-            </box>
-          }
+        {/* The transcript's own scroll box: the same scrollbar, padding and wheel speed. */}
+        <scrollbox
+          ref={(box: ScrollBoxRenderable) => {
+            scroll = box
+            box.verticalScrollBar.on("change", onScroll)
+            props.scrollRef?.(box)
+          }}
+          viewportOptions={{
+            paddingRight: props.scrollbar ? 1 : 0,
+          }}
+          verticalScrollbarOptions={{
+            paddingLeft: 1,
+            visible: props.scrollbar ?? false,
+            trackOptions: {
+              backgroundColor: theme.decrease(theme.background.raised.base),
+              foregroundColor: theme.border.base,
+            },
+          }}
+          flexGrow={1}
+          minHeight={0}
+          scrollAcceleration={props.scrollAcceleration}
+          onSizeChange={function () {
+            setHeight(this.height)
+          }}
         >
+          <Show when={lead() > 0}>
+            <box height={lead()} flexShrink={0} />
+          </Show>
+          <Show when={(range()?.start ?? 0) > 0}>
+            <box id={LOADING_ID} paddingLeft={gutter()} paddingBottom={LOADING - 1} flexShrink={0}>
+              <Spinner color={theme.text.muted}>Loading earlier turns…</Spinner>
+            </box>
+          </Show>
           <Show
             when={rows().length > 0}
             fallback={
-              <box paddingLeft={gutter()}>
+              <box paddingLeft={gutter()} flexShrink={0}>
                 <text fg={theme.text.muted}>No turns match</text>
               </box>
             }
           >
-            <For each={window()}>
-              {(row) => (
+            <For each={mounted()}>
+              {(row, index) => (
                 <Switch fallback={<box height={1} flexShrink={0} />}>
                   <Match when={row.type === "day" ? row : undefined}>
                     {(day) => (
-                      <box height={1} flexShrink={0} flexDirection="row" justifyContent="center">
+                      <box
+                        id={`transcript-map-day-${(range()?.start ?? 0) + index()}`}
+                        height={1}
+                        flexShrink={0}
+                        flexDirection="row"
+                        justifyContent="center"
+                      >
                         <text fg={theme.text.muted} wrapMode="none">
                           {day().label}
                         </text>
@@ -292,17 +448,29 @@ export function TranscriptMapView(props: {
                   </Match>
                   <Match when={row.type === "turn" ? row.turn : undefined}>
                     {(turn) => {
-                      const active = () => shown()[selected()]?.id === turn().id
+                      const lit = () => shown()[selected()]?.id === turn().id || hoveredID() === turn().id
                       return (
                         <box
                           id={`transcript-map-turn-${turn().id}`}
+                          ref={(node: BoxRenderable) => {
+                            const id = turn().id
+                            nodes.set(id, node)
+                            onCleanup(() => {
+                              if (nodes.get(id) === node) nodes.delete(id)
+                            })
+                          }}
                           height={1}
                           flexShrink={0}
                           flexDirection="row"
-                          backgroundColor={active() ? theme.background.raised.base : transparent}
+                          backgroundColor={lit() ? theme.background.raised.base : transparent}
+                          onMouseOver={() => setHoveredID(turn().id)}
+                          onMouseOut={() => setHoveredID((id) => (id === turn().id ? undefined : id))}
+                          // A click (pressed and released on the row) unfolds the transcript at the turn, its start
+                          // on this line.
+                          onMouseDown={() => (pressed = turn().id)}
                           onMouseUp={() => {
-                            setSelectedID(turn().id)
-                            jump()
+                            if (pressed === turn().id) jump(turn())
+                            pressed = undefined
                           }}
                         >
                           <Slot
@@ -317,11 +485,11 @@ export function TranscriptMapView(props: {
                               tools: turn().tools,
                               time: turn().time,
                               get selected() {
-                                return active()
+                                return lit()
                               },
                             }}
                           >
-                            <MapTurn sessionID={props.sessionID} turn={turn()} selected={active()} />
+                            <MapTurn sessionID={props.sessionID} turn={turn()} selected={lit()} />
                           </Slot>
                         </box>
                       )
@@ -331,8 +499,11 @@ export function TranscriptMapView(props: {
               )}
             </For>
           </Show>
-        </Show>
-      </box>
+          <Show when={tail() > 0}>
+            <box height={tail()} flexShrink={0} />
+          </Show>
+        </scrollbox>
+      </Show>
       <Show when={filtering()}>
         <box height={1} flexShrink={0} flexDirection="row" paddingLeft={gutter()} gap={2}>
           <text fg={theme.text.base} wrapMode="none" flexGrow={1} truncate>

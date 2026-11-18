@@ -400,6 +400,116 @@ test("pages up a long session whose notices arrive with old ids, the map opens o
   expect(after[line + 1]).toContain(`Look into ${target}`)
 }, 30_000)
 
+/** How many lines down the row holding `text` moved from frame `a` to frame `b`. */
+const shift = (a: string[], b: string[], text: string) => {
+  const from = a.findIndex((line) => line.includes(text))
+  const to = b.findIndex((line) => line.includes(text))
+  if (from === -1 || to === -1) throw new Error(`${JSON.stringify(text)} is not in both frames`)
+  return to - from
+}
+
+test("the wheel, the page keys and the scrollbar's box scroll the folded transcript as the transcript; a click unfolds a turn", async () => {
+  await using view = await open()
+  const { app } = view
+  view.release()
+  const frame = () => app.captureCharFrame().split("\n")
+  const settle = async () => {
+    await app.renderOnce()
+    await app.waitForVisualIdle({ quietFrames: 3 })
+  }
+  // The transcript's own steps, read where a prompt stays on screen across them.
+  const marker = `Look into ${topic(TURNS - 2)}`
+  const bottom = frame()
+  await app.mockMouse.scroll(10, 5, "up")
+  await settle()
+  const wheel = shift(bottom, frame(), marker)
+  expect(wheel).toBeGreaterThan(0)
+  await app.mockMouse.scroll(10, 5, "down")
+  await settle()
+  app.mockInput.pressKey("\x1b[5~") // PgUp
+  await settle()
+  const page = shift(bottom, frame(), marker)
+  expect(page).toBeGreaterThan(wheel)
+  app.mockInput.pressKey("\x1b[6~") // PgDn
+  await settle()
+  expect(frame()).toEqual(bottom)
+
+  await view.openMap()
+  const folded = frame()
+  // The turn the map opened at is the one selected: its row's own background.
+  const start = folded.findIndex((line) => line.trim() !== "")
+  const opened = firstTopic(folded[start]!)!
+  const kind = /Look into|Answer about/.exec(folded[start]!)![0]
+  const selectedBg = cellBg(app.captureSpans().lines, start, folded[start]!.indexOf(opened))
+  const plainBg = (lines: Spans, rows: string[], except: number) => {
+    const y = rows.findIndex((line, index) => index !== except && index !== 5 && line.includes(kind))
+    return cellBg(lines, y, rows[y]!.indexOf("topic-"))
+  }
+  expect(selectedBg).not.toBe(plainBg(app.captureSpans().lines, folded, start))
+
+  // One wheel step moves the folded rows as far as it moves the transcript's, and moves no selection: the turn the
+  // map opened at keeps its background as it scrolls down the screen.
+  const row = `${kind} ${opened}`
+  await app.mockMouse.scroll(10, 5, "up")
+  await settle()
+  const up = frame()
+  expect(shift(folded, up, row)).toBe(wheel)
+  const moved = up.findIndex((line) => line.includes(row))
+  const spans = app.captureSpans().lines
+  expect(cellBg(spans, moved, up[moved]!.indexOf(opened))).toBe(selectedBg)
+  expect(plainBg(spans, up, moved)).not.toBe(selectedBg)
+
+  // The page keys are the transcript's, a page as far. The blank lines the map opened with below the last turn give
+  // way as it scrolls up, so paging back down stops at the last turn, as the transcript's bottom does.
+  app.mockInput.pressKey("\x1b[5~") // PgUp
+  await settle()
+  const paged = frame()
+  expect(shift(up, paged, row)).toBe(page)
+  app.mockInput.pressKey("\x1b[5~") // PgUp
+  await settle()
+  app.mockInput.pressKey("\x1b[6~") // PgDn
+  await settle()
+  expect(frame()).toEqual(paged)
+  for (let step = 0; step < 4; step++) app.mockInput.pressKey("\x1b[6~")
+  await settle()
+  const end = frame()
+  const last = end.findIndex((line) => line.includes(`Answer about ${topic(TURNS - 1)}`))
+  expect(end.slice(last + 1, 20).every((line) => line.trim() === "")).toBe(true)
+  expect(last).toBeGreaterThan(15)
+
+  // Far up, past the rows mounted when it opened: the older turns mount as the reader nears them, the rows on screen
+  // keeping their place, so the wheel steps on evenly.
+  // A frame between steps, as a terminal's wheel events arrive over time.
+  for (let step = 0; step < 150; step++) {
+    await app.mockMouse.scroll(10, 5, "up")
+    await app.renderOnce()
+  }
+  await settle()
+  const far = frame()
+  const top = Number(firstTopic(far.join("\n"))!.slice("topic-".length))
+  // Three lines a turn (prompt, run, blank), each wheel step the transcript's lines.
+  const expected = Number(firstTopic(end.join("\n"))!.slice("topic-".length)) - Math.round((150 * wheel) / 3)
+  expect(Math.abs(top - expected)).toBeLessThanOrEqual(2)
+  expect(far.join("\n")).not.toContain("Loading earlier turns")
+
+  // The mouse over a turn lights it as the selection is lit; a click unfolds the transcript there, its prompt's band
+  // starting on the line its collapsed row was on. No key is needed, and none reaches the composer.
+  const line = far.findIndex((text, index) => index > 2 && text.includes("Look into"))
+  const target = firstTopic(far[line]!)!
+  const column = far[line]!.indexOf("Look into")
+  await app.mockMouse.moveTo(column, line)
+  await settle()
+  const lit = app.captureSpans().lines
+  expect(cellBg(lit, line, column)).not.toBe(cellBg(lit, line + 3, column))
+  await app.mockMouse.click(column, line)
+  await app.waitForFrame((frame) => !isMap(frame) && frame.includes(`Answer about ${target}`))
+  await app.waitForVisualIdle({ quietFrames: 3 })
+  const after = frame()
+  expect(after[line]).toContain("┃")
+  expect(after[line + 1]).toContain(`Look into ${target}`)
+  expect(app.renderer.currentFocusedEditor?.plainText).toBe("")
+}, 30_000)
+
 test("a plugin draws each collapsed turn in its own look; the host keeps the rows, their places and the selection", async () => {
   await using view = await open("map-turn")
   const { app } = view
