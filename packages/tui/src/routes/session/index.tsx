@@ -539,6 +539,10 @@ export function Session(props: {
   )
   const visibleEnd = createMemo(() => Math.max(hidden(), Math.min(visibleRowsEnd() ?? rows.length, rows.length)))
   const visibleRows = createMemo(() => rows.slice(hidden(), visibleEnd()))
+  // The transcript's first row is mounted and the server holds nothing older.
+  const transcriptBeginning = createMemo(
+    () => rowsSynced() && hidden() === 0 && !data.session.message.more(route.sessionID),
+  )
   const prependHistory = createHistoryPrepend({
     sessionID: () => route.sessionID,
     more: (id) => data.session.message.more(id),
@@ -1667,7 +1671,10 @@ export function Session(props: {
                 }}
               >
                 <box ref={(node: BoxRenderable) => (transcriptStart = node)} flexShrink={0}>
-                  <Slot path="session.transcript.start" input={{ sessionID: route.sessionID }} />
+                  {/* The session's start only once its first message is in view; until then the rows above load. */}
+                  <Show when={transcriptBeginning()} fallback={<EarlierMessages />}>
+                    <Slot path="session.transcript.start" input={{ sessionID: route.sessionID }} />
+                  </Show>
                 </box>
                 <For each={visibleRows()}>
                   {(row, index) => (
@@ -2454,6 +2461,17 @@ function CompactionMessage(props: { message: Extract<SessionMessageInfo, { type:
           />
         </box>
       </Show>
+    </box>
+  )
+}
+
+/** The transcript's top while older messages are still to load: shown in place of the session's start. */
+function EarlierMessages() {
+  const theme = useTheme()
+  const gutter = useRowGutter()
+  return (
+    <box id="session-earlier-messages" paddingLeft={gutter()} paddingBottom={1} flexShrink={0}>
+      <Spinner color={theme.text.muted}>Loading earlier messages…</Spinner>
     </box>
   )
 }
