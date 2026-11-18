@@ -20,44 +20,63 @@ const TURNS = 300
 const start = new Date(2026, 10, 16, 22, 0).getTime()
 const topic = (turn: number) => `topic-${String(turn).padStart(3, "0")}`
 const id = (turn: number, role: number) => `msg_${String(turn).padStart(6, "0")}_${role}`
-const messages: SessionMessageInfo[] = Array.from({ length: TURNS }, (_, turn) => [
-  {
-    type: "user" as const,
-    id: id(turn, 0),
-    text: `Look into ${topic(turn)}`,
-    time: { created: start + turn * 300_000 },
-  },
-  {
-    type: "assistant" as const,
-    id: id(turn, 1),
-    agent: "build",
-    model: { providerID: "fixture", id: "fixture" },
-    finish: "stop" as const,
-    time: { created: start + turn * 300_000 + 1000, completed: start + turn * 300_000 + 2000 },
-    content: [{ type: "text" as const, text: `Answer about ${topic(turn)}. More detail follows.` }],
-  },
-]).flat()
-// The server's outline: a summary per message, and each answer's work (counts only; its body stays on the server).
-const outline: SessionOutlineEntry[] = messages.map((message) =>
-  message.type === "assistant"
-    ? {
-        id: message.id,
-        type: message.type,
-        time: message.time.created,
-        completed: message.time.completed,
-        summary: `Answer about ${topic(Number(message.id.slice(4, 10)))}.`,
-        thoughts: 2,
-        tools: 3,
-      }
-    : {
-        id: message.id,
-        type: message.type,
-        time: message.time.created,
-        summary: "text" in message ? message.text : "",
-      },
-)
+/**
+ * The session: a prompt and its answer each turn. With `notices`, every tenth turn and the session's end are followed
+ * by a notice queued at the session's start, which keeps the id it was made with (the oldest) though it arrives late.
+ */
+function sessionData(notices = false) {
+  const messages: SessionMessageInfo[] = Array.from({ length: TURNS }, (_, turn) => [
+    {
+      type: "user" as const,
+      id: id(turn, 0),
+      text: `Look into ${topic(turn)}`,
+      time: { created: start + turn * 300_000 },
+    },
+    {
+      type: "assistant" as const,
+      id: id(turn, 1),
+      agent: "build",
+      model: { providerID: "fixture", id: "fixture" },
+      finish: "stop" as const,
+      time: { created: start + turn * 300_000 + 1000, completed: start + turn * 300_000 + 2000 },
+      content: [{ type: "text" as const, text: `Answer about ${topic(turn)}. More detail follows.` }],
+    },
+    ...(notices && (turn % 10 === 9 || turn === TURNS - 1)
+      ? [
+          {
+            type: "synthetic" as const,
+            id: `msg_000000_${turn}`,
+            text: "Notice",
+            description: `Notice after ${topic(turn)}`,
+            metadata: {},
+            time: { created: start + turn * 300_000 + 3000 },
+          },
+        ]
+      : []),
+  ]).flat()
+  // The server's outline: a summary per message, and each answer's work (counts only; its body stays on the server).
+  const outline: SessionOutlineEntry[] = messages.map((message) =>
+    message.type === "assistant"
+      ? {
+          id: message.id,
+          type: message.type,
+          time: message.time.created,
+          completed: message.time.completed,
+          summary: `Answer about ${topic(Number(message.id.slice(4, 10)))}.`,
+          thoughts: 2,
+          tools: 3,
+        }
+      : {
+          id: message.id,
+          type: message.type,
+          time: message.time.created,
+          summary: message.type === "synthetic" ? message.description : "text" in message ? message.text : "",
+        },
+  )
+  return { messages, outline }
+}
 
-async function open(plugin?: string) {
+async function open(plugin?: string, { messages, outline } = sessionData()) {
   // Older pages wait on the test, so it sees the transcript while they load.
   const release = Promise.withResolvers<void>()
   let older = 0
@@ -318,6 +337,67 @@ test("leaving the map shows the transcript where it was; enter on the turn it op
     expect(after[line + 1]).toContain(`Look into ${target}`)
   } else expect(after[line]).toContain(`Answer about ${target}`)
   expect(composer()).toBe("")
+}, 30_000)
+
+test("pages up a long session whose notices arrive with old ids, the map opens on the turns that were on screen", async () => {
+  await using view = await open(undefined, sessionData(true))
+  const { app } = view
+  view.release()
+  // A dozen pages up: older rows mount and earlier pages load on the way.
+  for (let page = 0; page < 12; page++) {
+    app.mockInput.pressKey("\x1b[5~") // PgUp
+    await app.renderOnce()
+    await app.waitForVisualIdle({ quietFrames: 3 })
+  }
+  const before = transcript(app.captureCharFrame())
+  const lines = before.split("\n")
+  const top = firstTopic(before)!
+  expect(Number(top.slice("topic-".length))).toBeLessThan(TURNS - 15)
+  const start = lines.findIndex((line) => line.trim() !== "")
+  // The prompts on screen, by topic.
+  const prompts = lines.flatMap((line) => /Look into (topic-\d{3})/.exec(line)?.[1] ?? [])
+  expect(prompts.length).toBeGreaterThan(1)
+
+  await view.openMap()
+  const folded = app.captureCharFrame().split("\n")
+  // The turn at the transcript's top keeps its line and is the one selected; the lines above it stay blank.
+  const opened = firstTopic(folded[start]!)!
+  expect([top, previous(top)]).toContain(opened)
+  expect(folded.slice(0, start).every((line) => line.trim() === "")).toBe(true)
+  const spans = app.captureSpans().lines
+  const kind = /Look into|Answer about|Notice after/.exec(folded[start]!)![0]
+  const plain = folded.findIndex((line, index) => index > start && line.includes(kind))
+  expect(cellBg(spans, start, folded[start]!.indexOf(opened))).not.toBe(
+    cellBg(spans, plain, folded[plain]!.indexOf("topic-")),
+  )
+  // The turns that were on screen are on screen still, folded, in their order.
+  const shown = folded.slice(0, 20).join("\n")
+  for (const prompt of prompts) expect(shown).toContain(`Look into ${prompt}`)
+
+  // Esc gives the transcript back exactly where it was.
+  app.mockInput.pressEscape()
+  await app.waitForFrame((frame) => !isMap(frame))
+  await app.waitForVisualIdle({ quietFrames: 3 })
+  expect(transcript(app.captureCharFrame())).toBe(before)
+
+  // Enter on a prompt below the opening turn unfolds it with its start on the line its collapsed row was on.
+  await view.openMap()
+  let line = start
+  let map = app.captureCharFrame().split("\n")
+  for (let step = 0; step < 4 && !(line > start && map[line]!.includes("Look into")); step++) {
+    app.mockInput.pressKey("j")
+    await app.renderOnce()
+    map = app.captureCharFrame().split("\n")
+    line = map.findIndex((row, index) => index > line && row.trim() !== "")
+  }
+  const target = firstTopic(map[line]!)!
+  expect(map[line]).toContain(`Look into ${target}`)
+  app.mockInput.pressEnter()
+  await app.waitForFrame((frame) => !isMap(frame))
+  await app.waitForVisualIdle({ quietFrames: 3 })
+  const after = app.captureCharFrame().split("\n")
+  expect(after[line]).toContain("┃")
+  expect(after[line + 1]).toContain(`Look into ${target}`)
 }, 30_000)
 
 test("a plugin draws each collapsed turn in its own look; the host keeps the rows, their places and the selection", async () => {

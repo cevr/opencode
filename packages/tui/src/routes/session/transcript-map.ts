@@ -107,6 +107,18 @@ export function turns(entries: readonly SessionOutlineEntry[]): Turn[] {
   return result
 }
 
+/**
+ * The index in `list` of the turn holding message `messageID`: the last turn that starts at or before it in the
+ * outline's order, or -1 when the outline does not hold it. The order is the session's, not the ids': a notice queued
+ * long before it arrives keeps the id it was made with.
+ */
+export function holding(list: readonly Turn[], entries: readonly SessionOutlineEntry[], messageID: string) {
+  const position = new Map(entries.map((entry, index) => [entry.id, index]))
+  const at = position.get(messageID)
+  if (at === undefined) return -1
+  return list.findLastIndex((turn) => (position.get(turn.id) ?? Infinity) <= at)
+}
+
 function inputTurn(entry: SessionOutlineEntry): Turn | undefined {
   const base = { id: entry.id, time: entry.time, tools: 0, thoughts: 0 }
   const summary = entry.summary ?? ""

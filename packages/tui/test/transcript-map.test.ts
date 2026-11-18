@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import type { SessionOutlineEntry } from "@opencode/client"
-import { clock, completion, filter, rowMessage, rows, turns, work } from "../src/routes/session/transcript-map"
+import { clock, completion, filter, holding, rowMessage, rows, turns, work } from "../src/routes/session/transcript-map"
 
 const at = (day: number, hour: number, minute = 0) => new Date(2026, 10, day, hour, minute).getTime()
 const entry = (id: string, type: SessionOutlineEntry["type"], time: number, rest: Partial<SessionOutlineEntry> = {}) =>
@@ -116,6 +116,22 @@ test("a transcript row names its first message, a folded group by its first entr
     } as never),
   ).toBe("msg_b")
   expect(rowMessage({ type: "turn-usage", messageIDs: ["msg_d"] })).toBe("msg_d")
+})
+
+test("the turn holding a message is found by its place in the session, not by its id", () => {
+  // A notice queued at the start arrives last, with the oldest id.
+  const late = [...outline, entry("msg_00", "synthetic", at(17, 7, 0), { summary: "Queued long ago" })]
+  const list = turns(late)
+  const of = (messageID: string) => list[holding(list, late, messageID)]?.id
+  expect(of("msg_01")).toBe("msg_01")
+  // A run's later step, and the idle marker after it, belong to the run.
+  expect(of("msg_03")).toBe("msg_02")
+  expect(of("msg_04")).toBe("msg_02")
+  // A hidden notice belongs to the turn before it.
+  expect(of("msg_06")).toBe("msg_05")
+  expect(of("msg_10")).toBe("msg_10")
+  expect(of("msg_00")).toBe("msg_00")
+  expect(holding(list, late, "msg_unknown")).toBe(-1)
 })
 
 test("a filter matches text, a time or a day", () => {

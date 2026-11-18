@@ -88,8 +88,14 @@ export function TranscriptMapView(props: {
   // disables its prompt (no focus) for as long as the map is shown, so typed letters filter the map.
   onCleanup(keymap.mode.push("modal", () => true))
 
-  void loadOutline(client, props.sessionID).then(setEntries, (error: unknown) =>
-    setFailed(error instanceof Error ? error.message : String(error)),
+  // The outline is read fresh: until then the copy read before may not hold the turns written since.
+  const [fresh, setFresh] = createSignal(false)
+  void loadOutline(client, props.sessionID).then(
+    (read) => {
+      setEntries(read)
+      setFresh(true)
+    },
+    (error: unknown) => setFailed(error instanceof Error ? error.message : String(error)),
   )
 
   const turns = createMemo(() => TranscriptMap.turns(entries() ?? []))
@@ -98,15 +104,21 @@ export function TranscriptMapView(props: {
     TranscriptMap.filter(turns(), query(), (turn) => search().get(turn) ?? TranscriptMap.searchText(turn)),
   )
   const rows = createMemo(() => TranscriptMap.rows(shown()))
+  // The turn holding the transcript's top message, found by its place in the session (not by id: a notice keeps the
+  // id it was queued with); -1 when there is none, or the outline read so far does not hold it yet.
+  const opening = createMemo(() => {
+    const start = props.startMessageID
+    if (!start || query()) return -1
+    return TranscriptMap.holding(shown(), entries() ?? [], start)
+  })
   const selected = createMemo(() => {
     const list = shown()
     const id = selectedID()
     const index = id === undefined ? -1 : list.findIndex((turn) => turn.id === id)
     if (index !== -1) return index
-    // Unfiltered and not moved yet: the turn holding the transcript's top message (ids ascend in time).
-    const start = props.startMessageID
-    const holding = start && !query() ? list.findLastIndex((turn) => turn.id <= start) : -1
-    return holding === -1 ? list.length - 1 : holding
+    // Unfiltered and not moved yet: the turn holding the transcript's top message.
+    const start = opening()
+    return start === -1 ? list.length - 1 : start
   })
   const rowOf = createMemo(() => {
     const result = new Map<string, number>()
@@ -127,6 +139,8 @@ export function TranscriptMapView(props: {
     if (!turn || size <= 0) return
     const row = rowOf().get(turn.id) ?? 0
     if (!placed) {
+      // A copy read before that lacks the opening turn waits for the fresh read rather than placing the wrong one.
+      if (props.startMessageID && !query() && opening() === -1 && !fresh() && !failed()) return
       placed = true
       return setTop(row - Math.max(0, Math.min(size - 1, props.startRow ?? 0)))
     }
