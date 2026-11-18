@@ -198,25 +198,29 @@ export function TranscriptMapView(props: {
     })
   }
 
-  // The first time the map has rows and room, it opens where the transcript was. At the transcript's bottom, the last
-  // turn sits on the bottom line with the turns before it filling the screen above, as the transcript sits; elsewhere
-  // the opening turn takes the line it started on in the transcript, so the transcript reads as folding in place.
+  // The first time the map has rows and room, it opens where the transcript was. At the transcript's bottom, or near
+  // enough to the end that the turns below would not reach the bottom line, the last turn sits on the bottom line with
+  // the turns before it filling the screen above, as the transcript sits; elsewhere the opening turn takes the line it
+  // started on in the transcript, so the transcript reads as folding in place.
   createEffect(() => {
     if (range()) return
     const turn = shown()[selected()]
     const size = height()
     if (!turn || size <= 0) return
     const waiting = !fresh() && !failed()
-    if (props.atBottom) {
+    const last = rows().length - 1
+    const row = rowOf().get(turn.id) ?? 0
+    const line = Math.max(0, Math.min(size - 1, props.startRow ?? 0))
+    // The turns from the opening one down would leave blank lines below the last: the map sits at its bottom instead,
+    // as the transcript never shows space below its end.
+    if (props.atBottom || line + last - row < size - 1) {
       // The copy read before may lack the turns written since: the bottom is the fresh outline's.
       if (waiting) return
-      const last = rows().length - 1
       return untrack(() => place(last, Math.min(size - 1, last)))
     }
     // A copy read before that lacks the opening turn waits for the fresh read rather than placing the wrong one.
     if (props.startMessageID && !query() && opening() === -1 && waiting) return
-    const row = rowOf().get(turn.id) ?? 0
-    untrack(() => place(row, Math.max(0, Math.min(size - 1, props.startRow ?? 0))))
+    untrack(() => place(row, line))
   })
   // A filter typed or dropped shows its rows from the selected turn; an outline read again keeps the rows in view and
   // mounts the turns it adds at the end when the end was mounted.

@@ -235,8 +235,8 @@ test("leaving the map shows the transcript where it was; enter on the turn it op
   const { app } = view
   const composer = () => app.renderer.currentFocusedEditor?.plainText
   expect(composer()).toBe("")
-  // Somewhere up the loaded rows, not at the bottom.
-  for (let step = 0; step < 6; step++) {
+  // Somewhere up the loaded rows, far enough from the end that the folded turns below fill the screen.
+  for (let step = 0; step < 14; step++) {
     await app.mockMouse.scroll(10, 5, "up")
     await app.renderOnce()
   }
@@ -245,6 +245,8 @@ test("leaving the map shows the transcript where it was; enter on the turn it op
   const top = firstTopic(before)
   expect(top).toBeDefined()
   expect(before).not.toContain(`Answer about ${topic(TURNS - 1)}`)
+  // The wheel may have asked for an older page on the way; the map asks for none.
+  const loaded = view.older()
 
   // The turn at the transcript's top keeps its line as the transcript folds: the line its rows start on (the top
   // line when its start has scrolled out above) holds its collapsed row, and it is the one selected. It is the first
@@ -303,7 +305,7 @@ test("leaving the map shows the transcript where it was; enter on the turn it op
   await app.waitForFrame((frame) => !isMap(frame))
   await app.waitForVisualIdle({ quietFrames: 3 })
   expect(transcript(app.captureCharFrame())).toBe(before)
-  expect(view.older()).toBe(0)
+  expect(view.older()).toBe(loaded)
   // The composer has its focus back, and no key the map took reached it.
   expect(composer()).toBe("")
 
@@ -337,6 +339,47 @@ test("leaving the map shows the transcript where it was; enter on the turn it op
     expect(after[line + 1]).toContain(`Look into ${target}`)
   } else expect(after[line]).toContain(`Answer about ${target}`)
   expect(composer()).toBe("")
+}, 30_000)
+
+/** The last line of the transcript's place holding a row (not the composer's bar, not a prompt band's blank line). */
+const lastRow = (rows: string[]) =>
+  rows.slice(0, 23).findLastIndex((line) => line.trim() !== "" && !line.includes("┃  "))
+
+test("opened a little up from the end, the map sits at its bottom rather than leave blank lines below the last turn", async () => {
+  await using view = await open()
+  const { app } = view
+  const bottom = app.captureCharFrame().split("\n")
+  // A couple of turns up: folded from here, the turns below would not reach the bottom line.
+  for (let step = 0; step < 6; step++) {
+    await app.mockMouse.scroll(10, 5, "up")
+    await app.renderOnce()
+  }
+  await app.waitForVisualIdle({ quietFrames: 3 })
+  const before = transcript(app.captureCharFrame())
+  const top = firstTopic(before)!
+  expect(before).not.toContain(`Answer about ${topic(TURNS - 1)}`)
+
+  await view.openMap()
+  const folded = app.captureCharFrame().split("\n")
+  // The last turn on the line the transcript's last row sits on at its bottom, the turns before it filling the screen
+  // above: no blank line below the last turn, none above the first.
+  expect(lastRow(folded)).toBe(lastRow(bottom))
+  expect(folded[lastRow(folded)]).toContain(`Answer about ${topic(TURNS - 1)}.`)
+  expect(folded[0]!.trim()).not.toBe("")
+  // The turn at the transcript's top is on screen and the one selected (its row's own background).
+  const kind = /Look into|Answer about/.exec(before)![0]
+  const line = folded.findIndex((row) => row.includes(`${kind} ${top}`))
+  expect(line).toBeGreaterThan(-1)
+  const spans = app.captureSpans().lines
+  const other = folded.findIndex((row, index) => index !== line && row.includes(kind))
+  expect(cellBg(spans, line, folded[line]!.indexOf(top))).not.toBe(
+    cellBg(spans, other, folded[other]!.indexOf("topic-")),
+  )
+  // Esc gives the transcript back exactly where it was.
+  app.mockInput.pressEscape()
+  await app.waitForFrame((frame) => !isMap(frame))
+  await app.waitForVisualIdle({ quietFrames: 3 })
+  expect(transcript(app.captureCharFrame())).toBe(before)
 }, 30_000)
 
 test("pages up a long session whose notices arrive with old ids, the map opens on the turns that were on screen", async () => {
@@ -438,8 +481,6 @@ test("the wheel, the page keys and the scrollbar's box scroll the folded transcr
   const folded = frame()
   // Opened at the transcript's bottom, the map sits at its own as the transcript does: the last turn on the line the
   // transcript's last row was on, the turns before it filling the screen above.
-  const lastRow = (rows: string[]) =>
-    rows.slice(0, 23).findLastIndex((line) => line.trim() !== "" && !line.includes("┃  "))
   expect(lastRow(folded)).toBe(lastRow(bottom))
   expect(folded[lastRow(folded)]).toContain(`Answer about ${topic(TURNS - 1)}.`)
   expect(folded[0]!.trim()).not.toBe("")
