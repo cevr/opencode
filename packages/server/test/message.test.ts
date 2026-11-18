@@ -167,9 +167,23 @@ it.live("outlines a session's messages without their bodies, and extends an outl
       })
       const outline = await api.message.outline({ sessionID: session.id })
       expect(outline).toEqual([
-        { id: "msg_1", type: "user", time: 100, text: `Ship it\n${long}`.slice(0, 240) },
-        { id: "msg_2", type: "assistant", time: 200, text: "Shipped. The notes follow.", tools: 2 },
-        { id: "msg_3", type: "synthetic", time: 400, text: "implementor fix r1", source: "subagent" },
+        { id: "msg_1", type: "user", time: 100, summary: "Ship it" },
+        {
+          id: "msg_2",
+          type: "assistant",
+          time: 200,
+          completed: 300,
+          summary: "Shipped.",
+          tools: 2,
+          thoughts: 1,
+        },
+        {
+          id: "msg_3",
+          type: "synthetic",
+          time: 400,
+          summary: "Subagent finished · implementor fix r1",
+          source: "subagent",
+        },
         { id: "msg_4", type: "idle", time: 500 },
       ])
       expect(await api.message.outline({ sessionID: session.id, after: "msg_2" })).toEqual(outline.slice(2))

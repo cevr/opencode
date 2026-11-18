@@ -23,14 +23,21 @@ const id = (turn: number, role: number) => `msg_${String(turn).padStart(6, "0")}
 const outline: SessionOutlineEntry[] = Array.from({ length: TURNS }, (_, turn) => {
   const time = start + turn * 120_000
   return [
-    { id: id(turn, 0), type: "user" as const, time, text: `Prompt number ${turn} about the scroll bench` },
+    { id: id(turn, 0), type: "user" as const, time, summary: `Prompt number ${turn} about the scroll bench` },
     { id: id(turn, 1), type: "assistant" as const, time: time + 1000, tools: 3 },
-    { id: id(turn, 2), type: "assistant" as const, time: time + 2000, text: `Answer ${turn}. With detail.`, tools: 1 },
+    {
+      id: id(turn, 2),
+      type: "assistant" as const,
+      time: time + 2000,
+      summary: `Answer ${turn}.`,
+      tools: 1,
+      thoughts: 2,
+    },
     {
       id: id(turn, 3),
       type: "synthetic" as const,
       time: time + 3000,
-      text: `monitor w${turn} matched`,
+      summary: `monitor w${turn} matched`,
       source: "wake",
     },
   ]

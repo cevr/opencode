@@ -540,4 +540,137 @@ describe("SessionStore", () => {
       expect(yield* store.lastAssistantAfter({ sessionID, afterSeq: 9 })).toBeUndefined()
     }),
   )
+
+  it.effect("outlines split and inline steps alike: their counts and their last text's first sentence", () =>
+    Effect.gen(function* () {
+      const sessionID = Session.ID.make("ses_outline_parts")
+      yield* seedSessions([{ id: sessionID, updated: 0 }])
+      const database = yield* Database.Service
+      const store = yield* SessionStore.Service
+      const tool = (id: string) =>
+        ({
+          type: "tool",
+          id,
+          name: "shell",
+          state: { status: "completed", input: {}, content: [{ type: "text", text: "x".repeat(4_000) }] },
+          time: { created: 1 },
+        }) as const
+      const row = (id: string, seq: number, type: "assistant" | "synthetic", data: Record<string, unknown>) =>
+        database.db
+          .insert(SessionMessageTable)
+          .values({
+            id: SessionMessage.ID.make(id),
+            session_id: sessionID,
+            seq,
+            type,
+            time_created: seq * 1_000,
+            time_updated: seq * 1_000,
+            data: data as never,
+          })
+          .run()
+      // Parts are written in their stored (encoded) form, as the projector leaves them.
+      const parts = (
+        id: string,
+        contents: ReadonlyArray<{ readonly type: "text" | "reasoning" | "tool"; readonly [key: string]: unknown }>,
+      ) =>
+        database.db
+          .insert(SessionPartTable)
+          .values(
+            contents.map((content, ordinal) => ({
+              message_id: SessionMessage.ID.make(id),
+              session_id: sessionID,
+              ordinal,
+              type: content.type,
+              time_created: 1,
+              time_updated: 1,
+              data: content as never,
+            })),
+          )
+          .run()
+      const step = (seq: number, content: ReadonlyArray<unknown> = []) => ({
+        agent: "build",
+        model,
+        content,
+        time: { created: seq * 1_000, completed: seq * 1_000 + 500 },
+      })
+
+      // The projector's layout: every part in `session_part`.
+      yield* row("msg_split", 1, "assistant", step(1))
+      yield* parts("msg_split", [
+        { type: "reasoning", text: "Weighing the layout" },
+        { type: "reasoning", text: " [REDACTED] " },
+        tool("call_1"),
+        { type: "text", text: "Reading the store first." },
+        tool("call_2"),
+        { type: "reasoning", text: "It holds." },
+        { type: "text", text: `**Done:** the map reads turns. ${"More words. ".repeat(100)}` },
+        { type: "text", text: "  " },
+      ])
+      // The legacy layout: the content inline.
+      yield* row(
+        "msg_inline",
+        2,
+        "assistant",
+        step(2, [
+          { type: "reasoning", text: "Inline thought" },
+          tool("call_3"),
+          { type: "text", text: "Inline answer! Then more." },
+        ]),
+      )
+      // A row an older build wrote inline content to after its parts were split: the parts read first.
+      yield* row("msg_mixed", 3, "assistant", step(3, [{ type: "text", text: "Written again. Later." }]))
+      yield* parts("msg_mixed", [{ type: "text", text: "Split first." }, tool("call_4")])
+      yield* row("msg_notice", 4, "synthetic", {
+        text: "x".repeat(4_000),
+        description: "implementor turn-map r3 (fork)",
+        metadata: { source: "subagent", agent: "implementor", state: "completed" },
+      })
+      yield* row("msg_queue", 5, "synthetic", { text: "body", description: "Queue check: 1 stale of 16 open\nmore" })
+
+      const outline = yield* store.outline({ sessionID })
+      expect(outline).toEqual([
+        {
+          id: SessionMessage.ID.make("msg_split"),
+          type: "assistant",
+          time: 1_000,
+          completed: 1_500,
+          summary: "Done: the map reads turns.",
+          tools: 2,
+          thoughts: 2,
+        },
+        {
+          id: SessionMessage.ID.make("msg_inline"),
+          type: "assistant",
+          time: 2_000,
+          completed: 2_500,
+          summary: "Inline answer!",
+          tools: 1,
+          thoughts: 1,
+        },
+        {
+          id: SessionMessage.ID.make("msg_mixed"),
+          type: "assistant",
+          time: 3_000,
+          completed: 3_500,
+          summary: "Written again.",
+          tools: 1,
+        },
+        {
+          id: SessionMessage.ID.make("msg_notice"),
+          type: "synthetic",
+          time: 4_000,
+          summary: "Implementor finished · implementor turn-map r3 (fork)",
+          source: "subagent",
+        },
+        {
+          id: SessionMessage.ID.make("msg_queue"),
+          type: "synthetic",
+          time: 5_000,
+          summary: "Queue check: 1 stale of 16 open",
+        },
+      ])
+      // Bounded whatever the bodies hold.
+      expect(JSON.stringify(outline).length).toBeLessThan(1_000)
+    }),
+  )
 })

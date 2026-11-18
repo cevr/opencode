@@ -35,17 +35,25 @@ const messages: SessionMessageInfo[] = Array.from({ length: TURNS }, (_, turn) =
     content: [{ type: "text" as const, text: `Answer about ${topic(turn)}. More detail follows.` }],
   },
 ]).flat()
-const outline: SessionOutlineEntry[] = messages.map((message) => ({
-  id: message.id,
-  type: message.type,
-  time: message.time.created,
-  text:
-    message.type === "user"
-      ? message.text
-      : message.type === "assistant" && message.content[0]?.type === "text"
-        ? message.content[0].text
-        : undefined,
-}))
+// The server's outline: a summary per message, and each answer's work (counts only; its body stays on the server).
+const outline: SessionOutlineEntry[] = messages.map((message) =>
+  message.type === "assistant"
+    ? {
+        id: message.id,
+        type: message.type,
+        time: message.time.created,
+        completed: message.time.completed,
+        summary: `Answer about ${topic(Number(message.id.slice(4, 10)))}.`,
+        thoughts: 2,
+        tools: 3,
+      }
+    : {
+        id: message.id,
+        type: message.type,
+        time: message.time.created,
+        summary: "text" in message ? message.text : "",
+      },
+)
 
 async function open() {
   // Older pages wait on the test, so it sees the transcript while they load.
@@ -113,9 +121,17 @@ test("the transcript map takes the transcript's place, filters, and goes to an o
   // In the transcript's place: the composer and its footer stay; the transcript's rows are gone.
   expect(map).toContain("shift+tab agents")
   expect(map).not.toContain("More detail follows")
-  // Newest at the bottom, one line each, with the day it fell on.
-  expect(map).toContain(`you         Look into ${topic(TURNS - 1)}`)
-  expect(map).toContain(`agent       Answer about ${topic(TURNS - 1)}.`)
+  // Newest at the bottom, one collapsed line each: its time as the transcript writes it, who, a summary, and an
+  // answer's work counted, with the day it fell on.
+  const zone = /\d{1,2}:\d{2} [AP]M [A-Z][A-Za-z+\-:\d]*/
+  const line = (text: string) => map.split("\n").find((row) => row.includes(text)) ?? ""
+  expect(line(`Look into ${topic(TURNS - 1)}`)).toMatch(
+    new RegExp(`10:55 PM [A-Z][A-Za-z+\\-:\\d]*  you         Look into ${topic(TURNS - 1)}`),
+  )
+  expect(line(`Answer about ${topic(TURNS - 1)}`)).toContain(
+    `agent       Answer about ${topic(TURNS - 1)}. · 2 thoughts, 3 tools`,
+  )
+  expect(line(`Answer about ${topic(TURNS - 1)}`)).toMatch(zone)
   expect(map).toContain("— Tue Nov 17 —")
   expect(map).toContain(`${TURNS * 2} turns`)
 

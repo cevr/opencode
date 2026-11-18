@@ -1511,9 +1511,11 @@ export type MessageOutlineOutput = ReadonlyArray<{
     | "compaction"
     | "idle"
   readonly time: number
-  readonly text?: string | undefined
+  readonly completed?: number | undefined
+  readonly summary?: string | undefined
   readonly source?: string | undefined
   readonly tools?: number | undefined
+  readonly thoughts?: number | undefined
 }>
 export type MessageOutlineOperation<E = never> = (input: MessageOutlineInput) => Effect.Effect<MessageOutlineOutput, E>
 

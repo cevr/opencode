@@ -39,6 +39,9 @@ export function cachedOutline(client: Client, sessionID: string) {
 
 const PAGE = 10
 const WHO_WIDTH = 10
+/** `12:02 PM ET`'s width, so the shorter times line up beside it. */
+const CLOCK_WIDTH = 11
+const work = TranscriptMap.work
 const WHEEL = 3
 
 /**
@@ -288,7 +291,7 @@ export function TranscriptMapView(props: {
                     }}
                   >
                     <text fg={active() ? theme.text.action.primary.focused : theme.text.muted} flexShrink={0}>
-                      {TranscriptMap.clock(row.turn.time)}
+                      {TranscriptMap.clock(row.turn.time).padStart(CLOCK_WIDTH)}
                     </text>
                     <text fg={active() ? theme.text.action.primary.focused : whoColor(row.turn)} flexShrink={0}>
                       {row.turn.who.padEnd(WHO_WIDTH).slice(0, WHO_WIDTH)}
@@ -299,7 +302,14 @@ export function TranscriptMapView(props: {
                       wrapMode="none"
                       truncate
                     >
-                      {row.turn.gist}
+                      {row.turn.gist || (work(row.turn) ? "" : row.turn.kind === "agent" ? "(no reply)" : "")}
+                      <Show when={work(row.turn)}>
+                        {(done) => (
+                          <span style={{ fg: active() ? theme.text.action.primary.focused : theme.text.muted }}>
+                            {row.turn.gist ? ` · ${done()}` : done()}
+                          </span>
+                        )}
+                      </Show>
                     </text>
                   </box>
                 )

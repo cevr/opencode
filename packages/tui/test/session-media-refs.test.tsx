@@ -111,7 +111,7 @@ async function openSession(server: { inbox?: unknown[]; plugins?: string[]; resp
             id: message.id,
             type: message.type,
             time: message.time.created,
-            text: "text" in message ? message.text : "Looked at it",
+            summary: "text" in message ? message.text : "Looked at it",
           })),
         })
       }

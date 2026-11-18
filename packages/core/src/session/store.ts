@@ -13,6 +13,7 @@ import { SessionMessage } from "./message.js"
 import { Session } from "@opencode/schema/session"
 import { SessionMessageTable, SessionPartTable, SessionTable } from "./sql.js"
 import { fromRow } from "./info.js"
+import { SessionOutline } from "./outline.js"
 
 const ListInputBase = {
   workspaceID: Workspace.ID.pipe(Schema.optional),
@@ -51,26 +52,27 @@ export type MessagesInput = {
   }
 }
 
-/** Characters of a message's text an outline entry keeps. */
-export const OutlineExcerpt = 240
-
 /**
- * One message as a transcript map reads it: its kind and time, and at most a short excerpt of its text, so a whole
- * session's outline costs a small fraction of its messages.
+ * One message as a transcript map reads it: its kind and time, a one-line summary and an assistant step's counts,
+ * never its body, so a whole session's outline costs a small fraction of its messages.
  */
 export type OutlineEntry = {
   readonly id: SessionMessage.ID
   readonly type: SessionMessage.Type
   readonly time: number
+  /** When an assistant step completed. */
+  readonly completed?: number
   /**
-   * The start of the text a reader knows the message by: a prompt's text, a notice's description, an assistant step's
-   * first text part, a shell's command, a skill's name.
+   * At most {@link SessionOutline.SummaryLength} characters a reader knows the message by: a prompt's first line, a
+   * notice's title, the first sentence of an assistant step's last text, a shell's command, a skill's name.
    */
-  readonly text?: string
+  readonly summary?: string
   /** `metadata.source`, naming who sent a synthetic message (a subagent, a monitor, another session). */
   readonly source?: string
   /** An assistant step's tool calls. */
   readonly tools?: number
+  /** An assistant step's thoughts: its reasoning parts with words in them. */
+  readonly thoughts?: number
 }
 
 export interface Interface {
@@ -284,30 +286,36 @@ const layer = Layer.effect(
         const message = SessionMessageTable
         const part = SessionPartTable
         // An assistant step's content lives in `session_part` rows, or inline in `data.content` for rows written
-        // before parts were split out (and after them, for a row an older build wrote to again).
-        const firstText = sql<string | null>`coalesce(
-          (SELECT substr(json_extract(${part.data}, '$.text'), 1, ${OutlineExcerpt}) FROM ${part}
-            WHERE ${part.message_id} = ${message.id} AND ${part.type} = 'text'
-              AND trim(coalesce(json_extract(${part.data}, '$.text'), '')) <> ''
-            ORDER BY ${part.ordinal} LIMIT 1),
-          (SELECT substr(json_extract(content.value, '$.text'), 1, ${OutlineExcerpt})
+        // before parts were split out; a row an older build wrote to again holds both, read as the parts then the
+        // inline content (SessionHistory), so its last text is the inline one's when there is one.
+        const excerpt = SessionOutline.ExcerptLength
+        const lastText = sql<string | null>`coalesce(
+          (SELECT substr(json_extract(content.value, '$.text'), 1, ${excerpt})
             FROM json_each(${message.data}, '$.content') AS content
             WHERE json_extract(content.value, '$.type') = 'text'
               AND trim(coalesce(json_extract(content.value, '$.text'), '')) <> ''
-            ORDER BY CAST(content.key AS INTEGER) LIMIT 1))`
-        const tools = sql<number>`(SELECT count(*) FROM ${part}
-            WHERE ${part.message_id} = ${message.id} AND ${part.type} = 'tool')
-          + (SELECT count(*) FROM json_each(${message.data}, '$.content') AS content
-            WHERE json_extract(content.value, '$.type') = 'tool')`
+            ORDER BY CAST(content.key AS INTEGER) DESC LIMIT 1),
+          (SELECT substr(json_extract(${part.data}, '$.text'), 1, ${excerpt}) FROM ${part}
+            WHERE ${part.message_id} = ${message.id} AND ${part.type} = 'text'
+              AND trim(coalesce(json_extract(${part.data}, '$.text'), '')) <> ''
+            ORDER BY ${part.ordinal} DESC LIMIT 1))`
+        const count = (type: string, where: (value: SQL) => SQL = () => sql`1`) =>
+          sql<number>`(SELECT count(*) FROM ${part}
+              WHERE ${part.message_id} = ${message.id} AND ${part.type} = ${type} AND ${where(sql`${part.data}`)})
+            + (SELECT count(*) FROM json_each(${message.data}, '$.content') AS content
+              WHERE json_extract(content.value, '$.type') = ${type} AND ${where(sql`content.value`)})`
+        // A thought the transcript shows has words in it: a redacted block alone renders nothing.
+        const worded = (value: SQL) =>
+          sql`trim(replace(coalesce(json_extract(${value}, '$.text'), ''), '[REDACTED]', '')) <> ''`
         const field = (path: string) =>
-          sql<string | null>`substr(json_extract(${message.data}, ${path}), 1, ${OutlineExcerpt})`
+          sql<string | null>`substr(json_extract(${message.data}, ${path}), 1, ${excerpt})`
         const rows = yield* db
           .select({
             id: message.id,
             type: message.type,
             time: message.time_created,
             text: sql<string | null>`CASE ${message.type}
-              WHEN 'assistant' THEN ${firstText}
+              WHEN 'assistant' THEN ${lastText}
               WHEN 'user' THEN ${field("$.text")}
               WHEN 'synthetic' THEN ${field("$.description")}
               WHEN 'system' THEN coalesce(${field("$.description")}, ${field("$.text")})
@@ -315,23 +323,49 @@ const layer = Layer.effect(
               WHEN 'skill' THEN ${field("$.name")}
               END`,
             source: sql<string | null>`json_extract(${message.data}, '$.metadata.source')`,
-            tools: sql<number | null>`CASE ${message.type} WHEN 'assistant' THEN ${tools} END`,
+            agent: sql<
+              string | null
+            >`CASE ${message.type} WHEN 'synthetic' THEN json_extract(${message.data}, '$.metadata.agent') END`,
+            state: sql<
+              string | null
+            >`CASE ${message.type} WHEN 'synthetic' THEN json_extract(${message.data}, '$.metadata.state') END`,
+            completed: sql<
+              number | null
+            >`CASE ${message.type} WHEN 'assistant' THEN json_extract(${message.data}, '$.time.completed') END`,
+            tools: sql<number | null>`CASE ${message.type} WHEN 'assistant' THEN ${count("tool")} END`,
+            thoughts: sql<number | null>`CASE ${message.type} WHEN 'assistant' THEN ${count("reasoning", worded)} END`,
           })
           .from(message)
           .where(and(eq(message.session_id, input.sessionID), anchor ? gt(message.seq, anchor.seq) : undefined))
           .orderBy(asc(message.seq))
           .all()
           .pipe(Effect.orDie)
-        return rows.map(
-          (row): OutlineEntry => ({
+        const text = (value: unknown) => (typeof value === "string" ? value : undefined)
+        return rows.map((row): OutlineEntry => {
+          const summary =
+            row.type === "assistant"
+              ? SessionOutline.firstSentence(row.text)
+              : row.type === "synthetic"
+                ? SessionOutline.noticeTitle({
+                    description: row.text,
+                    source: text(row.source),
+                    agent: text(row.agent),
+                    state: text(row.state),
+                  })
+                : row.type === "shell" || row.type === "skill"
+                  ? SessionOutline.firstLine(row.text, { verbatim: true })
+                  : SessionOutline.firstLine(row.text)
+          return {
             id: row.id,
             type: row.type,
             time: row.time,
-            ...(row.text ? { text: row.text } : {}),
+            ...(typeof row.completed === "number" ? { completed: row.completed } : {}),
+            ...(summary ? { summary } : {}),
             ...(typeof row.source === "string" ? { source: row.source } : {}),
             ...(row.tools ? { tools: row.tools } : {}),
-          }),
-        )
+            ...(row.thoughts ? { thoughts: row.thoughts } : {}),
+          }
+        })
       }),
       context: Effect.fn("SessionStore.context")((sessionID) => SessionHistory.load(db, sessionID, "latest")),
       lastAssistantAfter: Effect.fn("SessionStore.lastAssistantAfter")(function* (input) {

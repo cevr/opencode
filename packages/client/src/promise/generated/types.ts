@@ -478,9 +478,11 @@ export type SessionOutlineEntry = {
     | "compaction"
     | "idle"
   time: number
-  text?: string | undefined
+  completed?: number | undefined
+  summary?: string | undefined
   source?: string | undefined
   tools?: number | undefined
+  thoughts?: number | undefined
 }
 
 export type UsageLimitsBudgetModel = { providerID: ProviderID; modelID: string; name: string; spent?: MoneyUSD }

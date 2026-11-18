@@ -107,12 +107,18 @@ export const SessionOutlineEntry = Schema.Struct({
   id: SessionMessage.ID,
   type: Schema.Literals(Object.keys(MessageTypes) as ReadonlyArray<SessionMessage.Type>),
   time: Schema.Number.annotate({ description: "When the message was created, in epoch milliseconds." }),
-  text: Schema.optional(Schema.String).annotate({
+  completed: Schema.optional(Schema.Number).annotate({
+    description: "When an assistant step completed, in epoch milliseconds.",
+  }),
+  summary: Schema.optional(Schema.String).annotate({
     description:
-      "The start of the text the message is known by: a prompt's text, a notice's description, an assistant step's first text, a shell's command, a skill's name.",
+      "At most 120 characters the message is known by: a prompt's first line, a notice's title, the first sentence of an assistant step's last text, a shell's command, a skill's name.",
   }),
   source: Schema.optional(Schema.String).annotate({ description: "Who sent a synthetic message (`metadata.source`)." }),
   tools: Schema.optional(Schema.Number).annotate({ description: "An assistant step's tool calls." }),
+  thoughts: Schema.optional(Schema.Number).annotate({
+    description: "An assistant step's thoughts: its reasoning parts with words in them.",
+  }),
 }).annotate({ identifier: "SessionOutlineEntry" })
 
 export const MessageGroup = HttpApiGroup.make("server.message")
