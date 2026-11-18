@@ -206,6 +206,7 @@ export function Prompt(props: PromptProps) {
   const enabled = useInteractivity()
   const disabled = () => props.disabled || !enabled()
   const leader = Keymap.useLeaderActive()
+  const leaderPending = Keymap.useLeaderPending()
   const muted = () => leader() || props.muted
   const local = useLocal()
   const paths = useTuiPaths()
@@ -2011,6 +2012,16 @@ export function Prompt(props: PromptProps) {
                 }}
               >
                 <Switch>
+                  {/* While a leader chord waits for its next key, the status says so; it clears when the chord
+                      completes, is cancelled or times out. */}
+                  <Match when={leaderPending()}>
+                    {(keys) => (
+                      <text id="prompt.footer.leader" fg={theme.hue.accent[500]} wrapMode="none" truncate>
+                        {keys()}
+                        <span style={{ fg: theme.text.muted }}> …</span>
+                      </text>
+                    )}
+                  </Match>
                   <Match when={status() === "running"}>
                     <box flexDirection="row" gap={1} flexGrow={1} justifyContent="flex-start">
                       <box marginLeft={1}>

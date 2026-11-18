@@ -409,6 +409,17 @@ function useLeaderActive() {
   return () => pending()[0]?.tokenName === "leader"
 }
 
+/** The pending sequence in the host's words (`ctrl+x`) while it starts with the leader, else undefined. */
+function useLeaderPending() {
+  const value = useValue()
+  const pending = usePendingSequence()
+  return () => {
+    const sequence = pending()
+    if (sequence[0]?.tokenName !== "leader") return undefined
+    return formatKeySequence(sequence, formatOptions(value.config))
+  }
+}
+
 function useCommands(): Accessor<readonly KeymapCommand[]> {
   const value = useValue()
   return value.view("commands", (keymap) =>
@@ -500,6 +511,7 @@ export const Keymap = {
   useShortcuts,
   useShortcut,
   useLeaderActive,
+  useLeaderPending,
   useCommands,
   usePendingSequence,
   useActiveKeys,
