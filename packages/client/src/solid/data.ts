@@ -444,9 +444,9 @@ export function createData(config: CreateDataInput) {
           if (back.length > 0)
             setForms(
               input.sessionID,
-              before.filter((form) => back.includes(form) || current.includes(form)).concat(
-                current.filter((form) => !before.includes(form)),
-              ),
+              before
+                .filter((form) => back.includes(form) || current.includes(form))
+                .concat(current.filter((form) => !before.includes(form))),
             )
           throw error
         }
@@ -1247,8 +1247,7 @@ export function createData(config: CreateDataInput) {
             error: event.data.error,
             input: typeof tool.state.input === "string" ? {} : tool.state.input,
             metadata: event.data.metadata,
-            content:
-              omitFiles() && event.data.content ? omitFileData(event.data.content) : event.data.content,
+            content: omitFiles() && event.data.content ? omitFileData(event.data.content) : event.data.content,
           }
           tool.executed = event.data.executed || tool.executed === true
           if (event.data.native) tool.native = { ...tool.native, ...event.data.native }
@@ -2035,6 +2034,8 @@ export function createData(config: CreateDataInput) {
           sessionID: string,
           options?: {
             all?: boolean
+            /** Reads pages until this message is among them (or the session's start), publishing once. */
+            until?: string
             signal?: AbortSignal
             /** Runs synchronously inside the store-publication batch. */
             beforePublish?: () => void
@@ -2055,11 +2056,14 @@ export function createData(config: CreateDataInput) {
                 })
                 .finally(() => signal.removeEventListener("abort", cancel))
             })()
-            if ((!options?.all && published) || signal?.aborted) return
+            if ((!options?.all && !options?.until && published) || signal?.aborted) return
+            if (options?.until && messageIndex.get(sessionID)?.has(options.until)) return
           }
           const cursor = store.session.messageCursor[sessionID]
           if (!cursor || signal?.aborted) return
           setStore("session", "messageLoading", sessionID, true)
+          const until = options?.until
+          if (until && messageIndex.get(sessionID)?.has(until)) return
           const request = (async () => {
             const fetched: SessionMessageInfo[] = []
             let next: string | undefined = cursor
@@ -2067,7 +2071,7 @@ export function createData(config: CreateDataInput) {
               const response = await api().message.list(
                 {
                   sessionID,
-                  limit: options?.all ? 200 : messagePageLimit,
+                  limit: options?.all || until ? 200 : messagePageLimit,
                   cursor: next,
                 },
                 { signal },
@@ -2075,7 +2079,8 @@ export function createData(config: CreateDataInput) {
               if (signal?.aborted) return
               fetched.push(...response.data.map(stored))
               next = response.cursor.next ?? undefined
-              if (!options?.all) break
+              if (until && response.data.some((item) => item.id === until)) break
+              if (!options?.all && !until) break
             } while (next)
             // A jump through history publishes once, not once per page of offscreen messages.
             const existing = store.session.message[sessionID] ?? []
