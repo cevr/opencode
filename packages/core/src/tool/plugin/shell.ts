@@ -481,10 +481,10 @@ export const Plugin = {
     // Where each shell's output was last shown to the agent: a check without an offset reads on from here.
     const cursors = new Map<string, number>()
 
-    const backgroundAfter = Effect.fnUntraced(function* (input: Input) {
+    const backgroundAfter = Effect.fnUntraced(function* (input: Input, context: Tool.Context) {
       if (input.timeout !== undefined) return input.timeout
-      // Under full_codemode a slow script backgrounds as a whole (CodeModeJob), so its shell waits longer, as upstream's.
-      const fallback = flags.resolve(loaded.entries).full_codemode.enabled ? CODE_MODE_TIMEOUT_MS : DEFAULT_TIMEOUT_MS
+      // Inside Code Mode a slow script backgrounds as a whole (CodeModeJob), so its shell waits longer, as upstream's.
+      const fallback = context.codemode ? CODE_MODE_TIMEOUT_MS : DEFAULT_TIMEOUT_MS
       return Config.latest(yield* config.entries(), "experimental")?.shell_background_after ?? fallback
     })
 
@@ -645,7 +645,7 @@ export const Plugin = {
       // A background call's timeout kills it; a foreground call's moves it to the background.
       const background = input.background === true
       const timeout = background ? (input.timeout ?? 0) : 0
-      const limit = background ? 0 : yield* backgroundAfter(input)
+      const limit = background ? 0 : yield* backgroundAfter(input, context)
       let finalTimeout = timeout
       // Uninterruptible from spawning to blocking, so an interrupt cannot orphan a started command.
       return yield* Effect.uninterruptibleMask((restore) =>
@@ -855,15 +855,15 @@ export const Plugin = {
     })
 
     yield* ctx.tool
-      .transform((editor) => {
-        const codeMode = flags.resolve(loaded.entries).full_codemode.enabled
+      .transform((editor) =>
         editor.add({
           name,
-          // With full_codemode, shell is called as `tools.shell` inside `execute` instead of as a direct tool, and is
-          // pinned so the Code Mode catalog always lists it, however many other tools there are. The fork keeps its
-          // one handle-shaped input and output in both modes.
-          options: codeMode ? { codemode: true, pinned: true } : { codemode: false },
-          description: description(undefined, codeMode),
+          // With full_codemode, shell is allowed in Code Mode and pinned so the catalog always lists it. The fork keeps
+          // its one handle-shaped input and output in both modes; only the stated default timeout differs.
+          options: flags.resolve(loaded.entries).full_codemode.enabled
+            ? { codemode: { pinned: true, description: description(undefined, true) } }
+            : { codemode: false },
+          description: description(),
           input: Input,
           output: Output,
           execute: (input, context) => {
@@ -913,18 +913,16 @@ export const Plugin = {
               Effect.mapError(toolFailure(`Unable to execute command: ${form.command}`)),
             )
           },
-        })
-      })
+        }),
+      )
       .pipe(Effect.orDie)
 
     const hook = (event: SessionHooks["context"]) =>
       Effect.gen(function* () {
         const tool = event.tools[name]
         if (!tool) return
-        tool.description = description(
-          ShellSelect.name(yield* compatibleShell),
-          flags.resolve(loaded.entries).full_codemode.enabled,
-        )
+        // The direct definition; in Code Mode the tool's `codemode.description` is offered instead.
+        tool.description = description(ShellSelect.name(yield* compatibleShell))
       })
     yield* ctx.session.hook("context", hook)
     yield* ctx.session.hook("compaction", hook)
