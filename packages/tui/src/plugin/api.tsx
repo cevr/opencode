@@ -571,10 +571,9 @@ function PluginMarkdown(props: MarkdownProps) {
   return (
     <markdown
       syntaxStyle={syntax()}
-      renderNode={plugins.markdown()}
+      renderBlock={plugins.markdown()}
       content={props.content}
       streaming={props.streaming ?? false}
-      internalBlockMode="top-level"
       tableOptions={{ style: "grid", cellPaddingX: 1 }}
       conceal={(config.data.session?.markdown ?? "rendered") === "rendered"}
       fg={props.fg ?? theme.markdown.text}

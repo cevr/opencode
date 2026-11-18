@@ -198,10 +198,9 @@ export function TextPart(props: {
         <markdown
           ref={useSessionLinks()}
           syntaxStyle={syntax()}
-          renderNode={plugins.markdown()}
+          renderBlock={plugins.markdown()}
           content={props.part.text.trim()}
           streaming={props.message.time.completed === undefined}
-          internalBlockMode="top-level"
           tableOptions={{ style: "grid", cellPaddingX: 1 }}
           conceal={ctx.markdownMode() === "rendered"}
           fg={theme.markdown.text}

@@ -76,6 +76,9 @@ async function open() {
     for (let tick = 0; tick < 300 && !until(); tick++) {
       await app.mockMouse.scroll(scroll.viewport.x + 2, scroll.viewport.y + 2, "up")
       await app.renderOnce()
+      // A real wheel sends at most about a step per frame. Back-to-back steps outran the older page's request on
+      // a loaded host (it reached the server only at the top), on OpenTUI 0.8 and 0.9 alike.
+      await Bun.sleep(16)
     }
   }
   return {

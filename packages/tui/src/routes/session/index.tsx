@@ -2577,9 +2577,8 @@ function CompactionMessage(props: { message: Extract<SessionMessageInfo, { type:
           <markdown
             ref={useSessionLinks()}
             syntaxStyle={syntax()}
-            renderNode={plugins.markdown()}
+            renderBlock={plugins.markdown()}
             streaming={true}
-            internalBlockMode="top-level"
             content={content()}
             tableOptions={{ style: "grid", cellPaddingX: 1 }}
             conceal={ctx.markdownMode() === "rendered"}
@@ -3621,7 +3620,7 @@ function Read(props: ToolProps) {
       <For each={loaded()}>
         {(filepath) => (
           <box paddingLeft={gutter()}>
-            <text paddingLeft={3} fg={theme.text.muted}>
+            <text paddingRight={3} fg={theme.text.muted}>
               ↳ Loaded {pathFormatter.format(filepath)}
             </text>
           </box>
@@ -3818,7 +3817,7 @@ function Execute(props: ToolProps) {
         <box paddingLeft={gutter()}>
           <For each={outputPreview().split("\n")}>
             {(line, index) => (
-              <text paddingLeft={3} fg={theme.text.feedback.error.base}>
+              <text paddingRight={3} fg={theme.text.feedback.error.base}>
                 {index() === 0 ? "↳ " : "  "}
                 {line}
               </text>

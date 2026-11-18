@@ -1,6 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 import { expect, test } from "bun:test"
-import { CodeRenderable, SyntaxStyle, TextAttributes, type MarkdownRenderable, type Renderable } from "@opentui/core"
+import { SyntaxStyle, TextAttributes, type MarkdownRenderable } from "@opentui/core"
 import { testRender, useRenderer } from "@opentui/solid"
 import { onCleanup, onMount, type JSX } from "solid-js"
 import { ConfigProvider } from "../../src/config"
@@ -15,7 +15,7 @@ import { DialogProvider, useDialog } from "../../src/ui/dialog"
 import { useSessionLinks } from "../../src/ui/session-link"
 import { ToastProvider } from "../../src/ui/toast"
 import { emptyThemeSource, tmpdir } from "../fixture/fixture"
-import { createApi, createFetch, directory, json } from "../fixture/tui-client"
+import { createApi, createEventStream, createFetch, directory, json } from "../fixture/tui-client"
 import { waitForHighlightedFrame } from "../fixture/frame"
 import { TestTuiContexts } from "../fixture/tui-environment"
 import { createTuiResolvedConfig } from "../fixture/tui-runtime"
@@ -36,7 +36,7 @@ const archived = session(id("archived"), "Old work", 1)
 const unknown = id("unknown")
 const missing = id("missing")
 
-test.each(["top-level", "coalesced"] as const)("session links in %s markdown", async (mode) => {
+test("session links in markdown", async () => {
   await using state = await tmpdir()
   const lookup = Promise.withResolvers<void>()
   const requested: string[] = []
@@ -51,7 +51,7 @@ test.each(["top-level", "coalesced"] as const)("session links in %s markdown", a
       { _tag: "SessionNotFoundError", sessionID, message: `Session not found: ${sessionID}` },
       { status: 404 },
     )
-  })
+  }, createEventStream())
   let data!: ReturnType<typeof useData>
   let route!: ReturnType<typeof useRoute>
 
@@ -69,7 +69,6 @@ test.each(["top-level", "coalesced"] as const)("session links in %s markdown", a
     return (
       <markdown
         ref={useSessionLinks()}
-        internalBlockMode={mode}
         syntaxStyle={syntaxStyle}
         content={[
           `**中文** see ${known.id} now`,
@@ -141,7 +140,6 @@ test("a wrapped title opens its session from either row, and plain text does not
     return (
       <markdown
         ref={useSessionLinks()}
-        internalBlockMode="top-level"
         syntaxStyle={syntaxStyle}
         content={`**中文** see ${known.id} now`}
       />
@@ -216,7 +214,6 @@ test.each([true, false])("code spans link only when they are exactly an ID, conc
     return (
       <markdown
         ref={useSessionLinks()}
-        internalBlockMode="top-level"
         conceal={conceal}
         syntaxStyle={syntaxStyle}
         content={`Run \`opencode --session ${known.id}\` or open \`${known.id}\`.`}
@@ -262,7 +259,6 @@ test("a label change re-highlights only the blocks that mention that session", a
           links(renderable)
           markdown = renderable
         }}
-        internalBlockMode="top-level"
         syntaxStyle={syntaxStyle}
         content={`First ${known.id}\n\nSecond ${other.id}`}
       />
@@ -273,23 +269,14 @@ test("a label change re-highlights only the blocks that mention that session", a
 
   try {
     await waitForHighlightedFrame(app, (frame) => frame.includes("@Fix") && frame.includes("@Other"))
-    // Record which blocks get their chunk callback reset, the refresh's re-highlight trigger.
+    // Record which blocks the hook rewrites again. Setting the hook reruns it on every block, so start after.
     const reset: string[] = []
-    const descriptor = Object.getOwnPropertyDescriptor(CodeRenderable.prototype, "onChunks")!
-    const blocks = (renderable: Renderable): CodeRenderable[] => [
-      ...(renderable instanceof CodeRenderable ? [renderable] : []),
-      ...renderable.getChildren().flatMap(blocks),
-    ]
-    blocks(markdown).forEach((block) =>
-      Object.defineProperty(block, "onChunks", {
-        configurable: true,
-        get: () => descriptor.get!.call(block),
-        set: (value) => {
-          reset.push(block.plainText)
-          descriptor.set!.call(block, value)
-        },
-      }),
-    )
+    const hook = markdown.inlineHook!
+    markdown.inlineHook = (spans, context) => {
+      reset.push(context.source)
+      return hook(spans, context)
+    }
+    reset.length = 0
 
     data.session.remember({ ...known, title: "Renamed" })
     await waitForHighlightedFrame(app, (frame) => frame.includes("@Renamed"))

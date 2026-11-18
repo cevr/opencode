@@ -68,13 +68,15 @@ export const monoMarkdownTableOptions = {
 }
 
 export function monoMarkdownRenderable(renderable: MarkdownRenderable): void {
+  // The native engine writes paragraphs, headings and table cells itself; the hook is where they turn ASCII.
+  renderable.inlineHook = (spans) => spans.map((span) => ({ ...span, text: monoText(span.text) }))
   monoRenderable(renderable)
 }
 
 function monoRenderable(renderable: Renderable): void {
   if (hooked.has(renderable)) return
   hooked.add(renderable)
-  // Markdown reconciles nested lists and tables without calling renderNode.
+  // Markdown reconciles nested lists and tables without calling renderBlock.
   // Hook the actual tree so future descendants are transformed before layout.
   const add = renderable.add.bind(renderable)
   renderable.add = (child, index) => {

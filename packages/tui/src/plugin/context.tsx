@@ -69,7 +69,7 @@ type Value = {
     readonly register: (path: string) => () => void
     readonly resolved: () => ReturnType<typeof resolveSlots<SlotRender>>
   }
-  readonly markdown: () => MarkdownOptions["renderNode"]
+  readonly markdown: () => MarkdownOptions["renderBlock"]
   /** Layout knobs merged across active plugins; later-enabled plugins win per field. */
   readonly layout: () => Layout
   /** Composer popups by trigger character; the last-enabled active plugin that claimed one wins. */

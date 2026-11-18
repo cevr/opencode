@@ -147,6 +147,8 @@ test(
           return json({ data: messages.slice(start, end).toReversed(), cursor: start ? { next: String(start) } : {} })
         }
         if (url.pathname.endsWith("/inbox") || url.pathname.endsWith("/permission")) return json({ data: [] })
+        // Plugin RPCs (SCROLL_PLUGINS, e.g. Prime's wake and queue readers): nothing pending.
+        if (PLUGINS.length && url.pathname.startsWith("/api/rpc/")) return json({ output: null })
       },
     })
     await app.ready
@@ -233,6 +235,9 @@ test(
       )
     }
     const mounted = scroll.content.getChildren().length
+    // Renderables under the mounted rows: what each frame's layout and paint walk.
+    const count = (node: Renderable): number => 1 + node.getChildren().reduce((sum, child) => sum + count(child), 0)
+    const renderables = scroll.content.getChildren().reduce((sum, child) => sum + count(child), 0)
     await app.waitForVisualIdle({ quietFrames: 3 })
     const down = await run("down", DOWN, () => false)
     const result = {
@@ -240,6 +245,8 @@ test(
       pages: pages.length,
       reachedTop: top(),
       mountedChildren: mounted,
+      renderables,
+      renderablesPerRow: +(renderables / Math.max(1, mounted)).toFixed(1),
       up,
       down,
       highlight: { ...stats(highlights), mostWaiting },

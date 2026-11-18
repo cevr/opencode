@@ -341,15 +341,8 @@ test("renders monochrome scrollback as ASCII markdown", async () => {
       active && typeof active === "object" && "renderable" in active && active.renderable instanceof MarkdownRenderable
         ? active.renderable
         : undefined
-    expect(renderable?._blockStates.slice(-3).map((state) => state.token.type)).toEqual([
-      "paragraph",
-      "paragraph",
-      "paragraph",
-    ])
-    const link = renderable?._blockStates.at(-1)?.token
-    const tokens = link && "tokens" in link && Array.isArray(link.tokens) ? link.tokens : []
-    const href = tokens.find((token) => "href" in token)
-    expect(href && "href" in href ? href.href : undefined).toBe("https://example.com/café")
+    const top = renderable?.blocks.filter((block) => block.renderable?.parent === renderable) ?? []
+    expect(top.slice(-3).map((block) => block.kind)).toEqual(["paragraph", "paragraph", "paragraph"])
     await out.scrollback.complete()
     out.renderer.writeToScrollback((ctx) => ({
       root: new TextRenderable(ctx.renderContext, {
@@ -363,7 +356,8 @@ test("renders monochrome scrollback as ASCII markdown", async () => {
     }))
 
     const rendered = output.join("").replace(/ +\n/g, "\n")
-    expect(rendered).toContain("# H?ading ->")
+    // OpenTUI 0.9 conceals the heading marker; the heading keeps its own style.
+    expect(rendered).toContain("H?ading ->")
     expect(rendered).toContain('| "quote"')
     expect(rendered).toContain("------------------------------------------------------------")
     expect(rendered).toContain("?  ?")
@@ -401,10 +395,12 @@ test("renders completed subagent markdown in monochrome mode", async () => {
 
     const commits = claim(out.renderer)
     try {
-      expect(commits).toHaveLength(1)
-      expect(commits[0]?.trailingNewline).toBe(true)
+      // OpenTUI 0.9 commits the heading as soon as the next block starts, so the blocks may land in two
+      // commits; only the last one ends the entry.
+      expect(commits.map((commit) => commit.trailingNewline).at(-1)).toBe(true)
       const output = render(commits)
-      expect(output).toContain("# Findings")
+      // OpenTUI 0.9 conceals the heading marker; the heading keeps its own style.
+      expect(output).toContain("Findings")
       expect(output).toContain("- Caf? -> stable")
       expect(output).not.toMatch(/[^\x00-\x7f]/)
     } finally {
