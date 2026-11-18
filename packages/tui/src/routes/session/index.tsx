@@ -162,6 +162,8 @@ const RELOAD_RETRY_NOTICE = 3
 // The tail comfortably overfills a tall viewport; older rows mount as the reader approaches them.
 const TRANSCRIPT_TAIL_ROWS = 40
 const TRANSCRIPT_BACKFILL_CHUNK = 60
+// How many viewports below the top of the mounted rows an upward scroll asks for the older page.
+const HISTORY_PREFETCH_VIEWPORTS = 2
 
 export function Session(props: {
   scrollRef?: (scroll: ScrollBoxRenderable | undefined) => void
@@ -582,10 +584,11 @@ export function Session(props: {
     })
     return true
   }
-  // A reader scrolling up once every loaded row is mounted asks for the older page at once, not at the top, so
-  // a slow server answers while they still read the rows above them; each page landing lets the next one start.
+  // A reader scrolling up within a few viewports of the top of what is mounted asks for the older page then,
+  // not at the top, so the server answers while they still read the rows above them.
   const prefetchHistory = () => {
     if (revealingOlderRows || hidden() > 0 || !scroll || scroll.isDestroyed) return
+    if (scroll.scrollTop > HISTORY_PREFETCH_VIEWPORTS * scroll.viewport.height) return
     prependHistory()
   }
   let revealingNewerRows = false

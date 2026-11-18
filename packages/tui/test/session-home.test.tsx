@@ -143,6 +143,14 @@ test.each([
           }),
       )
     const before = visible()
+    // Every row of `earlier` is still on its line. Rows prepended above may fill the top, where the
+    // "Loading earlier messages…" row stood.
+    const held = (earlier: string) => {
+      const now: { line: string; y: number }[] = JSON.parse(visible())
+      return (JSON.parse(earlier) as { line: string; y: number }[]).every((row) =>
+        now.some((current) => current.line === row.line && current.y === row.y),
+      )
+    }
     const frames = [before]
     const mountCounts: number[] = []
     let navigated = false
@@ -179,7 +187,7 @@ test.each([
       prior.resolve()
       await setup.waitFor(() => pages.some((page) => page.end === 360 && page.limit === 200))
       await setup.waitForVisualIdle()
-      expect(visible()).toBe(before)
+      expect(held(before)).toBe(true)
       expect(setup.captureCharFrame()).toContain("Loading session history")
       expect(pages).toEqual([
         { end: 400, limit: 20 },
@@ -190,7 +198,7 @@ test.each([
       finish.resolve()
       if (mode === "prepend-failure") {
         await setup.waitForFrame((frame) => !frame.includes("Loading session history"))
-        expect(visible()).toBe(before)
+        expect(held(before)).toBe(true)
         expect(mounted()).toHaveLength(40)
         return
       }

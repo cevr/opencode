@@ -35,6 +35,8 @@ const messages: SessionMessageInfo[] = Array.from({ length: 40 }, (_, turn) => [
 async function open() {
   const release = Promise.withResolvers<void>()
   const requested = Promise.withResolvers<void>()
+  // Where the reader was when the server saw the older page's request.
+  const at: { scroll?: ScrollBoxRenderable; top?: number } = {}
   const plugin = await copyPlugin("transcript-chrome")
   const app = await createAppFixture({
     width: 100,
@@ -49,6 +51,7 @@ async function open() {
         const end = Number(cursor ?? messages.length)
         const start = Math.max(0, end - Number(url.searchParams.get("limit")))
         if (cursor) {
+          at.top ??= at.scroll?.scrollTop
           requested.resolve()
           await release.promise
         }
@@ -66,6 +69,7 @@ async function open() {
       : node.getChildren().map(find).find(Boolean)
   const scroll = find(app.renderer.root)
   if (!scroll) throw new Error("Missing transcript")
+  at.scroll = scroll
   let asked = false
   void requested.promise.then(() => (asked = true))
   const up = async (until: () => boolean) => {
@@ -79,6 +83,7 @@ async function open() {
     scroll,
     up,
     asked: () => asked,
+    askedAt: () => at.top,
     release: () => release.resolve(),
     async [Symbol.asyncDispose]() {
       release.resolve()
@@ -116,11 +121,10 @@ test("the transcript's top says earlier messages load until the session's start 
 // loaded host the server answers seconds late, and the reader would sit at the top waiting.
 test("scrolling up asks for the older page while loaded rows are still above the reader", async () => {
   await using view = await open()
-  const { app, scroll, up } = view
+  const { scroll, up } = view
   expect(scroll.scrollTop).toBeGreaterThan(2 * scroll.viewport.height)
   await up(() => view.asked())
   expect(view.asked()).toBe(true)
-  // Still well below the top of what is loaded.
-  expect(scroll.scrollTop).toBeGreaterThan(scroll.viewport.height)
-  expect(app.captureCharFrame()).not.toContain("Loading earlier messages")
+  // Asked while a viewport of loaded rows was still above the reader, not at the top.
+  expect(view.askedAt()).toBeGreaterThan(scroll.viewport.height)
 }, 30_000)
