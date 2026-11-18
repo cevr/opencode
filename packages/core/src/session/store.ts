@@ -11,7 +11,7 @@ import { SessionHistory } from "./history.js"
 import { MessageDecodeError } from "./error.js"
 import { SessionMessage } from "./message.js"
 import { Session } from "@opencode/schema/session"
-import { SessionMessageTable, SessionTable } from "./sql.js"
+import { SessionMessageTable, SessionPartTable, SessionTable } from "./sql.js"
 import { fromRow } from "./info.js"
 
 const ListInputBase = {
@@ -51,6 +51,28 @@ export type MessagesInput = {
   }
 }
 
+/** Characters of a message's text an outline entry keeps. */
+export const OutlineExcerpt = 240
+
+/**
+ * One message as a transcript map reads it: its kind and time, and at most a short excerpt of its text, so a whole
+ * session's outline costs a small fraction of its messages.
+ */
+export type OutlineEntry = {
+  readonly id: SessionMessage.ID
+  readonly type: SessionMessage.Type
+  readonly time: number
+  /**
+   * The start of the text a reader knows the message by: a prompt's text, a notice's description, an assistant step's
+   * first text part, a shell's command, a skill's name.
+   */
+  readonly text?: string
+  /** `metadata.source`, naming who sent a synthetic message (a subagent, a monitor, another session). */
+  readonly source?: string
+  /** An assistant step's tool calls. */
+  readonly tools?: number
+}
+
 export interface Interface {
   readonly get: (sessionID: Session.ID) => Effect.Effect<Session.Info | undefined>
   readonly list: (input?: ListInput) => Effect.Effect<Session.Info[]>
@@ -60,6 +82,14 @@ export interface Interface {
    */
   readonly descendants: (sessionID: Session.ID) => Effect.Effect<Session.Info[]>
   readonly messages: (input: MessagesInput) => Effect.Effect<SessionMessage.Info[], MessageDecodeError>
+  /**
+   * Every message of a session, oldest first, as {@link OutlineEntry}s; with `after`, only those after that message.
+   * Undefined when `after` names no message of the session.
+   */
+  readonly outline: (input: {
+    readonly sessionID: Session.ID
+    readonly after?: SessionMessage.ID
+  }) => Effect.Effect<OutlineEntry[] | undefined>
   readonly context: (sessionID: Session.ID) => Effect.Effect<SessionMessage.Info[], MessageDecodeError>
   /**
    * The newest completed, error-free assistant message above the sequence
@@ -217,7 +247,13 @@ const layer = Layer.effect(
         // SQLite compares text bytewise; session ids are ASCII, so code-unit order matches it.
         for (const siblings of children.values())
           siblings.sort((a, b) =>
-            a.time_updated !== b.time_updated ? b.time_updated - a.time_updated : a.id < b.id ? 1 : a.id > b.id ? -1 : 0,
+            a.time_updated !== b.time_updated
+              ? b.time_updated - a.time_updated
+              : a.id < b.id
+                ? 1
+                : a.id > b.id
+                  ? -1
+                  : 0,
           )
         const ordered: typeof rows = []
         const queue: string[] = [sessionID]
@@ -234,6 +270,68 @@ const layer = Layer.effect(
       }),
       messagesWithRefs: Effect.fn("SessionStore.messagesWithRefs")(function* (input) {
         return yield* SessionHistory.decodeMessageRowsWithRefs(db, yield* messageRows(input))
+      }),
+      outline: Effect.fn("SessionStore.outline")(function* (input) {
+        const anchor = input.after
+          ? yield* db
+              .select({ seq: SessionMessageTable.seq })
+              .from(SessionMessageTable)
+              .where(and(eq(SessionMessageTable.session_id, input.sessionID), eq(SessionMessageTable.id, input.after)))
+              .get()
+              .pipe(Effect.orDie)
+          : undefined
+        if (input.after && !anchor) return undefined
+        const message = SessionMessageTable
+        const part = SessionPartTable
+        // An assistant step's content lives in `session_part` rows, or inline in `data.content` for rows written
+        // before parts were split out (and after them, for a row an older build wrote to again).
+        const firstText = sql<string | null>`coalesce(
+          (SELECT substr(json_extract(${part.data}, '$.text'), 1, ${OutlineExcerpt}) FROM ${part}
+            WHERE ${part.message_id} = ${message.id} AND ${part.type} = 'text'
+              AND trim(coalesce(json_extract(${part.data}, '$.text'), '')) <> ''
+            ORDER BY ${part.ordinal} LIMIT 1),
+          (SELECT substr(json_extract(content.value, '$.text'), 1, ${OutlineExcerpt})
+            FROM json_each(${message.data}, '$.content') AS content
+            WHERE json_extract(content.value, '$.type') = 'text'
+              AND trim(coalesce(json_extract(content.value, '$.text'), '')) <> ''
+            ORDER BY CAST(content.key AS INTEGER) LIMIT 1))`
+        const tools = sql<number>`(SELECT count(*) FROM ${part}
+            WHERE ${part.message_id} = ${message.id} AND ${part.type} = 'tool')
+          + (SELECT count(*) FROM json_each(${message.data}, '$.content') AS content
+            WHERE json_extract(content.value, '$.type') = 'tool')`
+        const field = (path: string) =>
+          sql<string | null>`substr(json_extract(${message.data}, ${path}), 1, ${OutlineExcerpt})`
+        const rows = yield* db
+          .select({
+            id: message.id,
+            type: message.type,
+            time: message.time_created,
+            text: sql<string | null>`CASE ${message.type}
+              WHEN 'assistant' THEN ${firstText}
+              WHEN 'user' THEN ${field("$.text")}
+              WHEN 'synthetic' THEN ${field("$.description")}
+              WHEN 'system' THEN coalesce(${field("$.description")}, ${field("$.text")})
+              WHEN 'shell' THEN ${field("$.command")}
+              WHEN 'skill' THEN ${field("$.name")}
+              END`,
+            source: sql<string | null>`json_extract(${message.data}, '$.metadata.source')`,
+            tools: sql<number | null>`CASE ${message.type} WHEN 'assistant' THEN ${tools} END`,
+          })
+          .from(message)
+          .where(and(eq(message.session_id, input.sessionID), anchor ? gt(message.seq, anchor.seq) : undefined))
+          .orderBy(asc(message.seq))
+          .all()
+          .pipe(Effect.orDie)
+        return rows.map(
+          (row): OutlineEntry => ({
+            id: row.id,
+            type: row.type,
+            time: row.time,
+            ...(row.text ? { text: row.text } : {}),
+            ...(typeof row.source === "string" ? { source: row.source } : {}),
+            ...(row.tools ? { tools: row.tools } : {}),
+          }),
+        )
       }),
       context: Effect.fn("SessionStore.context")((sessionID) => SessionHistory.load(db, sessionID, "latest")),
       lastAssistantAfter: Effect.fn("SessionStore.lastAssistantAfter")(function* (input) {

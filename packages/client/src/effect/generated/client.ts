@@ -113,6 +113,8 @@ import type {
   ExperimentalSessionLogOutput,
   MessageListInput,
   MessageListOutput,
+  MessageOutlineInput,
+  MessageOutlineOutput,
   ModelListInput,
   ModelListOutput,
   ModelDefaultInput,
@@ -927,7 +929,18 @@ const EndpointMessageList = (raw: RawClient["server.message"]) => (input: Messag
     }).pipe(Effect.mapError(mapClientError)),
   )
 
-const adaptGroupMessage = (raw: RawClient["server.message"]) => ({ list: EndpointMessageList(raw) })
+const EndpointMessageOutline = (raw: RawClient["server.message"]) => (input: MessageOutlineInput) =>
+  preserveEffect<MessageOutlineOutput>()(
+    raw["session.outline"]({ params: { sessionID: input["sessionID"] }, query: { after: input["after"] } }).pipe(
+      Effect.mapError(mapClientError),
+      Effect.map((value) => value.data),
+    ),
+  )
+
+const adaptGroupMessage = (raw: RawClient["server.message"]) => ({
+  list: EndpointMessageList(raw),
+  outline: EndpointMessageOutline(raw),
+})
 
 const EndpointModelList = (raw: RawClient["server.model"]) => (input?: ModelListInput) =>
   preserveEffect<ModelListOutput>()(

@@ -463,6 +463,26 @@ export type SessionMessageCompactionRunning = {
   summary: string
 }
 
+export type SessionOutlineEntry = {
+  id: SessionMessageID
+  type:
+    | "agent-switched"
+    | "model-switched"
+    | "location-switched"
+    | "user"
+    | "synthetic"
+    | "system"
+    | "skill"
+    | "shell"
+    | "assistant"
+    | "compaction"
+    | "idle"
+  time: number
+  text?: string | undefined
+  source?: string | undefined
+  tools?: number | undefined
+}
+
 export type UsageLimitsBudgetModel = { providerID: ProviderID; modelID: string; name: string; spent?: MoneyUSD }
 
 export type SessionGenerateResponse = { data: { text: string; tokens: TokenUsageInfo; cost: MoneyUSD } }
@@ -1124,6 +1144,8 @@ export type ModelVariant = {
 export type PermissionRuleset = Array<PermissionRule>
 
 export type AutomationActionPrompt = { type: "prompt"; prompt: string; to: AutomationTarget }
+
+export type SessionOutlineResponse = { data: Array<SessionOutlineEntry> }
 
 export type UsageLimitsBudget = {
   id: string
@@ -4049,6 +4071,10 @@ export type MessageListInput = {
 }
 
 export type MessageListOutput = SessionMessagesResponse
+
+export type MessageOutlineInput = { readonly sessionID: string; readonly after?: string | undefined }
+
+export type MessageOutlineOutput = SessionOutlineResponse["data"]
 
 export type ModelListInput = {
   readonly location?: { readonly directory?: string | undefined } | undefined

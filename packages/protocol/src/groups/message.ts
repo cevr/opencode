@@ -97,6 +97,24 @@ export const SessionMediaMessagesResponse = Schema.Struct({
 /** Experimental: the `session.message` response for clients that opt into `experimental-media-uri`. */
 export const SessionMediaMessageResponse = Schema.Struct({ data: PublicMediaSessionMessage })
 
+export const SessionOutlineQuery = Schema.Struct({
+  after: Schema.optional(SessionMessage.ID).annotate({
+    description: "Return only the messages after this one, to extend an outline read before.",
+  }),
+}).annotate({ identifier: "SessionOutlineQuery" })
+
+export const SessionOutlineEntry = Schema.Struct({
+  id: SessionMessage.ID,
+  type: Schema.Literals(Object.keys(MessageTypes) as ReadonlyArray<SessionMessage.Type>),
+  time: Schema.Number.annotate({ description: "When the message was created, in epoch milliseconds." }),
+  text: Schema.optional(Schema.String).annotate({
+    description:
+      "The start of the text the message is known by: a prompt's text, a notice's description, an assistant step's first text, a shell's command, a skill's name.",
+  }),
+  source: Schema.optional(Schema.String).annotate({ description: "Who sent a synthetic message (`metadata.source`)." }),
+  tools: Schema.optional(Schema.Number).annotate({ description: "An assistant step's tool calls." }),
+}).annotate({ identifier: "SessionOutlineEntry" })
+
 export const MessageGroup = HttpApiGroup.make("server.message")
   .add(
     HttpApiEndpoint.get("session.messages", "/api/session/:sessionID/message", {
@@ -113,6 +131,23 @@ export const MessageGroup = HttpApiGroup.make("server.message")
         summary: "Get session messages",
         description:
           "Retrieve projected messages for a session, optionally filtered by type. Items keep the requested order across pages; use cursor.next or cursor.previous to move through the ordered timeline, passing the same type filter on each page.",
+      }),
+    ),
+  )
+  .add(
+    HttpApiEndpoint.get("session.outline", "/api/session/:sessionID/outline", {
+      params: { sessionID: Session.ID },
+      query: SessionOutlineQuery,
+      success: Schema.Struct({ data: Schema.Array(SessionOutlineEntry) }).annotate({
+        identifier: "SessionOutlineResponse",
+      }),
+      error: [InvalidCursorError, SessionNotFoundError, UnknownError],
+    }).annotateMerge(
+      OpenApi.annotations({
+        identifier: "session.message.outline",
+        summary: "Get a session's outline",
+        description:
+          "Every message of a session, oldest first, without its body: its type, time, and a short excerpt of its text. A transcript map reads a long session from it at a small fraction of the cost of its messages.",
       }),
     ),
   )

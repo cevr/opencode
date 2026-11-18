@@ -1495,8 +1495,31 @@ export type MessageListOutput = {
 }
 export type MessageListOperation<E = never> = (input: MessageListInput) => Effect.Effect<MessageListOutput, E>
 
+export type MessageOutlineInput = { readonly sessionID: Session.ID; readonly after?: SessionMessage.ID | undefined }
+export type MessageOutlineOutput = ReadonlyArray<{
+  readonly id: SessionMessage.ID
+  readonly type:
+    | "agent-switched"
+    | "model-switched"
+    | "location-switched"
+    | "user"
+    | "synthetic"
+    | "system"
+    | "skill"
+    | "shell"
+    | "assistant"
+    | "compaction"
+    | "idle"
+  readonly time: number
+  readonly text?: string | undefined
+  readonly source?: string | undefined
+  readonly tools?: number | undefined
+}>
+export type MessageOutlineOperation<E = never> = (input: MessageOutlineInput) => Effect.Effect<MessageOutlineOutput, E>
+
 export interface MessageApi<E = never> {
   readonly list: MessageListOperation<E>
+  readonly outline: MessageOutlineOperation<E>
 }
 
 export type ModelListInput = {

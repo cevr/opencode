@@ -103,3 +103,80 @@ it.live("rejects unknown message type filters at the HTTP boundary", () =>
     })
   }),
 )
+
+it.live("outlines a session's messages without their bodies, and extends an outline read before", () =>
+  Effect.gen(function* () {
+    const handler = yield* ServerFetch.make({
+      app: { version: "test" },
+      database: { path: ":memory:" },
+      config: { project: false },
+      models: { fetch: false },
+      fs: { filewatcher: false },
+    })
+    const api = OpenCode.make({
+      baseUrl: "http://opencode.local",
+      fetch: Object.assign((input: string | URL | Request, init?: RequestInit) => handler(new Request(input, init)), {
+        preconnect: fetch.preconnect,
+      }),
+    })
+    const long = "x".repeat(5_000)
+    const outlined: SessionMessageInfo[] = [
+      { id: "msg_1", type: "user", text: `Ship it\n${long}`, time: { created: 100 } },
+      {
+        id: "msg_2",
+        type: "assistant",
+        agent: "build",
+        model: { providerID: "test", id: "test" },
+        content: [
+          { type: "reasoning", text: "Thinking it over" },
+          {
+            type: "tool",
+            id: "call_1",
+            name: "bash",
+            state: { status: "completed", input: {}, content: [{ type: "text", text: long }] },
+            time: { created: 210 },
+          },
+          { type: "text", text: "  " },
+          { type: "text", text: "Shipped. The notes follow." },
+          {
+            type: "tool",
+            id: "call_2",
+            name: "read",
+            state: { status: "completed", input: {}, content: [{ type: "text", text: "ok" }] },
+            time: { created: 220 },
+          },
+        ],
+        finish: "stop",
+        time: { created: 200, completed: 300 },
+      },
+      {
+        id: "msg_3",
+        type: "synthetic",
+        text: long,
+        description: "implementor fix r1",
+        metadata: { source: "subagent" },
+        time: { created: 400 },
+      },
+      { id: "msg_4", type: "idle", outcome: "succeeded", time: { created: 500 } },
+    ]
+    yield* Effect.promise(async () => {
+      const template = await api.session.create({ title: "Outline" })
+      const session = await api.experimental.session.import({
+        info: { ...template, id: Session.ID.create() },
+        messages: outlined,
+      })
+      const outline = await api.message.outline({ sessionID: session.id })
+      expect(outline).toEqual([
+        { id: "msg_1", type: "user", time: 100, text: `Ship it\n${long}`.slice(0, 240) },
+        { id: "msg_2", type: "assistant", time: 200, text: "Shipped. The notes follow.", tools: 2 },
+        { id: "msg_3", type: "synthetic", time: 400, text: "implementor fix r1", source: "subagent" },
+        { id: "msg_4", type: "idle", time: 500 },
+      ])
+      expect(await api.message.outline({ sessionID: session.id, after: "msg_2" })).toEqual(outline.slice(2))
+      const unknown = await handler(
+        new Request(`http://opencode.local/api/session/${session.id}/outline?after=msg_gone`),
+      )
+      expect(unknown.status).toBe(400)
+    })
+  }),
+)

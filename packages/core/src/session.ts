@@ -148,6 +148,11 @@ export interface Interface {
   readonly messages: (
     input: SessionStore.MessagesInput,
   ) => Effect.Effect<SessionMessage.Info[], NotFoundError | MessageDecodeError>
+  /** {@link SessionStore.Interface.outline}: a session's messages without their bodies, for a transcript map. */
+  readonly outline: (input: {
+    readonly sessionID: SessionSchema.ID
+    readonly after?: SessionMessage.ID
+  }) => Effect.Effect<SessionStore.OutlineEntry[] | undefined, NotFoundError>
   readonly message: (input: {
     sessionID: SessionSchema.ID
     messageID: SessionMessage.ID
@@ -454,6 +459,10 @@ const layer = Layer.effect(
       messages: Effect.fn("Session.messages")(function* (input) {
         yield* result.get(input.sessionID)
         return yield* store.messages(input)
+      }),
+      outline: Effect.fn("Session.outline")(function* (input) {
+        yield* result.get(input.sessionID)
+        return yield* store.outline(input)
       }),
       message: (input) => sessions.forSession(input.sessionID).message(input.messageID),
       messagesWithRefs: Effect.fn("Session.messagesWithRefs")(function* (input) {
