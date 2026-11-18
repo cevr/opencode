@@ -1,0 +1,44 @@
+diff --git a/index.bun.js b/index.bun.js
+index e2bf85d59fcd92a195f669162d230cfb84e15d8b..e691ba646ac256190ea9ff46a52fa6f80505975f 100644
+--- a/index.bun.js
++++ b/index.bun.js
+@@ -12155,8 +12155,6 @@ class MarkdownRenderable extends Renderable2 {
+     return this.createChunk(text, "default", link);
+   }
+   createInitialStyledText(token) {
+-    if (!this._streaming)
+-      return;
+     const chunks = [];
+     if ("tokens" in token && Array.isArray(token.tokens)) {
+       this.renderInlineContent(token.tokens, chunks);
+@@ -12570,7 +12568,7 @@ class MarkdownRenderable extends Renderable2 {
+   }
+   applyListChildRenderable(renderable, token, previousToken, id) {
+     if ((token.type === "text" || token.type === "paragraph") && renderable instanceof CodeRenderable2) {
+-      this.applyMarkdownCodeRenderable(renderable, this.normalizeScrollbackMarkdownBlockRaw(token.raw), 0);
++      this.applyMarkdownCodeRenderable(renderable, this.normalizeScrollbackMarkdownBlockRaw(token.raw), 0, undefined, this.createInitialStyledText(token));
+       return true;
+     }
+     if (token.type === "list" && renderable instanceof BoxRenderable2) {
+diff --git a/index.node.js b/index.node.js
+index 42e73ab94d8e948831daad0a32374a2d0f471fa5..90d9f2a34526b1852cd59709040faf5f1865f961 100644
+--- a/index.node.js
++++ b/index.node.js
+@@ -12154,8 +12154,6 @@ class MarkdownRenderable extends Renderable2 {
+     return this.createChunk(text, "default", link);
+   }
+   createInitialStyledText(token) {
+-    if (!this._streaming)
+-      return;
+     const chunks = [];
+     if ("tokens" in token && Array.isArray(token.tokens)) {
+       this.renderInlineContent(token.tokens, chunks);
+@@ -12569,7 +12567,7 @@ class MarkdownRenderable extends Renderable2 {
+   }
+   applyListChildRenderable(renderable, token, previousToken, id) {
+     if ((token.type === "text" || token.type === "paragraph") && renderable instanceof CodeRenderable2) {
+-      this.applyMarkdownCodeRenderable(renderable, this.normalizeScrollbackMarkdownBlockRaw(token.raw), 0);
++      this.applyMarkdownCodeRenderable(renderable, this.normalizeScrollbackMarkdownBlockRaw(token.raw), 0, undefined, this.createInitialStyledText(token));
+       return true;
+     }
+     if (token.type === "list" && renderable instanceof BoxRenderable2) {
