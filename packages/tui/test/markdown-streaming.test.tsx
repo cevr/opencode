@@ -27,7 +27,7 @@ test.each(["completion-first", "content-first"])("applies final fence text in a 
       const syntaxStyle = SyntaxStyle.fromStyles({ default: { fg: "#ffffff" } }, renderer.nativeScene)
       renderers.push({ renderer, syntaxStyle })
       return (
-        <markdown syntaxStyle={syntaxStyle} content={content()} streaming={streaming()} internalBlockMode="top-level" />
+        <markdown syntaxStyle={syntaxStyle} content={content()} streaming={streaming()} />
       )
     },
     { width: 80, height: 12, remote: true },

@@ -49,15 +49,17 @@ function commitMarkdownBlocks(input: {
     return false
   }
 
-  const first = input.renderable._blockStates[input.startBlock]
-  const last = input.renderable._blockStates[input.endBlockExclusive - 1]
+  // Each top-level block is one child of the Markdown renderable, in document order.
+  const blocks = input.renderable.getChildren()
+  const first = blocks[input.startBlock]
+  const last = blocks[input.endBlockExclusive - 1]
   if (!first || !last) {
     return false
   }
 
-  const next = input.renderable._blockStates[input.endBlockExclusive]
-  const start = first.renderable.y
-  const end = next ? next.renderable.y : last.renderable.y + last.renderable.height
+  const next = blocks[input.endBlockExclusive]
+  const start = first.y
+  const end = next ? next.y : last.y + last.height
 
   input.beforeCommit?.()
   input.surface.commitRows(start, end, {
@@ -208,7 +210,6 @@ export class RunScrollbackStream {
               syntaxStyle: syntax!,
               width: "100%",
               streaming: true,
-              internalBlockMode: "top-level",
               tableOptions: this.mono ? monoMarkdownTableOptions : { widthMode: "content" },
               fg: entryColor(commit, this.theme),
               treeSitterClient,
@@ -317,7 +318,7 @@ export class RunScrollbackStream {
     renderable.streaming = !done
     await active.surface.settle()
     this.releasePendingThemes()
-    const targetBlockCount = done ? renderable._blockStates.length : renderable._stableBlockCount
+    const targetBlockCount = done ? renderable.getChildren().length : renderable.committedBlockCount
     if (targetBlockCount <= active.committedBlocks) {
       return false
     }
@@ -328,7 +329,7 @@ export class RunScrollbackStream {
         renderable,
         startBlock: active.committedBlocks,
         endBlockExclusive: targetBlockCount,
-        trailingNewline: done && targetBlockCount === renderable._blockStates.length ? trailingNewline : false,
+        trailingNewline: done && targetBlockCount === renderable.getChildren().length ? trailingNewline : false,
         beforeCommit: () => this.flushPendingSpacer(active),
       })
     ) {

@@ -34,12 +34,7 @@ export function createLatexCodeBlockRenderer(
     const key = fallback?.id
     const previous = key ? lastGood.get(key) : undefined
     const retained = previous && token.text.startsWith(previous.source) ? previous : undefined
-    const fence = /^ {0,3}(`{3,}|~{3,})/.exec(token.raw)?.[1]
-    const streaming =
-      fallback instanceof CodeRenderable &&
-      fallback.streaming &&
-      fence &&
-      !new RegExp(`\\n {0,3}${fence[0]}{${fence.length},}\\s*$`).test(token.raw)
+    const streaming = fallback instanceof CodeRenderable && fallback.streaming && !token.closed
     const layout = layoutLatex(token.text)
     const frame: LatexFrame | undefined = layout
       ? { source: token.text, layout }
