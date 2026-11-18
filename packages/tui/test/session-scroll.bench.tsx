@@ -147,6 +147,8 @@ test(
           return json({ data: messages.slice(start, end).toReversed(), cursor: start ? { next: String(start) } : {} })
         }
         if (url.pathname.endsWith("/inbox") || url.pathname.endsWith("/permission")) return json({ data: [] })
+        // Plugin RPCs (SCROLL_PLUGINS, e.g. Prime's wake and queue readers): nothing pending.
+        if (PLUGINS.length && url.pathname.startsWith("/api/rpc/")) return json({ output: null })
       },
     })
     await app.ready
