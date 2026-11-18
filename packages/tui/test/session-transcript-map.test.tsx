@@ -1,6 +1,7 @@
 import { rgbToHex } from "@opentui/core"
 import { expect, test } from "bun:test"
 import type { SessionMessageInfo, SessionOutlineEntry } from "@opencode/client"
+import { SessionOutline } from "@opencode/core/session/outline"
 import { createAppFixture } from "./fixture/app"
 import { copyPlugin } from "./fixture/fixture"
 import { directory, json } from "./fixture/tui-client"
@@ -20,11 +21,29 @@ const TURNS = 300
 const start = new Date(2026, 10, 16, 22, 0).getTime()
 const topic = (turn: number) => `topic-${String(turn).padStart(3, "0")}`
 const id = (turn: number, role: number) => `msg_${String(turn).padStart(6, "0")}_${role}`
+/** A step's work: two thoughts and three finished tool calls. */
+const work = (turn: number, step: number) => [
+  { type: "reasoning" as const, text: "Weighing it" },
+  ...[0, 1, 2].map((call) => ({
+    type: "tool" as const,
+    id: `call_${turn}_${step}_${call}`,
+    name: "shell",
+    time: { created: start + turn * 300_000 + 1100, completed: start + turn * 300_000 + 1200 },
+    state: {
+      status: "completed" as const,
+      input: { command: `echo ${call}` },
+      content: [{ type: "text" as const, text: `${call}` }] as [{ type: "text"; text: string }],
+      metadata: {},
+    },
+  })),
+  { type: "reasoning" as const, text: "Settled" },
+]
 /**
  * The session: a prompt and its answer each turn. With `notices`, every tenth turn and the session's end are followed
  * by a notice queued at the session's start, which keeps the id it was made with (the oldest) though it arrives late.
+ * Each answer is `steps` steps of work.
  */
-function sessionData(notices = false) {
+function sessionData(notices = false, steps = 1) {
   const messages: SessionMessageInfo[] = Array.from({ length: TURNS }, (_, turn) => [
     {
       type: "user" as const,
@@ -32,15 +51,19 @@ function sessionData(notices = false) {
       text: `Look into ${topic(turn)}`,
       time: { created: start + turn * 300_000 },
     },
-    {
+    ...Array.from({ length: steps }, (_, step) => ({
       type: "assistant" as const,
-      id: id(turn, 1),
+      id: id(turn, step + 1),
       agent: "build",
       model: { providerID: "fixture", id: "fixture" },
       finish: "stop" as const,
       time: { created: start + turn * 300_000 + 1000, completed: start + turn * 300_000 + 2000 },
-      content: [{ type: "text" as const, text: `Answer about ${topic(turn)}. More detail follows.` }],
-    },
+      // A run of several steps does work in each: two thoughts and three tools, which the map counts.
+      content: [
+        ...(steps > 1 ? work(turn, step) : []),
+        { type: "text" as const, text: `Answer about ${topic(turn)}. More detail follows.` },
+      ],
+    })),
     ...(notices && (turn % 10 === 9 || turn === TURNS - 1)
       ? [
           {
@@ -55,24 +78,7 @@ function sessionData(notices = false) {
       : []),
   ]).flat()
   // The server's outline: a summary per message, and each answer's work (counts only; its body stays on the server).
-  const outline: SessionOutlineEntry[] = messages.map((message) =>
-    message.type === "assistant"
-      ? {
-          id: message.id,
-          type: message.type,
-          time: message.time.created,
-          completed: message.time.completed,
-          summary: `Answer about ${topic(Number(message.id.slice(4, 10)))}.`,
-          thoughts: 2,
-          tools: 3,
-        }
-      : {
-          id: message.id,
-          type: message.type,
-          time: message.time.created,
-          summary: message.type === "synthetic" ? message.description : "text" in message ? message.text : "",
-        },
-  )
+  const outline: SessionOutlineEntry[] = messages.map((message) => SessionOutline.entry(message))
   return { messages, outline }
 }
 
@@ -80,7 +86,10 @@ async function open(plugin?: string, { messages, outline } = sessionData()) {
   // Older pages wait on the test, so it sees the transcript while they load.
   const release = Promise.withResolvers<void>()
   let older = 0
-  let outlines = 0
+  // The outline reads the map made: what each asked for, and how many entries it got.
+  const outlines: { before?: string; limit?: number; entries: number }[] = []
+  // Outline pages wait on the test while it holds them, so it sees the map while they load.
+  let held: PromiseWithResolvers<void> | undefined
   const fixture = plugin ? await copyPlugin(plugin) : undefined
   const app = await createAppFixture({
     width: 100,
@@ -91,10 +100,13 @@ async function open(plugin?: string, { messages, outline } = sessionData()) {
       if (url.pathname === "/api/session") return json({ data: [session], cursor: {} })
       if (url.pathname === `/api/session/${session.id}`) return json({ data: session })
       if (url.pathname === `/api/session/${session.id}/outline`) {
-        outlines++
-        const after = url.searchParams.get("after")
-        const index = after ? outline.findIndex((entry) => entry.id === after) + 1 : 0
-        return json({ data: outline.slice(index) })
+        const before = url.searchParams.get("before") ?? undefined
+        const limit = url.searchParams.has("limit") ? Number(url.searchParams.get("limit")) : undefined
+        const end = before ? outline.findIndex((entry) => entry.id === before) : outline.length
+        const page = outline.slice(limit === undefined ? 0 : Math.max(0, end - limit), end)
+        outlines.push({ before, limit, entries: page.length })
+        await held?.promise
+        return json({ data: page })
       }
       if (url.pathname === `/api/session/${session.id}/message`) {
         const cursor = url.searchParams.get("cursor")
@@ -117,6 +129,12 @@ async function open(plugin?: string, { messages, outline } = sessionData()) {
     older: () => older,
     outlines: () => outlines,
     release: () => release.resolve(),
+    /** Holds the outline's pages until `releaseOutline`. */
+    holdOutline: () => void (held = Promise.withResolvers<void>()),
+    releaseOutline: () => {
+      held?.resolve()
+      held = undefined
+    },
     async openMap(shown: (frame: string) => boolean = isMap) {
       app.mockInput.pressKey("x", { ctrl: true })
       app.mockInput.pressKey("g")
@@ -125,6 +143,7 @@ async function open(plugin?: string, { messages, outline } = sessionData()) {
     },
     async [Symbol.asyncDispose]() {
       release.resolve()
+      held?.resolve()
       await app[Symbol.asyncDispose]()
       await fixture?.[Symbol.asyncDispose]()
     },
@@ -135,8 +154,8 @@ async function open(plugin?: string, { messages, outline } = sessionData()) {
 const transcript = (frame: string) => frame.split("\n").slice(0, 20).join("\n")
 /** The first topic a frame shows. */
 const firstTopic = (frame: string) => /topic-\d{3}/.exec(frame)?.[0]
-/** The map is shown: an answer's work collapsed beside it (the transcript draws these answers as text alone). */
-const isMap = (frame: string) => frame.includes("· + 2 thoughts, 3 tools")
+/** The map is shown: an answer folded to its first sentence, the time it ended beside it (the transcript draws it whole). */
+const isMap = (frame: string) => /Answer about topic-\d{3}\. +\d{1,2}:\d\d [AP]M/.test(frame)
 const previous = (name: string) => topic(Number(name.slice("topic-".length)) - 1)
 
 type Spans = ReturnType<Awaited<ReturnType<typeof createAppFixture>>["captureSpans"]>["lines"]
@@ -184,17 +203,15 @@ test("the map is the transcript with every turn collapsed, in its place and its 
   expect(hex(spanOf(spans, p, "Look into").fg)).toBe(hex(spanOf(expandedSpans, q, "Look into").fg))
   expect(hex(spanOf(spans, p, "Look into").bg)).toBe(hex(spanOf(expandedSpans, q, "Look into").bg))
 
-  // A run is its first sentence where and as the transcript sets prose, then its work in the transcript's muted
-  // `+ N thoughts, M tools` words, and the time it ended at the right edge.
+  // A run is its first sentence where and as the transcript sets prose, and the time it ended, muted, at the right
+  // edge (its work, when it did any, reads `+ N thoughts, M tools` in the same muted colour).
   const answer = `Answer about ${topic(TURNS - 1)}.`
   const a = lineOf(lines, answer)
   const b = lineOf(expanded, answer)
   expect(lines[a]!.indexOf(answer)).toBe(expanded[b]!.indexOf(answer))
-  expect(lines[a]).toMatch(new RegExp(`${answer} · \\+ 2 thoughts, 3 tools +10:55 PM [A-Z][A-Za-z+\\-:\\d]* *$`))
+  expect(lines[a]).toMatch(new RegExp(`${answer} +10:55 PM [A-Z][A-Za-z+\\-:\\d]* *$`))
   expect(hex(spanOf(spans, a, "Answer about").fg)).toBe(hex(spanOf(expandedSpans, b, "Answer about").fg))
-  const muted = hex(spanOf(spans, a, "+ 2 thoughts").fg)
-  expect(muted).not.toBe(hex(spanOf(spans, a, "Answer about").fg))
-  expect(hex(spanOf(spans, a, "10:55 PM").fg)).toBe(muted)
+  expect(hex(spanOf(spans, a, "10:55 PM").fg)).not.toBe(hex(spanOf(spans, a, "Answer about").fg))
   // Every time ends on one column, whatever the sentence before it.
   const earlier = lineOf(lines, `Answer about ${topic(TURNS - 2)}.`)
   expect(lines[earlier]!.trimEnd().length).toBe(lines[a]!.trimEnd().length)
@@ -321,7 +338,6 @@ test("leaving the map shows the transcript where it was; enter on the turn it op
   // Enter unfolds the transcript at the selected turn, its start landing on the line its collapsed row was on: one
   // turn below the one the map opened at.
   await view.openMap()
-  expect(view.outlines()).toBe(3)
   app.mockInput.pressKey("j")
   await app.renderOnce()
   const map = app.captureCharFrame().split("\n")
@@ -395,7 +411,7 @@ test("pages up a long session whose notices arrive with old ids, the map opens o
   const before = transcript(app.captureCharFrame())
   const lines = before.split("\n")
   const top = firstTopic(before)!
-  expect(Number(top.slice("topic-".length))).toBeLessThan(TURNS - 15)
+  expect(Number(top.slice("topic-".length))).toBeLessThan(TURNS - 10)
   const start = lines.findIndex((line) => line.trim() !== "")
   // The prompts on screen, by topic.
   const prompts = lines.flatMap((line) => /Look into (topic-\d{3})/.exec(line)?.[1] ?? [])
@@ -568,7 +584,7 @@ test("a plugin draws each collapsed turn in its own look; the host keeps the row
   const frame = app.captureCharFrame()
   // The slot carries the turn: its kind, first message, line and work, and whether it is the one selected.
   expect(frame).toContain(`Map user ${id(TURNS - 1, 0)} [Look into ${topic(TURNS - 1)}] 0/0`)
-  expect(frame).toContain(`Map agent ${last} [Answer about ${topic(TURNS - 1)}.] 2/3`)
+  expect(frame).toContain(`Map agent ${last} [Answer about ${topic(TURNS - 1)}.] 0/0`)
   expect(frame.match(/ selected/g)).toHaveLength(1)
   // The host's rhythm stays: a blank line above each prompt.
   const lines = frame.split("\n")
@@ -577,6 +593,88 @@ test("a plugin draws each collapsed turn in its own look; the host keeps the row
   // G selects the newest turn; the host's selection moves, and the plugin hears of it.
   app.mockInput.pressKey("G", { shift: true })
   await app.waitForFrame((frame) =>
-    frame.includes(`Map agent ${last} [Answer about ${topic(TURNS - 1)}.] 2/3 selected`),
+    frame.includes(`Map agent ${last} [Answer about ${topic(TURNS - 1)}.] 0/0 selected`),
   )
+}, 30_000)
+
+/** Every outline read the map made asked for one page back, never the whole session. */
+const paged = (reads: ReturnType<Awaited<ReturnType<typeof open>>["outlines"]>) =>
+  reads.every((read) => read.limit !== undefined && read.before !== undefined)
+
+test("the map opens at once on the turns the transcript holds, and reads older turns a page at a time as it scrolls up", async () => {
+  await using view = await open()
+  const { app } = view
+  view.release()
+  // The outline answers nothing until the test lets it: the map shows without it.
+  view.holdOutline()
+  await view.openMap()
+  const folded = app.captureCharFrame()
+  expect(isMap(folded)).toBe(true)
+  expect(folded).toContain(`Answer about ${topic(TURNS - 1)}.`)
+  // No read of the whole session: at most the page above the held turns, asked for as the transcript asks for its own.
+  expect(view.outlines().length).toBeLessThanOrEqual(1)
+  expect(paged(view.outlines())).toBe(true)
+  // Up to the top of the held turns while the page is still on its way: the transcript's loading row is there.
+  for (let step = 0; step < 100 && !app.captureCharFrame().includes("Loading earlier turns…"); step++) {
+    await app.mockMouse.scroll(10, 5, "up")
+    await app.renderOnce()
+  }
+  expect(app.captureCharFrame()).toContain("Loading earlier turns…")
+  expect(view.outlines()).toHaveLength(1)
+  view.releaseOutline()
+
+  // Far up: the older turns are read a page at a time back to the session's start.
+  for (let step = 0; step < 1200 && !app.captureCharFrame().includes(`Look into ${topic(0)}`); step++) {
+    await app.mockMouse.scroll(10, 5, "up")
+    await app.renderOnce()
+    if (step % 50 === 49) await app.waitForVisualIdle({ quietFrames: 2 })
+  }
+  // A few steps more, to the session's top.
+  for (let step = 0; step < 20; step++) {
+    await app.mockMouse.scroll(10, 5, "up")
+    await app.renderOnce()
+  }
+  await app.waitForVisualIdle({ quietFrames: 3 })
+  const top = app.captureCharFrame()
+  expect(top).toContain(`Look into ${topic(0)}`)
+  expect(top).toContain("Mon Nov 16")
+  expect(top).not.toContain("Loading earlier turns")
+  expect(view.outlines().length).toBeGreaterThan(1)
+  expect(paged(view.outlines())).toBe(true)
+  // Each message is read once.
+  expect(view.outlines().reduce((sum, read) => sum + read.entries, 0)).toBeLessThan(TURNS * 2)
+}, 60_000)
+
+test("a session whose held turns cannot fill the screen opens on its last turn at the bottom, and reads back until the screen is full", async () => {
+  // Twelve steps an answer: the transcript's first page holds two turns, a few lines folded.
+  await using view = await open(undefined, sessionData(false, 12))
+  const { app } = view
+  // The transcript reads no older page meanwhile: the map has only the first page's turns.
+  const bottom = app.captureCharFrame().split("\n")
+  const answer = `Answer about ${topic(TURNS - 1)}. · + 24 thoughts, 36 tools`
+  view.holdOutline()
+  await view.openMap((frame) => frame.includes(answer) && frame.includes("Loading earlier turns…"))
+  const opened = app.captureCharFrame().split("\n")
+  // The last turn on the line the transcript's last row sits on; the loading row right above the held turns, the
+  // blank lines above it.
+  expect(lastRow(opened)).toBe(lastRow(bottom))
+  expect(opened[lastRow(opened)]).toContain(answer)
+  const loading = opened.findIndex((line) => line.includes("Loading earlier turns…"))
+  const first = opened.findIndex((line) => /Look into|Answer about/.test(line))
+  // Only the blank line under the loading row and the day's label come between it and the turns.
+  expect(first).toBeGreaterThan(loading)
+  expect(first - loading).toBeLessThanOrEqual(3)
+  expect(opened.slice(0, loading).every((line) => line.trim() === "")).toBe(true)
+  expect(view.outlines()).toHaveLength(1)
+  expect(paged(view.outlines())).toBe(true)
+
+  // The page arrives: the turns before fill the screen above, the last turn stays on the bottom line.
+  view.releaseOutline()
+  await app.waitForFrame((frame) => frame.split("\n")[0]!.trim() !== "")
+  await app.waitForVisualIdle({ quietFrames: 3 })
+  const filled = app.captureCharFrame().split("\n")
+  expect(lastRow(filled)).toBe(lastRow(bottom))
+  expect(filled[lastRow(filled)]).toContain(answer)
+  expect(filled.slice(0, lastRow(filled)).filter((line) => line.trim() === "").length).toBeLessThan(lastRow(filled) / 2)
+  expect(paged(view.outlines())).toBe(true)
 }, 30_000)

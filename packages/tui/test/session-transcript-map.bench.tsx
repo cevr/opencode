@@ -1,6 +1,6 @@
 // Measures how long the transcript map takes to open on a long session (TURNS turns of prompt, agent run and
 // notice: three map lines each, from four outline entries), from the key to the frame that shows its newest line,
-// then the cost of typing a filter and of opening it again from the cache. Run by path; not part of the suite:
+// then the cost of typing a filter (which reads the rest of the outline) and of opening it again. Run by path; not part of the suite:
 //   bun test ./test/session-transcript-map.bench.tsx   (MAP_TURNS=20000 for a longer session)
 import { expect, test } from "bun:test"
 import type { SessionMessageInfo, SessionOutlineEntry } from "@opencode/client"
@@ -43,17 +43,33 @@ const outline: SessionOutlineEntry[] = Array.from({ length: TURNS }, (_, turn) =
   ]
 }).flat()
 // The transcript holds only the newest page, as a long session's does when it opens.
-const messages: SessionMessageInfo[] = Array.from({ length: 20 }, (_, index) => {
-  const turn = TURNS - 20 + index
+const messages: SessionMessageInfo[] = outline.slice(-20).map((entry): SessionMessageInfo => {
+  if (entry.type === "user")
+    return { type: "user", id: entry.id, text: entry.summary ?? "", time: { created: entry.time } }
+  if (entry.type === "synthetic")
+    return {
+      type: "synthetic",
+      id: entry.id,
+      text: "body",
+      description: entry.summary,
+      metadata: { source: "wake" },
+      time: { created: entry.time },
+    }
   return {
-    type: "user" as const,
-    id: id(turn, 0),
-    text: `Prompt number ${turn} about the scroll bench`,
-    time: { created: start + turn * 120_000 },
+    type: "assistant",
+    id: entry.id,
+    agent: "build",
+    model: { providerID: "fixture", id: "fixture" },
+    finish: "stop",
+    time: { created: entry.time, completed: entry.time + 500 },
+    content: entry.summary ? [{ type: "text", text: entry.summary }] : [],
   }
 })
 
 test(`the transcript map opens on a ${TURNS}-turn session`, async () => {
+  // Outline reads, and those of the whole session (a filter reads the rest once).
+  let reads = 0
+  let whole = 0
   const app = await createAppFixture({
     width: 120,
     height: 40,
@@ -63,9 +79,12 @@ test(`the transcript map opens on a ${TURNS}-turn session`, async () => {
       if (url.pathname === "/api/session") return json({ data: [session], cursor: {} })
       if (url.pathname === `/api/session/${session.id}`) return json({ data: session })
       if (url.pathname === `/api/session/${session.id}/outline`) {
-        const after = url.searchParams.get("after")
-        const index = after ? outline.findIndex((entry) => entry.id === after) + 1 : 0
-        return json({ data: outline.slice(index) })
+        reads++
+        const before = url.searchParams.get("before")
+        const limit = url.searchParams.has("limit") ? Number(url.searchParams.get("limit")) : undefined
+        const end = before ? outline.findIndex((entry) => entry.id === before) : outline.length
+        if (limit === undefined) whole++
+        return json({ data: outline.slice(limit === undefined ? 0 : Math.max(0, end - limit), end) })
       }
       if (url.pathname === `/api/session/${session.id}/message`)
         return json({ data: messages.toReversed(), cursor: { next: "older" } })
@@ -85,6 +104,8 @@ test(`the transcript map opens on a ${TURNS}-turn session`, async () => {
       return performance.now() - began
     }
     const first = await open()
+    const readsOnOpen = reads
+    const wholeOnOpen = whole
     const began = performance.now()
     app.mockInput.pressKey("/")
     await app.mockInput.typeText("w4321 ")
@@ -101,7 +122,9 @@ test(`the transcript map opens on a ${TURNS}-turn session`, async () => {
         entries: outline.length,
         firstOpenMs: Math.round(first),
         filterMs: Math.round(filtered),
-        cachedOpenMs: Math.round(again),
+        againMs: Math.round(again),
+        readsOnOpen,
+        wholeOnOpen,
       }),
     )
     expect(first).toBeLessThan(5_000)
