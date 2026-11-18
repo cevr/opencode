@@ -104,6 +104,17 @@ async function openSession(server: { inbox?: unknown[]; plugins?: string[]; resp
         capabilities.set(url.pathname, request.headers.get("x-opencode-capabilities"))
         return json({ data: id === session.id ? messages : id === forked.id ? forkedMessages : [], cursor: {} })
       }
+      if (rest === "/outline") {
+        const list = id === session.id ? messages : id === forked.id ? forkedMessages : []
+        return json({
+          data: list.toReversed().map((message) => ({
+            id: message.id,
+            type: message.type,
+            time: message.time.created,
+            text: "text" in message ? message.text : "Looked at it",
+          })),
+        })
+      }
       if (url.pathname === "/api/session") return json({ data: [session], cursor: {} })
       if (info && (rest === "" || rest === "/interrupt")) return json({ data: info })
       if (info && rest === "/inbox") return json({ data: id === session.id ? (server.inbox ?? []) : [] })
@@ -137,12 +148,14 @@ async function undoQueued(app: App) {
   await app.waitForFrame(() => true)
 }
 
-// Picks one of a message's actions from /timeline.
+// Picks one of the prompt's actions from /timeline, the transcript map: k from the reply up to the prompt, a.
 async function messageAction(app: App, action: string) {
   await app.mockInput.typeText("/timeline")
   app.mockInput.pressEnter()
-  await app.waitForFrame((frame) => frame.includes("Jump to message") || frame.includes("Timeline"))
-  app.mockInput.pressEnter()
+  await app.waitForFrame((frame) => frame.includes("Transcript map") && frame.includes("What is in"))
+  app.mockInput.pressKey("k")
+  await app.waitForFrame(() => true)
+  app.mockInput.pressKey("a")
   await app.waitForFrame((frame) => frame.includes(action))
   await app.mockInput.typeText(action)
   app.mockInput.pressEnter()

@@ -76,7 +76,8 @@ import { createMediaSource } from "../../component/media-source"
 import { statusLabel } from "../../component/dialog-workspace-file-changes"
 import { DialogMessage } from "./dialog-message"
 import { DialogFork } from "./dialog-fork"
-import { DialogTimeline } from "./dialog-timeline"
+import { TranscriptMapView } from "./transcript-map-view"
+import { rowHoldsMessage } from "./transcript-map"
 import { DialogGoUpsell } from "../../component/dialog-go-upsell"
 import { UsageLimitNotice, useLimitNotice, useUsageAlerts } from "../../component/usage"
 import { useStorage } from "../../context/storage"
@@ -136,7 +137,14 @@ import { isRecord } from "../../util/record"
 import { parseTodos } from "../../util/todo"
 import { createHistoryPrepend } from "./history"
 import { context, use, type PendingAction } from "./render-context"
-import { INLINE_TOOL_ICON_WIDTH, InlineToolRow, ReasoningPart, TextPart, toolDisplay, useRowGutter } from "./message-parts"
+import {
+  INLINE_TOOL_ICON_WIDTH,
+  InlineToolRow,
+  ReasoningPart,
+  TextPart,
+  toolDisplay,
+  useRowGutter,
+} from "./message-parts"
 import { defaultVerbosity, type GroupKind, type SessionEntry } from "./grouping/session"
 import { SessionGroupView, type GapRow } from "./group-view"
 import { useEntryAnchor } from "./anchor-view"
@@ -265,8 +273,7 @@ export function Session(props: {
   const picker = createMemo(
     () =>
       promptedPermissions().length === 0 &&
-      (composer.open ||
-        (!!session()?.parentID && subagentPicker() && !composer.dismissed && forms().length === 0)),
+      (composer.open || (!!session()?.parentID && subagentPicker() && !composer.dismissed && forms().length === 0)),
   )
   props.onTerminalPicker?.(() => setComposer({ open: true, tab: "terminals" }))
   onCleanup(() => props.onTerminalPicker?.(undefined))
@@ -1019,6 +1026,74 @@ export function Session(props: {
       alignMessage(messageID, Math.max(0, y - (message?.type === "assistant" ? 1 : 0)))
     })
 
+  // The transcript map's jump: a turn anywhere in the session, mounting only the rows around it.
+  const [mapOpen, setMapOpen] = createSignal(false)
+  const revealMessage = (messageID: string) => {
+    const index = rows.findIndex((row) => rowHoldsMessage(row, messageID))
+    if (index === -1) return jumpToMessage(messageID)
+    clearMessageNavigation()
+    scroll.stickyScroll = false
+    batch(() => {
+      setHiddenRows(rowsBefore(weights(), index, TRANSCRIPT_BACKFILL_CHUNK))
+      const end = rowsAfter(weights(), index + 1, TRANSCRIPT_BACKFILL_CHUNK)
+      setVisibleRowsEnd(end === rows.length ? undefined : end)
+    })
+    afterLayout(() => {
+      const row = rows[index]
+      // A part inside a collapsed group has no anchor of its own; its group's header stands for it.
+      const anchor =
+        anchors.forMessage(messageID) ??
+        (row?.type === "group" ? anchors.get({ type: "group", groupID: groupID(row, 0) ?? "" }) : undefined)
+      if (!anchor) return updateAwayFromBottom()
+      const y = scroll.scrollTop + anchor.node.y - scroll.viewport.y
+      const message = data.session.message.get(route.sessionID, messageID)
+      alignMessage(messageID, Math.max(0, y - (message?.type === "assistant" ? 1 : 0)))
+    })
+  }
+  const jumpToTurn = (messageID: string, then?: () => void) => {
+    const sessionID = route.sessionID
+    if (data.session.message.get(sessionID, messageID) || !data.session.message.more(sessionID)) {
+      revealMessage(messageID)
+      then?.()
+      return
+    }
+    // An older turn: the transcript's top says earlier messages are loading while the pages up to it arrive.
+    clearMessageNavigation()
+    const request = new AbortController()
+    const cancel = () => request.abort()
+    setFirstJump(() => cancel)
+    scroll.stickyScroll = false
+    batch(() => {
+      setHiddenRows(0)
+      setVisibleRowsEnd(Math.min(rows.length, TRANSCRIPT_BACKFILL_CHUNK))
+    })
+    afterLayout(() => scroll.scrollTo(0))
+    const active = () => firstJump() === cancel && route.sessionID === sessionID && !scroll.isDestroyed
+    void (async () => {
+      await data.session.message.loadMore(sessionID, { until: messageID, signal: request.signal })
+      await completeGroupBoundary({
+        rows,
+        messages: () => data.session.message.list(sessionID).length,
+        more: () => data.session.message.more(sessionID),
+        loadMore: () => data.session.message.loadMore(sessionID, { signal: request.signal }),
+        active,
+      })
+    })().then(
+      () => {
+        if (!active()) return
+        setFirstJump(undefined)
+        revealMessage(messageID)
+        then?.()
+      },
+      (error) => {
+        if (!active()) return
+        setFirstJump(undefined)
+        toast.error(error)
+        updateAwayFromBottom()
+      },
+    )
+  }
+
   function toBottom() {
     clearMessageNavigation()
     ensureAllRowsPending = undefined
@@ -1193,12 +1268,13 @@ export function Session(props: {
       },
     },
     {
-      title: "Jump to message",
+      title: "Transcript map",
       id: "session.timeline",
       group: "Session",
-      slash: { name: "timeline" },
+      slash: { name: "timeline", aliases: ["map"] },
       run: () => {
-        dialog.replace(() => <DialogTimeline sessionID={route.sessionID} onMove={jumpToMessage} />)
+        dialog.clear()
+        setMapOpen(true)
       },
     },
     {
@@ -1404,7 +1480,9 @@ export function Session(props: {
       },
       run: () => {
         const lastAssistantMessage = messagesBeforeRevert().findLast(
-          (msg) => msg.type === "assistant" || (msg.type === "compaction" && msg.status === "completed" && msg.summary.trim() !== ""),
+          (msg) =>
+            msg.type === "assistant" ||
+            (msg.type === "compaction" && msg.status === "completed" && msg.summary.trim() !== ""),
         )
         if (!lastAssistantMessage) {
           toast.show({ message: "No assistant messages found", variant: "error" })
@@ -1591,6 +1669,7 @@ export function Session(props: {
       () => route.sessionID,
       () => {
         setComposer({ open: false, dismissed: false })
+        setMapOpen(false)
         clearMessageNavigation()
       },
     ),
@@ -1723,6 +1802,24 @@ export function Session(props: {
                   }}
                 />
               </box>
+              <Show when={mapOpen()}>
+                <TranscriptMapView
+                  sessionID={route.sessionID}
+                  onClose={() => setMapOpen(false)}
+                  onJump={(turn) => {
+                    setMapOpen(false)
+                    jumpToTurn(turn.id)
+                  }}
+                  onActions={(turn) => {
+                    setMapOpen(false)
+                    const sessionID = route.sessionID
+                    // The actions read the message, so it is loaded (and shown) first.
+                    jumpToTurn(turn.id, () =>
+                      dialog.replace(() => <DialogMessage messageID={turn.id} sessionID={sessionID} />),
+                    )
+                  }}
+                />
+              </Show>
             </box>
             <box height={1} flexShrink={0} flexDirection="row" justifyContent="flex-end">
               <Show when={firstJump()}>
@@ -1736,9 +1833,7 @@ export function Session(props: {
                   onMouseOut={() => setLatestHovered(false)}
                   onMouseUp={toBottom}
                 >
-                  <text
-                    fg={latestHovered() ? theme.text.action.secondary.hovered : theme.text.action.secondary.base}
-                  >
+                  <text fg={latestHovered() ? theme.text.action.secondary.hovered : theme.text.action.secondary.base}>
                     Jump to latest ↓
                   </text>
                 </box>
@@ -2357,7 +2452,8 @@ function SessionNoticeMessageV2(props: { message: SessionMessageInfo }) {
     return state() ?? "finished"
   }
   const heading = () => `${state() === "completed" ? "↳" : "!"} ${actor()} ${status()}`
-  const suffix = () => Locale.truncateWidth(` · ${description()}`, Math.max(0, ctx.width - gutter() - stringWidth(heading())))
+  const suffix = () =>
+    Locale.truncateWidth(` · ${description()}`, Math.max(0, ctx.width - gutter() - stringWidth(heading())))
   const color = () => {
     if (state() === "error") return theme.text.feedback.error.base
     if (state() === "cancelled") return theme.text.feedback.warning.base
@@ -2368,7 +2464,12 @@ function SessionNoticeMessageV2(props: { message: SessionMessageInfo }) {
     <Show
       when={completion()}
       fallback={
-        <InlineToolRow icon={source() === "goal" ? "◎" : source() === "mail" ? "✉" : "◈"} color={theme.text.muted} pending="Notice" complete={true}>
+        <InlineToolRow
+          icon={source() === "goal" ? "◎" : source() === "mail" ? "✉" : "◈"}
+          color={theme.text.muted}
+          pending="Notice"
+          complete={true}
+        >
           {text()}
         </InlineToolRow>
       }
@@ -3185,9 +3286,7 @@ function BlockTool(props: BlockToolProps) {
               <Show
                 when={props.spinner}
                 fallback={
-                  <text
-                    fg={permission() ? theme.text.feedback.warning.base : (props.headerColor ?? theme.text.muted)}
-                  >
+                  <text fg={permission() ? theme.text.feedback.warning.base : (props.headerColor ?? theme.text.muted)}>
                     {title()}
                   </text>
                 }
@@ -3396,11 +3495,7 @@ function ShellDisplay(props: {
           <Show
             when={isRunning()}
             fallback={
-              <text
-                fg={theme.text.base}
-                wrapMode={expanded() ? "word" : "char"}
-                maxHeight={expanded() ? undefined : 2}
-              >
+              <text fg={theme.text.base} wrapMode={expanded() ? "word" : "char"} maxHeight={expanded() ? undefined : 2}>
                 {limitedInput()}
               </text>
             }
@@ -3502,7 +3597,9 @@ function Read(props: ToolProps) {
         Read {pathFormatter.format(stringValue(props.input.path))}
         <Show when={props.input.offset !== undefined || props.input.limit !== undefined}>
           :{finiteNumber(props.input.offset) || 1}-
-          {props.input.limit ? (finiteNumber(props.input.offset) || 1) + (finiteNumber(props.input.limit) || 0) - 1 : ""}
+          {props.input.limit
+            ? (finiteNumber(props.input.offset) || 1) + (finiteNumber(props.input.limit) || 0) - 1
+            : ""}
         </Show>
       </InlineTool>
       <For each={loaded()}>
