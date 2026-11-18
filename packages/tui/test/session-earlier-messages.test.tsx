@@ -6,36 +6,37 @@ import { copyPlugin } from "./fixture/fixture"
 import { directory, json } from "./fixture/tui-client"
 import { waitForHighlightedFrame } from "./fixture/frame"
 
-// Scrolled to the top of a long session, the reader sees older messages loading, not the session's start: the
-// start (here a plugin's `session.transcript.start` row, Prime's splash in the owner's TUI) shows only once the
-// first message is in.
-test("the transcript's top says earlier messages load until the session's start is reached", async () => {
-  const session = {
-    id: "ses_earlier_messages",
-    title: "Earlier messages",
-    projectID: "project",
-    location: { directory },
-    cost: 0,
-    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
-    time: { created: 0, updated: 0 },
-  }
-  const id = (turn: number, role: number) => `msg_${String(turn).padStart(6, "0")}_${role}`
-  const messages: SessionMessageInfo[] = Array.from({ length: 40 }, (_, turn) => [
-    { type: "user" as const, id: id(turn, 0), text: `History prompt ${turn}`, time: { created: turn * 10 } },
-    {
-      type: "assistant" as const,
-      id: id(turn, 1),
-      agent: "build",
-      model: { providerID: "fixture", id: "fixture" },
-      finish: "stop" as const,
-      time: { created: turn * 10 + 1, completed: turn * 10 + 2 },
-      content: [{ type: "text" as const, text: `History answer ${turn}` }],
-    },
-  ]).flat()
+const session = {
+  id: "ses_earlier_messages",
+  title: "Earlier messages",
+  projectID: "project",
+  location: { directory },
+  cost: 0,
+  tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+  time: { created: 0, updated: 0 },
+}
+const id = (turn: number, role: number) => `msg_${String(turn).padStart(6, "0")}_${role}`
+const messages: SessionMessageInfo[] = Array.from({ length: 40 }, (_, turn) => [
+  { type: "user" as const, id: id(turn, 0), text: `History prompt ${turn}`, time: { created: turn * 10 } },
+  {
+    type: "assistant" as const,
+    id: id(turn, 1),
+    agent: "build",
+    model: { providerID: "fixture", id: "fixture" },
+    finish: "stop" as const,
+    time: { created: turn * 10 + 1, completed: turn * 10 + 2 },
+    content: [
+      { type: "text" as const, text: `History answer ${turn}\n\nIts reason ${turn}.\n\nIts follow-up ${turn}.` },
+    ],
+  },
+]).flat()
+
+/** The session open at its newest message, every older page held by the server until `release`. */
+async function open() {
   const release = Promise.withResolvers<void>()
   const requested = Promise.withResolvers<void>()
   const plugin = await copyPlugin("transcript-chrome")
-  await using app = await createAppFixture({
+  const app = await createAppFixture({
     width: 100,
     height: 30,
     args: { sessionID: session.id },
@@ -56,42 +57,70 @@ test("the transcript's top says earlier messages load until the session's start 
       if (/^\/api\/session\/[^/]+\/(inbox|permission)$/.test(url.pathname)) return json({ data: [] })
     },
   })
-  try {
-    await app.ready
-    await waitForHighlightedFrame(app, (frame) => frame.includes("History answer 39"))
-    await app.waitForVisualIdle({ quietFrames: 3 })
-    const find = (node: Renderable): ScrollBoxRenderable | undefined =>
-      node instanceof ScrollBoxRenderable && node.getRenderable(id(39, 0))
-        ? node
-        : node.getChildren().map(find).find(Boolean)
-    const scroll = find(app.renderer.root)
-    if (!scroll) throw new Error("Missing transcript")
-    const up = async (until: () => boolean) => {
-      for (let tick = 0; tick < 300 && !until(); tick++) {
-        await app.mockMouse.scroll(scroll.viewport.x + 2, scroll.viewport.y + 2, "up")
-        await app.renderOnce()
-      }
+  await app.ready
+  await waitForHighlightedFrame(app, (frame) => frame.includes("History answer 39"))
+  await app.waitForVisualIdle({ quietFrames: 3 })
+  const find = (node: Renderable): ScrollBoxRenderable | undefined =>
+    node instanceof ScrollBoxRenderable && node.getRenderable(id(39, 0))
+      ? node
+      : node.getChildren().map(find).find(Boolean)
+  const scroll = find(app.renderer.root)
+  if (!scroll) throw new Error("Missing transcript")
+  let asked = false
+  void requested.promise.then(() => (asked = true))
+  const up = async (until: () => boolean) => {
+    for (let tick = 0; tick < 300 && !until(); tick++) {
+      await app.mockMouse.scroll(scroll.viewport.x + 2, scroll.viewport.y + 2, "up")
+      await app.renderOnce()
     }
-    // At the top of what is loaded, with the next page held by the server.
-    let waiting = false
-    void requested.promise.then(() => (waiting = true))
-    await up(() => waiting && scroll.scrollTop === 0)
-    await requested.promise
-    await app.waitForVisualIdle({ quietFrames: 3 })
-    const loading = app.captureCharFrame()
-    expect(loading).toContain("Loading earlier messages…")
-    expect(loading).not.toContain("Transcript start claimed")
-
-    // Every older page answers; the reader keeps scrolling to the first message.
-    release.resolve()
-    await up(() => app.captureCharFrame().includes("History prompt 0") && scroll.scrollTop === 0)
-    await app.waitForFrame((frame) => frame.includes("Transcript start claimed"))
-    await app.waitForVisualIdle({ quietFrames: 3 })
-    const start = app.captureCharFrame()
-    expect(start).toContain("Transcript start claimed")
-    expect(start).toContain("History prompt 0")
-    expect(start).not.toContain("Loading earlier messages")
-  } finally {
-    release.resolve()
   }
+  return {
+    app,
+    scroll,
+    up,
+    asked: () => asked,
+    release: () => release.resolve(),
+    async [Symbol.asyncDispose]() {
+      release.resolve()
+      await app[Symbol.asyncDispose]()
+    },
+  }
+}
+
+// Scrolled to the top of a long session, the reader sees older messages loading, not the session's start: the
+// start (here a plugin's `session.transcript.start` row, Prime's splash in the owner's TUI) shows only once the
+// first message is in.
+test("the transcript's top says earlier messages load until the session's start is reached", async () => {
+  await using view = await open()
+  const { app, scroll, up } = view
+  // At the top of what is loaded, with the next page held by the server.
+  await up(() => view.asked() && scroll.scrollTop === 0)
+  expect(view.asked()).toBe(true)
+  await app.waitForVisualIdle({ quietFrames: 3 })
+  const loading = app.captureCharFrame()
+  expect(loading).toContain("Loading earlier messages…")
+  expect(loading).not.toContain("Transcript start claimed")
+
+  // Every older page answers; the reader keeps scrolling to the first message.
+  view.release()
+  await up(() => app.captureCharFrame().includes("History prompt 0") && scroll.scrollTop === 0)
+  await app.waitForFrame((frame) => frame.includes("Transcript start claimed"))
+  await app.waitForVisualIdle({ quietFrames: 3 })
+  const start = app.captureCharFrame()
+  expect(start).toContain("Transcript start claimed")
+  expect(start).toContain("History prompt 0")
+  expect(start).not.toContain("Loading earlier messages")
+}, 30_000)
+
+// The older page is asked for as the reader starts up through the loaded rows, not once they reach the top: on a
+// loaded host the server answers seconds late, and the reader would sit at the top waiting.
+test("scrolling up asks for the older page while loaded rows are still above the reader", async () => {
+  await using view = await open()
+  const { app, scroll, up } = view
+  expect(scroll.scrollTop).toBeGreaterThan(2 * scroll.viewport.height)
+  await up(() => view.asked())
+  expect(view.asked()).toBe(true)
+  // Still well below the top of what is loaded.
+  expect(scroll.scrollTop).toBeGreaterThan(scroll.viewport.height)
+  expect(app.captureCharFrame()).not.toContain("Loading earlier messages")
 }, 30_000)

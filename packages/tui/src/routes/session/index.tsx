@@ -582,6 +582,12 @@ export function Session(props: {
     })
     return true
   }
+  // A reader scrolling up once every loaded row is mounted asks for the older page at once, not at the top, so
+  // a slow server answers while they still read the rows above them; each page landing lets the next one start.
+  const prefetchHistory = () => {
+    if (revealingOlderRows || hidden() > 0 || !scroll || scroll.isDestroyed) return
+    prependHistory()
+  }
   let revealingNewerRows = false
   const revealNewerRows = (scrollBy = 0) => {
     const current = visibleEnd()
@@ -1665,6 +1671,7 @@ export function Session(props: {
                 scrollAcceleration={scrollAcceleration()}
                 onMouseScroll={(event) => {
                   if (firstJump()) clearMessageNavigation()
+                  if (event.scroll?.direction === "up") prefetchHistory()
                   if (event.scroll?.direction === "up" && revealOlderRows()) return
                   if (event.scroll?.direction === "down" && revealNewerRows()) return
                   updateAwayFromBottom()
