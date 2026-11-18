@@ -1,12 +1,17 @@
-import { RGBA, TextAttributes, type KeyEvent } from "@opentui/core"
+import { RGBA, type KeyEvent } from "@opentui/core"
 import { useKeyboard } from "@opentui/solid"
 import type { SessionOutlineEntry } from "@opencode/client"
-import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js"
+import { createEffect, createMemo, createSignal, For, Match, onCleanup, Show, Switch } from "solid-js"
 import { useClient } from "../../context/client"
+import { useData } from "../../context/data"
 import { Keymap } from "../../context/keymap"
+import { useLocal } from "../../context/local"
 import { useTheme } from "../../context/theme"
+import { Slot } from "../../plugin/render"
+import { SplitBorder } from "../../ui/border"
 import { useDialog } from "../../ui/dialog"
 import { Spinner } from "../../component/spinner"
+import { INLINE_TOOL_ICON_WIDTH, useRowGutter } from "./message-parts"
 import { TranscriptMap } from "./transcript-map"
 
 type Client = ReturnType<typeof useClient>
@@ -39,29 +44,33 @@ export function cachedOutline(client: Client, sessionID: string) {
 }
 
 const PAGE = 10
-const WHO_WIDTH = 10
-/** `12:02 PM ET`'s width, so the shorter times line up beside it. */
-const CLOCK_WIDTH = 11
-const work = TranscriptMap.work
 const WHEEL = 3
+const transparent = RGBA.fromInts(0, 0, 0, 0)
 
 /**
- * The session's transcript as a map: shown in the transcript's own place while the session is in map mode, one line
- * per turn.
+ * The session's transcript with every turn collapsed to one line, in the transcript's own place and look: a prompt
+ * as the transcript draws a prompt, an agent's run as its first sentence and its work, a notice as the transcript
+ * heads it. There is no chrome of its own; a filter line shows only while one is typed or kept.
  */
 export function TranscriptMapView(props: {
   sessionID: string
   /** The message at the top of the transcript when the map opened: its turn starts selected. */
   startMessageID?: string
-  onJump: (turn: TranscriptMap.Turn) => void
+  /** The screen line that message's turn started on in the transcript, kept for its collapsed line. */
+  startRow?: number
+  /** Cells right of the transcript's rows (its scrollbar), so a right-aligned time lines up with the transcript's. */
+  rightGap?: number
+  /** Expands the transcript at the turn; `row` is the line its collapsed row was on, where its start should land. */
+  onJump: (turn: TranscriptMap.Turn, row: number) => void
   /** The turn's message actions (revert, copy, fork), the timeline's old Enter. */
-  onActions: (turn: TranscriptMap.Turn) => void
+  onActions: (turn: TranscriptMap.Turn, row: number) => void
   onClose: () => void
 }) {
   const client = useClient()
   const keymap = Keymap.use()
   const theme = useTheme()
   const dialog = useDialog()
+  const gutter = useRowGutter()
   // A dialog opened over the map (the session list, the palette) holds the keys until it closes.
   const free = () => dialog.stack.length === 0
   const [entries, setEntries] = createSignal(cachedOutline(client, props.sessionID))
@@ -71,6 +80,8 @@ export function TranscriptMapView(props: {
   // The selected turn, by id, so a refreshed outline keeps the reader's place.
   const [selectedID, setSelectedID] = createSignal<string>()
   const [height, setHeight] = createSignal(0)
+  // The first row on the map's top line; below zero while the opening turn keeps a line lower than the rows above it
+  // could fill.
   const [top, setTop] = createSignal(0)
 
   // Keys belong to the map while it is open: the session's own bindings sit in the base mode, and the session
@@ -105,36 +116,35 @@ export function TranscriptMapView(props: {
     return result
   })
 
-  // The list's first line always names the day of the turns below it, so a reader dropped into the middle of a
-  // night's work knows which night it is; the rest of the lines are rows.
-  const body = () => Math.max(0, height() - 1)
-  // The first time the list has rows and room, the opening turn takes its top line, as it held the transcript's
-  // top; after that, the selected turn is kept in view with the least scrolling.
+  const filtering = () => typing() || query() !== ""
+  const body = () => Math.max(0, height() - (filtering() ? 1 : 0))
+  // The first time the map has rows and room, the opening turn takes the line it started on in the transcript, so the
+  // transcript reads as folding in place; after that, the selected turn is kept in view with the least scrolling.
   let placed = false
   createEffect(() => {
     const turn = shown()[selected()]
     const size = body()
-    if (!turn || size <= 0) return setTop(0)
+    if (!turn || size <= 0) return
     const row = rowOf().get(turn.id) ?? 0
-    const last = Math.max(0, rows().length - size)
     if (!placed) {
       placed = true
-      return setTop(Math.min(row, last))
+      return setTop(row - Math.max(0, Math.min(size - 1, props.startRow ?? 0)))
     }
     const current = top()
-    if (row < current) setTop(row)
+    // Scrolling up to a day's first turn brings its day's label into view with it.
+    if (row < current) setTop(rows()[row - 1]?.type === "day" ? row - 1 : row)
     else if (row >= current + size) setTop(row - size + 1)
-    else if (current > Math.max(0, rows().length - size)) setTop(Math.max(0, rows().length - size))
   })
   const window = createMemo(() => {
-    // A day label at the top would repeat the pinned one.
-    const start = rows()[top()]?.type === "day" ? top() + 1 : top()
-    return rows().slice(start, start + body())
+    const list = rows()
+    const start = top()
+    const result: (TranscriptMap.MapRow | undefined)[] = []
+    for (let line = start; line < start + body(); line++) result.push(list[line])
+    // A row past the ends is a blank line: the turns the map opened at keep their line.
+    return result.map((row) => row ?? ({ type: "gap" } as const))
   })
-  const pinnedDay = createMemo(() => {
-    const first = window().find((row) => row.type === "turn")
-    return first?.type === "turn" ? TranscriptMap.day(first.turn.time) : undefined
-  })
+  /** The screen line a turn's collapsed row is on. */
+  const lineOf = (turn: TranscriptMap.Turn) => Math.max(0, (rowOf().get(turn.id) ?? 0) - top())
 
   const move = (delta: number) => {
     const list = shown()
@@ -149,10 +159,10 @@ export function TranscriptMapView(props: {
   const jump = () => {
     const turn = shown()[selected()]
     if (!turn) return
-    props.onJump(turn)
+    props.onJump(turn, lineOf(turn))
   }
 
-  const page = () => Math.max(1, height() - 1 || PAGE)
+  const page = () => Math.max(1, body() - 1 || PAGE)
   // `/` starts typing a filter, vim-style: enter keeps it and returns the letters to moving, escape drops it.
   Keymap.createLayer(() => ({
     mode: "modal",
@@ -196,7 +206,7 @@ export function TranscriptMapView(props: {
         group: "Transcript map",
         run: () => {
           const turn = shown()[selected()]
-          if (turn) props.onActions(turn)
+          if (turn) props.onActions(turn, lineOf(turn))
         },
       },
     ],
@@ -222,29 +232,8 @@ export function TranscriptMapView(props: {
     setSelectedID(undefined)
   })
 
-  const whoColor = (turn: TranscriptMap.Turn) => {
-    if (turn.kind === "user") return theme.text.base
-    if (turn.kind === "agent") return theme.text.action.secondary.base
-    return theme.text.feedback.info.base
-  }
-
   return (
-    <box id="transcript-map" flexGrow={1} minHeight={0} flexDirection="column">
-      <box flexDirection="row" flexShrink={0} gap={2} paddingBottom={1}>
-        <text attributes={TextAttributes.BOLD} fg={theme.text.base} flexShrink={0}>
-          Transcript map
-        </text>
-        <text fg={theme.text.muted} flexShrink={0}>
-          {entries() === undefined
-            ? ""
-            : query()
-              ? `${shown().length} of ${turns().length} turns`
-              : `${turns().length} turns`}
-        </text>
-        <text fg={typing() || query() ? theme.text.base : theme.text.muted} wrapMode="none" flexGrow={1} truncate>
-          {typing() || query() ? `/${query()}${typing() ? "▏" : ""}` : "/ filters by text or a time (03:, Nov 17)"}
-        </text>
-      </box>
+    <box id="transcript-map" flexGrow={1} minHeight={0} flexDirection="column" paddingRight={props.rightGap ?? 0}>
       <box
         flexGrow={1}
         minHeight={0}
@@ -260,70 +249,170 @@ export function TranscriptMapView(props: {
         <Show
           when={entries() !== undefined}
           fallback={
-            <Show when={failed()} fallback={<Spinner color={theme.text.muted}>Reading the session…</Spinner>}>
-              {(message) => <text fg={theme.text.feedback.error.base}>{message()}</text>}
-            </Show>
+            <box paddingLeft={gutter()}>
+              <Show when={failed()} fallback={<Spinner color={theme.text.muted}>Reading the session…</Spinner>}>
+                {(message) => <text fg={theme.text.feedback.error.base}>{message()}</text>}
+              </Show>
+            </box>
           }
         >
-          <Show when={rows().length > 0} fallback={<text fg={theme.text.muted}>No turns match</text>}>
-            <text fg={theme.text.muted} wrapMode="none" flexShrink={0}>
-              {`— ${pinnedDay() ?? ""} —`}
-            </text>
+          <Show
+            when={rows().length > 0}
+            fallback={
+              <box paddingLeft={gutter()}>
+                <text fg={theme.text.muted}>No turns match</text>
+              </box>
+            }
+          >
             <For each={window()}>
-              {(row) => {
-                if (row.type === "day")
-                  return (
-                    <text fg={theme.text.muted} wrapMode="none">
-                      {`— ${row.label} —`}
-                    </text>
-                  )
-                const active = () => shown()[selected()]?.id === row.turn.id
-                return (
-                  <box
-                    flexDirection="row"
-                    gap={2}
-                    flexShrink={0}
-                    backgroundColor={active() ? theme.background.action.primary.focused : RGBA.fromInts(0, 0, 0, 0)}
-                    onMouseUp={() => {
-                      setSelectedID(row.turn.id)
-                      jump()
+              {(row) => (
+                <Switch fallback={<box height={1} flexShrink={0} />}>
+                  <Match when={row.type === "day" ? row : undefined}>
+                    {(day) => (
+                      <box height={1} flexShrink={0} flexDirection="row" justifyContent="center">
+                        <text fg={theme.text.muted} wrapMode="none">
+                          {day().label}
+                        </text>
+                      </box>
+                    )}
+                  </Match>
+                  <Match when={row.type === "turn" ? row.turn : undefined}>
+                    {(turn) => {
+                      const active = () => shown()[selected()]?.id === turn().id
+                      return (
+                        <box
+                          id={`transcript-map-turn-${turn().id}`}
+                          height={1}
+                          flexShrink={0}
+                          flexDirection="row"
+                          backgroundColor={active() ? theme.background.raised.base : transparent}
+                          onMouseUp={() => {
+                            setSelectedID(turn().id)
+                            jump()
+                          }}
+                        >
+                          <Slot
+                            path="session.map.turn"
+                            input={{
+                              sessionID: props.sessionID,
+                              messageID: turn().id,
+                              kind: turn().kind,
+                              text: turn().gist,
+                              source: turn().source,
+                              thoughts: turn().thoughts,
+                              tools: turn().tools,
+                              time: turn().time,
+                              get selected() {
+                                return active()
+                              },
+                            }}
+                          >
+                            <MapTurn sessionID={props.sessionID} turn={turn()} selected={active()} />
+                          </Slot>
+                        </box>
+                      )
                     }}
-                  >
-                    <text fg={active() ? theme.text.action.primary.focused : theme.text.muted} flexShrink={0}>
-                      {TranscriptMap.clock(row.turn.time).padStart(CLOCK_WIDTH)}
-                    </text>
-                    <text fg={active() ? theme.text.action.primary.focused : whoColor(row.turn)} flexShrink={0}>
-                      {row.turn.who.padEnd(WHO_WIDTH).slice(0, WHO_WIDTH)}
-                    </text>
-                    <text
-                      fg={active() ? theme.text.action.primary.focused : theme.text.base}
-                      flexGrow={1}
-                      wrapMode="none"
-                      truncate
-                    >
-                      {row.turn.gist || (work(row.turn) ? "" : row.turn.kind === "agent" ? "(no reply)" : "")}
-                      <Show when={work(row.turn)}>
-                        {(done) => (
-                          <span style={{ fg: active() ? theme.text.action.primary.focused : theme.text.muted }}>
-                            {row.turn.gist ? ` · ${done()}` : done()}
-                          </span>
-                        )}
-                      </Show>
-                    </text>
-                  </box>
-                )
-              }}
+                  </Match>
+                </Switch>
+              )}
             </For>
           </Show>
         </Show>
       </box>
-      <box flexDirection="row" flexShrink={0} gap={3}>
-        <text fg={theme.text.muted} wrapMode="none">
-          {typing()
-            ? "enter keep filter · esc drop filter · ↑↓ move"
-            : "↑↓ j/k move · PgUp/PgDn page · g/G first/last · / filter · enter go there · a actions · esc back"}
-        </text>
-      </box>
+      <Show when={filtering()}>
+        <box height={1} flexShrink={0} flexDirection="row" paddingLeft={gutter()} gap={2}>
+          <text fg={theme.text.base} wrapMode="none" flexGrow={1} truncate>
+            {`/${query()}${typing() ? "▏" : ""}`}
+          </text>
+          <text fg={theme.text.muted} wrapMode="none" flexShrink={0}>
+            {`${shown().length} of ${turns().length} turns`}
+          </text>
+        </box>
+      </Show>
     </box>
+  )
+}
+
+/**
+ * A collapsed turn in the host's transcript look: a prompt behind its agent-coloured bar, a run's first sentence in
+ * the prose colour with its work as the transcript's `+ N thoughts, M tools` row says it and the time it ended at the
+ * right, a notice with the glyph and colours the transcript heads it with.
+ */
+function MapTurn(props: { sessionID: string; turn: TranscriptMap.Turn; selected: boolean }) {
+  const theme = useTheme()
+  const gutter = useRowGutter()
+  const local = useLocal()
+  const data = useData()
+  const work = () => TranscriptMap.work(props.turn)
+  const stop = () => TranscriptMap.completion(props.turn)
+  const stopColor = (state: TranscriptMap.NoticeState) => {
+    if (state === "failed") return theme.text.feedback.error.base
+    if (state === "cancelled") return theme.text.feedback.warning.base
+    return theme.text.feedback.info.base
+  }
+  return (
+    <Switch>
+      <Match when={props.turn.kind === "user"}>
+        <box
+          flexGrow={1}
+          border={["left"]}
+          borderColor={local.agent.color(data.session.get(props.sessionID)?.agent ?? "build")}
+          customBorderChars={SplitBorder.customBorderChars}
+          backgroundColor={props.selected ? theme.decrease(theme.background.raised.base) : theme.background.raised.base}
+          paddingLeft={2}
+          paddingRight={2}
+        >
+          <text fg={theme.text.base} wrapMode="none" truncate>
+            {props.turn.gist}
+          </text>
+        </box>
+      </Match>
+      <Match when={props.turn.kind === "agent"}>
+        <box flexGrow={1} flexDirection="row" paddingLeft={gutter()} gap={1}>
+          <text fg={theme.markdown.text} wrapMode="none" truncate flexGrow={1}>
+            {props.turn.gist}
+            <Show when={work()}>
+              {(done) => <span style={{ fg: theme.text.muted }}>{`${props.turn.gist ? " · " : ""}+ ${done()}`}</span>}
+            </Show>
+          </text>
+          <text fg={theme.text.muted} wrapMode="none" flexShrink={0}>
+            {TranscriptMap.clock(props.turn.time)}
+          </text>
+        </box>
+      </Match>
+      <Match when={stop()}>
+        {(notice) => (
+          <box flexGrow={1} paddingLeft={gutter()}>
+            <text wrapMode="none" truncate>
+              <span style={{ fg: stopColor(notice().state) }}>
+                {`${notice().state === "finished" ? "↳" : "!"} ${notice().actor} ${notice().state}`}
+              </span>
+              <Show when={notice().task}>
+                <span style={{ fg: theme.text.muted }}>{` · ${notice().task}`}</span>
+              </Show>
+            </text>
+          </box>
+        )}
+      </Match>
+      <Match when={props.turn.kind === "compaction"}>
+        <box flexGrow={1} flexDirection="row" alignItems="center">
+          <box border={["top"]} borderColor={theme.text.muted} flexGrow={1} />
+          <box paddingLeft={1} paddingRight={1}>
+            <text fg={theme.text.muted}>{props.turn.gist}</text>
+          </box>
+          <box border={["top"]} borderColor={theme.text.muted} flexGrow={1} />
+        </box>
+      </Match>
+      <Match when={true}>
+        <box flexGrow={1} flexDirection="row" paddingLeft={gutter()}>
+          <text width={INLINE_TOOL_ICON_WIDTH} fg={theme.text.muted} flexShrink={0}>
+            {props.turn.source === "goal" ? "◎" : props.turn.source === "mail" ? "✉" : "◈"}
+          </text>
+          <text fg={theme.text.muted} wrapMode="none" truncate flexGrow={1}>
+            {props.turn.gist}
+          </text>
+        </box>
+      </Match>
+    </Switch>
   )
 }

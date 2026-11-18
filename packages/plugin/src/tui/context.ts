@@ -259,6 +259,33 @@ export interface ComposerPanelFooterInput {
   readonly tabs: number
 }
 
+/**
+ * One collapsed turn of the transcript map (`session.timeline`: ctrl+x g, /map), which shows the transcript with
+ * every turn folded to one line. The host keeps the row's box, its place, its selected background and its click; a
+ * replacement draws the line in the look its transcript rows have.
+ */
+export interface TranscriptMapTurnInput {
+  readonly sessionID: string
+  /** The turn's first message: the prompt, the notice, or the first step of an agent's run. */
+  readonly messageID: string
+  /** A prompt (also `!shell` and `/skill`), an agent's run of steps, a notice, or a compaction. */
+  readonly kind: "user" | "agent" | "notice" | "compaction"
+  /**
+   * One line: a prompt's first line, a notice's title (`Implementor finished · fix csv`, `Queue check: …`), the
+   * first sentence of a run's final text (empty when it wrote none).
+   */
+  readonly text: string
+  /** A notice's sender (`subagent`, `shell`, `mail`, `wake`, …), when the server named one. */
+  readonly source?: string
+  /** A run's thoughts and tool calls, summed over its steps. */
+  readonly thoughts: number
+  readonly tools: number
+  /** When the turn reads as happening, in ms: a prompt or notice when sent, a run when its last step ended. */
+  readonly time: number
+  /** Under the keyboard's highlight: the host paints the row's background. */
+  readonly selected: boolean
+}
+
 export type PanelPresentation = "panel" | "fullscreen"
 
 /** Client-local state of the selected session panel. The host owns its layout and input scope. */
@@ -321,6 +348,8 @@ export interface SlotMap {
    * show through blank cells. Empty by default.
    */
   readonly "session.transcript.overlay": TranscriptOverlayInput
+  /** One collapsed turn of the transcript map, which takes the transcript's place while it is open. */
+  readonly "session.map.turn": TranscriptMapTurnInput
   /** A user prompt in the transcript. */
   readonly "session.message.user": SessionMessageInput
   /** The agent, model and duration line closing an assistant turn. */

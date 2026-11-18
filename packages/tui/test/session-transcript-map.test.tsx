@@ -1,6 +1,8 @@
+import { rgbToHex } from "@opentui/core"
 import { expect, test } from "bun:test"
 import type { SessionMessageInfo, SessionOutlineEntry } from "@opencode/client"
 import { createAppFixture } from "./fixture/app"
+import { copyPlugin } from "./fixture/fixture"
 import { directory, json } from "./fixture/tui-client"
 import { waitForHighlightedFrame } from "./fixture/frame"
 
@@ -55,16 +57,17 @@ const outline: SessionOutlineEntry[] = messages.map((message) =>
       },
 )
 
-async function open() {
+async function open(plugin?: string) {
   // Older pages wait on the test, so it sees the transcript while they load.
   const release = Promise.withResolvers<void>()
   let older = 0
   let outlines = 0
+  const fixture = plugin ? await copyPlugin(plugin) : undefined
   const app = await createAppFixture({
     width: 100,
     height: 30,
     args: { sessionID: session.id },
-    config: { animations: false, tabs: { enabled: false } },
+    config: { animations: false, tabs: { enabled: false }, plugins: fixture ? [fixture.directory] : undefined },
     fetch: async (url) => {
       if (url.pathname === "/api/session") return json({ data: [session], cursor: {} })
       if (url.pathname === `/api/session/${session.id}`) return json({ data: session })
@@ -95,14 +98,16 @@ async function open() {
     older: () => older,
     outlines: () => outlines,
     release: () => release.resolve(),
-    async openMap() {
+    async openMap(shown: (frame: string) => boolean = isMap) {
       app.mockInput.pressKey("x", { ctrl: true })
       app.mockInput.pressKey("g")
-      await app.waitForFrame((frame) => frame.includes("/ filters by text"))
+      await app.waitForFrame(shown)
+      await app.waitForVisualIdle({ quietFrames: 3 })
     },
     async [Symbol.asyncDispose]() {
       release.resolve()
       await app[Symbol.asyncDispose]()
+      await fixture?.[Symbol.asyncDispose]()
     },
   }
 }
@@ -111,52 +116,99 @@ async function open() {
 const transcript = (frame: string) => frame.split("\n").slice(0, 20).join("\n")
 /** The first topic a frame shows. */
 const firstTopic = (frame: string) => /topic-\d{3}/.exec(frame)?.[0]
+/** The map is shown: an answer's work collapsed beside it (the transcript draws these answers as text alone). */
+const isMap = (frame: string) => frame.includes("· + 2 thoughts, 3 tools")
+const previous = (name: string) => topic(Number(name.slice("topic-".length)) - 1)
 
-test("the transcript map takes the transcript's place, filters, and goes to an old turn", async () => {
+type Spans = ReturnType<Awaited<ReturnType<typeof createAppFixture>>["captureSpans"]>["lines"]
+/** The span on line `y` holding `text`. */
+const spanOf = (lines: Spans, y: number, text: string) => {
+  const found = lines[y]?.spans.find((span) => span.text.includes(text))
+  if (!found) throw new Error(`no span with ${JSON.stringify(text)} on line ${y}`)
+  return found
+}
+const hex = (color: Parameters<typeof rgbToHex>[0]) => rgbToHex(color)
+/** The background of the cell at column `x` of line `y`. */
+const cellBg = (lines: Spans, y: number, x: number) => {
+  let column = 0
+  for (const span of lines[y]!.spans) {
+    column += span.width
+    if (column > x) return hex(span.bg)
+  }
+  return undefined
+}
+
+test("the map is the transcript with every turn collapsed, in its place and its look; it filters and goes to an old turn", async () => {
   await using view = await open()
   const { app } = view
+  const expanded = app.captureCharFrame().split("\n")
+  const expandedSpans = app.captureSpans().lines
   await view.openMap()
-  await app.waitForFrame((frame) => frame.includes(`Look into ${topic(TURNS - 1)}`))
-  const map = app.captureCharFrame()
-  // In the transcript's place: the composer and its footer stay; the transcript's rows are gone.
-  expect(map).toContain("shift+tab agents")
-  expect(map).not.toContain("More detail follows")
-  // Newest at the bottom, one collapsed line each: its time as the transcript writes it, who, a summary, and an
-  // answer's work counted, with the day it fell on.
-  const zone = /\d{1,2}:\d{2} [AP]M [A-Z][A-Za-z+\-:\d]*/
-  const line = (text: string) => map.split("\n").find((row) => row.includes(text)) ?? ""
-  expect(line(`Look into ${topic(TURNS - 1)}`)).toMatch(
-    new RegExp(`10:55 PM [A-Z][A-Za-z+\\-:\\d]*  you         Look into ${topic(TURNS - 1)}`),
-  )
-  expect(line(`Answer about ${topic(TURNS - 1)}`)).toContain(
-    `agent       Answer about ${topic(TURNS - 1)}. · 2 thoughts, 3 tools`,
-  )
-  expect(line(`Answer about ${topic(TURNS - 1)}`)).toMatch(zone)
-  expect(map).toContain("— Tue Nov 17 —")
-  expect(map).toContain(`${TURNS * 2} turns`)
+  const frame = app.captureCharFrame()
+  const lines = frame.split("\n")
+  const spans = app.captureSpans().lines
+  // In the transcript's place: the composer and its footer stay; the transcript's rows are folded away.
+  expect(frame).toContain("shift+tab agents")
+  expect(frame).not.toContain("More detail follows")
+  // No chrome of its own: no title, count or key hints.
+  expect(frame).not.toMatch(/Transcript map|\d+ turns|esc back|filters by/)
 
-  // `/` starts a filter; enter keeps it.
+  const lineOf = (rows: string[], text: string) => rows.findIndex((row) => row.includes(text))
+  // A prompt is drawn as the transcript draws one, on one line: the same bar, column, colours and band.
+  const prompt = `Look into ${topic(TURNS - 1)}`
+  const p = lineOf(lines, prompt)
+  const q = lineOf(expanded, prompt)
+  expect(p).toBeGreaterThan(-1)
+  expect(lines[p]!.indexOf("┃")).toBe(expanded[q]!.indexOf("┃"))
+  expect(lines[p]!.indexOf(prompt)).toBe(expanded[q]!.indexOf(prompt))
+  expect(hex(spanOf(spans, p, "┃").fg)).toBe(hex(spanOf(expandedSpans, q, "┃").fg))
+  expect(hex(spanOf(spans, p, "Look into").fg)).toBe(hex(spanOf(expandedSpans, q, "Look into").fg))
+  expect(hex(spanOf(spans, p, "Look into").bg)).toBe(hex(spanOf(expandedSpans, q, "Look into").bg))
+
+  // A run is its first sentence where and as the transcript sets prose, then its work in the transcript's muted
+  // `+ N thoughts, M tools` words, and the time it ended at the right edge.
+  const answer = `Answer about ${topic(TURNS - 1)}.`
+  const a = lineOf(lines, answer)
+  const b = lineOf(expanded, answer)
+  expect(lines[a]!.indexOf(answer)).toBe(expanded[b]!.indexOf(answer))
+  expect(lines[a]).toMatch(new RegExp(`${answer} · \\+ 2 thoughts, 3 tools +10:55 PM [A-Z][A-Za-z+\\-:\\d]* *$`))
+  expect(hex(spanOf(spans, a, "Answer about").fg)).toBe(hex(spanOf(expandedSpans, b, "Answer about").fg))
+  const muted = hex(spanOf(spans, a, "+ 2 thoughts").fg)
+  expect(muted).not.toBe(hex(spanOf(spans, a, "Answer about").fg))
+  expect(hex(spanOf(spans, a, "10:55 PM").fg)).toBe(muted)
+  // Every time ends on one column, whatever the sentence before it.
+  const earlier = lineOf(lines, `Answer about ${topic(TURNS - 2)}.`)
+  expect(lines[earlier]!.trimEnd().length).toBe(lines[a]!.trimEnd().length)
+  // The rhythm is the transcript's, tighter: a run right under its prompt, a blank line above each prompt.
+  expect(a).toBe(p + 1)
+  expect(lines[p - 1]!.trim()).toBe("")
+
+  // `/` starts a filter, on a line of its own while it is typed or kept; enter keeps it.
   app.mockInput.pressKey("/")
   await app.mockInput.typeText(topic(7))
-  await app.waitForFrame((frame) => frame.includes(`2 of ${TURNS * 2} turns`))
-  expect(app.captureCharFrame()).toContain("— Mon Nov 16 —")
+  await app.waitForFrame((frame) => frame.includes(`/${topic(7)}`) && frame.includes(`2 of ${TURNS * 2} turns`))
   app.mockInput.pressEnter()
   // Letters move again: k selects the prompt above the answer.
   app.mockInput.pressKey("k")
   await app.renderOnce()
+  const filtered = app.captureCharFrame().split("\n")
+  const row = lineOf(filtered, `Look into ${topic(7)}`)
   app.mockInput.pressEnter()
 
   // The turn is pages back: the transcript, back in its place, says so while they load.
-  await app.waitForFrame((frame) => frame.includes("Loading earlier messages…") && !frame.includes("Transcript map"))
+  await app.waitForFrame((frame) => frame.includes("Loading earlier messages…") && !isMap(frame))
   expect(view.older()).toBeGreaterThan(0)
   view.release()
   await app.waitForFrame(
     (frame) => frame.includes(`Look into ${topic(7)}`) && frame.includes(`Answer about ${topic(7)}`),
   )
   await app.waitForVisualIdle({ quietFrames: 3 })
-  // The turn's start is the transcript's first topic.
-  expect(firstTopic(transcript(app.captureCharFrame()))).toBe(topic(7))
-  expect(app.captureCharFrame()).not.toContain(topic(TURNS - 1))
+  // The turn unfolds where its collapsed row was: its prompt's band starts on that line, its text below.
+  const after = app.captureCharFrame().split("\n")
+  expect(after[row]).toContain("┃")
+  expect(after[row + 1]).toContain(`Look into ${topic(7)}`)
+  expect(firstTopic(transcript(after.join("\n")))).toBe(topic(7))
+  expect(after.join("\n")).not.toContain(topic(TURNS - 1))
 }, 30_000)
 
 test("leaving the map shows the transcript where it was; enter on the turn it opened at goes to its start", async () => {
@@ -175,24 +227,49 @@ test("leaving the map shows the transcript where it was; enter on the turn it op
   expect(top).toBeDefined()
   expect(before).not.toContain(`Answer about ${topic(TURNS - 1)}`)
 
-  // Esc: back where it was, though the map moved.
+  // The turn at the transcript's top keeps its line as the transcript folds: the line its rows start on (the top
+  // line when its start has scrolled out above) holds its collapsed row, and it is the one selected. It is the first
+  // topic shown, or the answer above it whose start had scrolled out.
+  const start = before.split("\n").findIndex((line) => line.trim() !== "")
   await view.openMap()
+  const folded = app.captureCharFrame().split("\n")
+  const opened = firstTopic(folded[start]!)!
+  expect([top, previous(top!)]).toContain(opened)
+  expect(folded.slice(0, start).every((line) => line.trim() === "")).toBe(true)
+  const spans = app.captureSpans().lines
+  // Selection is the row's own subtle background, set against a row of the same kind.
+  const kind = folded[start]!.includes("Look into") ? "Look into" : "Answer about"
+  const plain = folded.findIndex((line, index) => index > start && line.includes(kind))
+  expect(cellBg(spans, start, folded[start]!.indexOf(opened))).not.toBe(
+    cellBg(spans, plain, folded[plain]!.indexOf("topic-")),
+  )
+
+  // Esc: back where it was, though the map moved.
   app.mockInput.pressKey("\x1b[5~") // PgUp
   app.mockInput.pressKey("g")
   await app.waitForFrame((frame) => frame.includes(topic(0)))
+  // The first turn is the session's start, under its day's dim, centred label.
+  const first = app.captureCharFrame().split("\n")
+  const day = first.findIndex((line) => line.includes("Mon Nov 16"))
+  expect(day).toBeGreaterThan(-1)
+  expect(first[day]!.trim()).toBe("Mon Nov 16")
+  const left = first[day]!.indexOf("Mon")
+  const right = first[day]!.trimEnd().length
+  expect(Math.abs(left - (100 - right))).toBeLessThanOrEqual(6)
+  expect(first[day + 1]).toContain(`Look into ${topic(0)}`)
   // The session's own chords are off in the map (undo, copy, a chord's miss): they leave it open and type nothing.
   for (const key of ["u", "y", "k"]) {
     app.mockInput.pressKey("x", { ctrl: true })
     app.mockInput.pressKey(key)
     await app.renderOnce()
   }
-  expect(app.captureCharFrame()).toContain("Transcript map")
+  expect(isMap(app.captureCharFrame())).toBe(true)
   // An app-wide one still opens its dialog over the map; closing the dialog leaves the map with the keys.
   app.mockInput.pressKey("x", { ctrl: true })
   app.mockInput.pressKey("l")
   await app.waitForFrame((frame) => frame.includes("Sessions"))
   app.mockInput.pressEscape()
-  await app.waitForFrame((frame) => !frame.includes("Sessions") && frame.includes("Transcript map"))
+  await app.waitForFrame((frame) => !frame.includes("Sessions") && isMap(frame))
   // The dialog hands focus back a tick after it closes: the composer behind the map must not take it.
   await Bun.sleep(20)
   await app.renderOnce()
@@ -202,9 +279,9 @@ test("leaving the map shows the transcript where it was; enter on the turn it op
   app.mockInput.pressKey("x")
   app.mockInput.pressKey("j")
   await app.renderOnce()
-  expect(app.captureCharFrame()).toContain("Transcript map")
+  expect(isMap(app.captureCharFrame())).toBe(true)
   app.mockInput.pressEscape()
-  await app.waitForFrame((frame) => !frame.includes("Transcript map"))
+  await app.waitForFrame((frame) => !isMap(frame))
   await app.waitForVisualIdle({ quietFrames: 3 })
   expect(transcript(app.captureCharFrame())).toBe(before)
   expect(view.older()).toBe(0)
@@ -215,23 +292,51 @@ test("leaving the map shows the transcript where it was; enter on the turn it op
   await view.openMap()
   app.mockInput.pressKey("x", { ctrl: true })
   app.mockInput.pressKey("g")
-  await app.waitForFrame((frame) => !frame.includes("Transcript map"))
+  await app.waitForFrame((frame) => !isMap(frame))
   await app.waitForVisualIdle({ quietFrames: 3 })
   expect(transcript(app.captureCharFrame())).toBe(before)
   expect(composer()).toBe("")
 
-  // It opens on the turn at the transcript's top; enter goes to that turn's start.
+  // Enter unfolds the transcript at the selected turn, its start landing on the line its collapsed row was on: one
+  // turn below the one the map opened at.
   await view.openMap()
   expect(view.outlines()).toBe(3)
+  app.mockInput.pressKey("j")
+  await app.renderOnce()
+  const map = app.captureCharFrame().split("\n")
+  // From an answer, the next turn is the prompt after the blank line; from a prompt, its answer right under it.
+  const prompt = map[start]!.includes("Answer about")
+  const line = start + (prompt ? 2 : 1)
+  const target = firstTopic(map[line]!)!
+  expect(map[line]).toContain(prompt ? `Look into ${target}` : `Answer about ${target}`)
   app.mockInput.pressEnter()
-  await app.waitForFrame((frame) => !frame.includes("Transcript map"))
+  await app.waitForFrame((frame) => !isMap(frame))
   await app.waitForVisualIdle({ quietFrames: 3 })
-  const after = transcript(app.captureCharFrame())
-  // The turn at the top was the one whose rows filled it: the first topic shown, or the answer above it whose
-  // start had scrolled out. Either way the transcript now starts at that turn's first line.
-  const opened = firstTopic(after)!
-  expect([top, topic(Number(top!.slice("topic-".length)) - 1)]).toContain(opened)
-  const first = after.split("\n").find((line) => line.trim() !== "")
-  expect(first).toContain(opened)
+  const after = app.captureCharFrame().split("\n")
+  if (prompt) {
+    expect(after[line]).toContain("┃")
+    expect(after[line + 1]).toContain(`Look into ${target}`)
+  } else expect(after[line]).toContain(`Answer about ${target}`)
   expect(composer()).toBe("")
+}, 30_000)
+
+test("a plugin draws each collapsed turn in its own look; the host keeps the rows, their places and the selection", async () => {
+  await using view = await open("map-turn")
+  const { app } = view
+  const last = id(TURNS - 1, 1)
+  await view.openMap((frame) => frame.includes(`Map agent ${last}`))
+  const frame = app.captureCharFrame()
+  // The slot carries the turn: its kind, first message, line and work, and whether it is the one selected.
+  expect(frame).toContain(`Map user ${id(TURNS - 1, 0)} [Look into ${topic(TURNS - 1)}] 0/0`)
+  expect(frame).toContain(`Map agent ${last} [Answer about ${topic(TURNS - 1)}.] 2/3`)
+  expect(frame.match(/ selected/g)).toHaveLength(1)
+  // The host's rhythm stays: a blank line above each prompt.
+  const lines = frame.split("\n")
+  const prompt = lines.findIndex((line) => line.includes(`Map user ${id(TURNS - 1, 0)}`))
+  expect(lines[prompt - 1]!.trim()).toBe("")
+  // G selects the newest turn; the host's selection moves, and the plugin hears of it.
+  app.mockInput.pressKey("G", { shift: true })
+  await app.waitForFrame((frame) =>
+    frame.includes(`Map agent ${last} [Answer about ${topic(TURNS - 1)}.] 2/3 selected`),
+  )
 }, 30_000)

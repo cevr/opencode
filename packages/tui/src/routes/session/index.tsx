@@ -77,7 +77,7 @@ import { statusLabel } from "../../component/dialog-workspace-file-changes"
 import { DialogMessage } from "./dialog-message"
 import { DialogFork } from "./dialog-fork"
 import { TranscriptMapView } from "./transcript-map-view"
-import { rowHoldsMessage } from "./transcript-map"
+import { rowHoldsMessage, rowMessage } from "./transcript-map"
 import { DialogGoUpsell } from "../../component/dialog-go-upsell"
 import { UsageLimitNotice, useLimitNotice, useUsageAlerts } from "../../component/usage"
 import { useStorage } from "../../context/storage"
@@ -1017,28 +1017,57 @@ export function Session(props: {
       dialog.clear()
     })
 
-  const jumpToMessage = (messageID: string) =>
+  /**
+   * The scroll position that shows a message's first row (at content row `y`) on screen line `line`; with no line, at
+   * the top with an answer's blank row above it.
+   */
+  const landing = (messageID: string, y: number, line?: number) => {
+    if (line !== undefined) return Math.max(0, y - line)
+    const message = data.session.message.get(route.sessionID, messageID)
+    return Math.max(0, y - (message?.type === "assistant" ? 1 : 0))
+  }
+  const jumpToMessage = (messageID: string, line?: number) =>
     ensureAllRows(() => {
       const child = anchors.forMessage(messageID)
       if (!child) return
       const y = scroll.scrollTop + child.node.y - scroll.viewport.y
-      const message = data.session.message.get(route.sessionID, messageID)
-      alignMessage(messageID, Math.max(0, y - (message?.type === "assistant" ? 1 : 0)))
+      alignMessage(messageID, landing(messageID, y, line))
     })
 
   // Map mode: the turn list takes the transcript's place. The transcript stays mounted and hidden, so leaving the map
   // without a jump shows it where it was; a jump reveals a turn anywhere in the session, mounting only its rows.
   const [mapOpen, setMapOpen] = createSignal(false)
-  const [mapStart, setMapStart] = createSignal<string>()
-  /** The message at the top of the transcript's view. */
-  const topMessageID = () => {
+  const [mapStart, setMapStart] = createSignal<{ messageID?: string; row: number; rightGap: number }>({
+    row: 0,
+    rightGap: 0,
+  })
+  /**
+   * The message whose rows fill the transcript's top line (a run's folded activity row counts as its message's), and
+   * the screen line its row starts on (0 when it starts above the top).
+   */
+  const topMessage = () => {
     if (!scroll || scroll.isDestroyed) return undefined
+    // The scroll's children are the start box, then one node per mounted row, in order.
+    const nodes = scroll.getChildren().slice(1)
+    const mounted = visibleRows()
+    for (let index = 0; index < mounted.length; index++) {
+      const node = nodes[index]
+      if (!node || node.height <= 0 || node.y + node.height <= scroll.viewport.y) continue
+      const messageID = rowMessage(mounted[index]!)
+      if (messageID) return { messageID, row: Math.max(0, node.y - scroll.viewport.y) }
+    }
     const positions = anchors.messagePositions()
-    return positions.findLast((position) => position.y <= scroll.viewport.y)?.id ?? positions[0]?.id
+    const top = positions.findLast((position) => position.y <= scroll.viewport.y) ?? positions[0]
+    return top && { messageID: top.id, row: Math.max(0, top.y - scroll.viewport.y) }
   }
   const openMap = () => {
     dialog.clear()
-    setMapStart(topMessageID())
+    // The map's rows end where the transcript's do, left of its scrollbar.
+    const rightGap =
+      scroll && !scroll.isDestroyed && transcriptStart && !transcriptStart.isDestroyed
+        ? Math.max(0, scroll.x + scroll.width - (transcriptStart.x + transcriptStart.width))
+        : 0
+    setMapStart({ ...(topMessage() ?? { row: 0 }), rightGap })
     setMapOpen(true)
   }
   const closeMap = () => {
@@ -1051,9 +1080,9 @@ export function Session(props: {
     enabled: () => mapOpen() && dialog.stack.length === 0,
     bindings: ["session.timeline"],
   }))
-  const revealMessage = (messageID: string) => {
+  const revealMessage = (messageID: string, line?: number) => {
     const index = rows.findIndex((row) => rowHoldsMessage(row, messageID))
-    if (index === -1) return jumpToMessage(messageID)
+    if (index === -1) return jumpToMessage(messageID, line)
     clearMessageNavigation()
     scroll.stickyScroll = false
     batch(() => {
@@ -1069,14 +1098,14 @@ export function Session(props: {
         (row?.type === "group" ? anchors.get({ type: "group", groupID: groupID(row, 0) ?? "" }) : undefined)
       if (!anchor) return updateAwayFromBottom()
       const y = scroll.scrollTop + anchor.node.y - scroll.viewport.y
-      const message = data.session.message.get(route.sessionID, messageID)
-      alignMessage(messageID, Math.max(0, y - (message?.type === "assistant" ? 1 : 0)))
+      alignMessage(messageID, landing(messageID, y, line))
     })
   }
-  const jumpToTurn = (messageID: string, then?: () => void) => {
+  /** Shows a turn anywhere in the session, its first row on screen line `line` (the map's row for it), else the top. */
+  const jumpToTurn = (messageID: string, line?: number, then?: () => void) => {
     const sessionID = route.sessionID
     if (data.session.message.get(sessionID, messageID) || !data.session.message.more(sessionID)) {
-      revealMessage(messageID)
+      revealMessage(messageID, line)
       then?.()
       return
     }
@@ -1105,7 +1134,7 @@ export function Session(props: {
       () => {
         if (!active()) return
         setFirstJump(undefined)
-        revealMessage(messageID)
+        revealMessage(messageID, line)
         then?.()
       },
       (error) => {
@@ -1832,17 +1861,20 @@ export function Session(props: {
               <Show when={mapOpen()}>
                 <TranscriptMapView
                   sessionID={route.sessionID}
-                  startMessageID={mapStart()}
+                  startMessageID={mapStart().messageID}
+                  startRow={mapStart().row}
+                  rightGap={mapStart().rightGap}
                   onClose={closeMap}
-                  onJump={(turn) => {
+                  // Expanding lands the turn's start on the line its collapsed row was on: the map unfolds in place.
+                  onJump={(turn, line) => {
                     closeMap()
-                    jumpToTurn(turn.id)
+                    jumpToTurn(turn.id, line)
                   }}
-                  onActions={(turn) => {
+                  onActions={(turn, line) => {
                     closeMap()
                     const sessionID = route.sessionID
                     // The actions read the message, so it is loaded (and shown) first.
-                    jumpToTurn(turn.id, () =>
+                    jumpToTurn(turn.id, line, () =>
                       dialog.replace(() => <DialogMessage messageID={turn.id} sessionID={sessionID} />),
                     )
                   }}

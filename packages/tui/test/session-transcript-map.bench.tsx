@@ -81,7 +81,7 @@ test(`the transcript map opens on a ${TURNS}-turn session`, async () => {
       const began = performance.now()
       app.mockInput.pressKey("x", { ctrl: true })
       app.mockInput.pressKey("g")
-      await app.waitForFrame((frame) => frame.includes("Transcript map") && frame.includes(newest))
+      await app.waitForFrame((frame) => frame.includes(newest) && /\d:\d\d [AP]M \S+ *$/m.test(frame))
       return performance.now() - began
     }
     const first = await open()
@@ -92,7 +92,7 @@ test(`the transcript map opens on a ${TURNS}-turn session`, async () => {
     const filtered = performance.now() - began
     app.mockInput.pressEscape()
     app.mockInput.pressEscape()
-    await app.waitForFrame((frame) => !frame.includes("Transcript map"))
+    await app.waitForFrame(() => app.renderer.root.findDescendantById("transcript-map") === undefined)
     const again = await open()
     console.log(
       JSON.stringify({

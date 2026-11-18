@@ -152,7 +152,8 @@ async function undoQueued(app: App) {
 async function messageAction(app: App, action: string) {
   await app.mockInput.typeText("/timeline")
   app.mockInput.pressEnter()
-  await app.waitForFrame((frame) => frame.includes("Transcript map") && frame.includes("What is in"))
+  // The map's rows are drawn: the reply collapsed to its line, with the time it ended (the transcript shows none).
+  await app.waitForFrame((frame) => frame.includes("What is in") && /Looked at it +\d{1,2}:\d{2} [AP]M/.test(frame))
   app.mockInput.pressKey("k")
   await app.waitForFrame(() => true)
   app.mockInput.pressKey("a")

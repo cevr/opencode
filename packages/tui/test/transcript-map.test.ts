@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import type { SessionOutlineEntry } from "@opencode/client"
-import { clock, filter, rows, turns, work } from "../src/routes/session/transcript-map"
+import { clock, completion, filter, rowMessage, rows, turns, work } from "../src/routes/session/transcript-map"
 
 const at = (day: number, hour: number, minute = 0) => new Date(2026, 10, day, hour, minute).getTime()
 const entry = (id: string, type: SessionOutlineEntry["type"], time: number, rest: Partial<SessionOutlineEntry> = {}) =>
@@ -57,6 +57,65 @@ test("a day label stands above each day's first turn", () => {
   const labels = rows(turns(outline)).flatMap((row) => (row.type === "day" ? [row.label] : []))
   expect(labels).toEqual(["Mon Nov 16", "Tue Nov 17"])
   expect(rows(turns(outline))[0]).toEqual({ type: "day", label: "Mon Nov 16" })
+})
+
+test("the map spaces turns as the transcript does, tighter: a blank line above each prompt and each day", () => {
+  const extra: SessionOutlineEntry[] = [
+    ...outline,
+    entry("msg_13", "user", at(17, 6, 2), { summary: "And the docs?" }),
+    entry("msg_14", "assistant", at(17, 6, 3), { summary: "Done." }),
+  ]
+  const shape = rows(turns(extra)).map((row) => (row.type === "turn" ? row.turn.id : row.type))
+  expect(shape).toEqual([
+    "day",
+    "msg_01",
+    "msg_02",
+    "gap",
+    "day",
+    "msg_05",
+    "msg_07",
+    "msg_09",
+    "msg_10",
+    "msg_11",
+    "gap",
+    "msg_13",
+    "msg_14",
+  ])
+})
+
+test("a worker's stop notice reads as who, how it ended and its task; other notices are not one", () => {
+  const list = turns(outline)
+  expect(completion(list.find((turn) => turn.id === "msg_05")!)).toEqual({
+    actor: "Implementor",
+    state: "finished",
+    task: "implementor fix-a r1",
+  })
+  expect(completion({ kind: "notice", source: "shell", gist: "Shell failed · bun test" })).toEqual({
+    actor: "Shell",
+    state: "failed",
+    task: "bun test",
+  })
+  expect(completion(list.find((turn) => turn.id === "msg_11")!)).toBeUndefined()
+  expect(completion(list.find((turn) => turn.id === "msg_01")!)).toBeUndefined()
+})
+
+test("a transcript row names its first message, a folded group by its first entry", () => {
+  const part = (messageID: string) => ({ type: "part" as const, ref: { messageID, partID: "p" } })
+  expect(rowMessage({ type: "message", messageID: "msg_a" })).toBe("msg_a")
+  expect(
+    rowMessage({
+      type: "group",
+      kind: "activity",
+      pending: [],
+      completed: true,
+      size: 2,
+      children: [
+        { type: "entry", entry: part("msg_b") },
+        { type: "entry", entry: part("msg_c") },
+      ],
+    } as never),
+  ).toBe("msg_b")
+  expect(rowMessage({ type: "turn-usage", messageIDs: ["msg_d"] })).toBe("msg_d")
 })
 
 test("a filter matches text, a time or a day", () => {

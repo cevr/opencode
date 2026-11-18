@@ -8,7 +8,7 @@ import type { SessionEntry, SessionNode, SessionRow } from "./grouping/session"
  * its outline, which carries each message's kind, time, one-line summary and a step's counts but never its body.
  */
 
-export type TurnKind = "user" | "agent" | "notice"
+export type TurnKind = "user" | "agent" | "notice" | "compaction"
 
 export type Turn = {
   /** The message the transcript scrolls to: the prompt, the notice, or the agent run's first step. */
@@ -24,9 +24,18 @@ export type Turn = {
   readonly tools: number
   /** An agent run's thoughts. */
   readonly thoughts: number
+  /** A notice's sender as the server names it (`subagent`, `shell`, `mail`, `wake`, …). */
+  readonly source?: string
 }
 
-export type MapRow = { readonly type: "day"; readonly label: string } | { readonly type: "turn"; readonly turn: Turn }
+/**
+ * One line of the map: a day's dim label where the day changes, the blank line the transcript keeps above each
+ * prompt, or a turn.
+ */
+export type MapRow =
+  | { readonly type: "day"; readonly label: string }
+  | { readonly type: "gap" }
+  | { readonly type: "turn"; readonly turn: Turn }
 
 const NOTICE_SOURCES: Record<string, string> = {
   subagent: "subagent",
@@ -112,9 +121,9 @@ function inputTurn(entry: SessionOutlineEntry): Turn | undefined {
     case "synthetic":
     case "system":
       if (!summary) return undefined
-      return { ...base, kind: "notice", who: noticeWho(entry), gist: summary }
+      return { ...base, kind: "notice", who: noticeWho(entry), gist: summary, source: entry.source }
     case "compaction":
-      return { ...base, kind: "notice", who: "compaction", gist: "Compacted the conversation" }
+      return { ...base, kind: "compaction", who: "compaction", gist: "Compaction" }
     default:
       return undefined
   }
@@ -162,19 +171,36 @@ export function day(time: number) {
   return new Date(time).toDateString().slice(0, 10)
 }
 
-/** The turns with a day separator above the first turn of each day. */
+/**
+ * The map's lines: the turns, a day label above the first turn of each day, and a blank line above each prompt that
+ * follows other turns, so each exchange reads as a block the way the transcript spaces it.
+ */
 export function rows(list: readonly Turn[]): MapRow[] {
   const result: MapRow[] = []
   let current: string | undefined
   for (const turn of list) {
     const label = day(turn.time)
     if (label !== current) {
+      if (result.length > 0) result.push({ type: "gap" })
       current = label
       result.push({ type: "day", label })
-    }
+    } else if (turn.kind === "user" && result.length > 0) result.push({ type: "gap" })
     result.push({ type: "turn", turn })
   }
   return result
+}
+
+export type NoticeState = "finished" | "failed" | "cancelled"
+
+/**
+ * A worker's or shell's stop notice, as its title (`Implementor finished · fix csv`) says it: who, how it ended, and
+ * its task. Other notices are not one.
+ */
+export function completion(turn: Pick<Turn, "kind" | "source" | "gist">) {
+  if (turn.kind !== "notice" || (turn.source !== "subagent" && turn.source !== "shell")) return undefined
+  const match = /^(.+?) (finished|failed|cancelled)(?: · (.*))?$/s.exec(turn.gist)
+  if (!match) return undefined
+  return { actor: match[1]!, state: match[2] as NoticeState, task: match[3] ?? "" }
 }
 
 /** What a filter matches a turn by: its time (`03:`, `14:05`, `2:05 PM`), its day (`Nov 17`, `Tue`), who, its gist. */
@@ -185,6 +211,19 @@ export function searchText(turn: Turn) {
 function entryMessage(entry: SessionEntry) {
   if (entry.type === "part") return entry.ref.messageID
   if (entry.type === "message" || entry.type === "assistant-footer") return entry.messageID
+}
+
+/** The first message a transcript row shows (a group's first entry's), if it shows one. */
+export function rowMessage(row: SessionRow | SessionNode): string | undefined {
+  if (row.type === "group") {
+    for (const child of row.children) {
+      const found = rowMessage(child)
+      if (found) return found
+    }
+    return undefined
+  }
+  if (row.type === "entry") return entryMessage(row.entry)
+  return entryMessage(row) ?? (row.type === "turn-usage" ? row.messageIDs[0] : undefined)
 }
 
 /** Whether a transcript row shows any of a message: the message itself, one of its parts, or a group holding one. */
