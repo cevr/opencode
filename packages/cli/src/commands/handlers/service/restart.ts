@@ -9,8 +9,9 @@ export default Runtime.handler(
   Commands.commands.service.commands.restart,
   Effect.fn("cli.service.restart")(function* () {
     const options = yield* ServiceConfig.options()
-    // No explicit daemon shutdown: stopping without a handoff drops the daemon's owner, which stops it with its processes.
-    yield* Service.stop(options)
+    // A restart hands the process daemon to the next server, as a client's restart does: its shell commands and
+    // persistent terminals keep running, and the next server takes them back.
+    yield* Service.stop({ ...options, pty: "handoff" })
     const transport = yield* Service.ensure(options)
     process.stdout.write(transport.url + EOL)
   }),
