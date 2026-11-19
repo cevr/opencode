@@ -820,6 +820,12 @@ export type CodeProps = {
   readonly bg?: RGBA
 }
 
+/** The host's spinner glyph, alone. */
+export type SpinnerProps = {
+  /** Glyph colour. The theme's muted text by default. */
+  readonly color?: RGBA
+}
+
 /** A plugin's hold on the terminal's program status; see UI.programStatus. */
 export interface ProgramStatusClaim {
   /** Writes one OSC 7501 report while the claim holds; false once released, or when the renderer did not queue it. */
@@ -934,6 +940,8 @@ export interface UI {
   readonly Markdown: (props: MarkdownProps) => JSX.Element
   /** The host's code renderer, for source that should read like the transcript's. */
   readonly Code: (props: CodeProps) => JSX.Element
+  /** The host's spinner, on the renderer's clock: every spinner on screen, the host's and plugins', shows the same frame. */
+  readonly Spinner: (props: SpinnerProps) => JSX.Element
 }
 
 export interface Context {

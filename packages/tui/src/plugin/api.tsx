@@ -24,6 +24,7 @@ import type {
   SlotClaim,
   SlotMap,
   SlotPath,
+  SpinnerProps,
   Toast,
   AutocompleteSource,
   ComposerTab,
@@ -58,6 +59,7 @@ import { abbreviateHome } from "../util/path-format"
 import { usePromptRestore } from "../prompt/restore"
 import { takeBack } from "../prompt/take-back"
 import { appendToSessionPrompt } from "../component/prompt/draft-stash"
+import { Spinner } from "../component/spinner"
 
 export type Dispose = () => Promise<void>
 
@@ -432,6 +434,7 @@ export function createPluginContext(input: {
       },
       Markdown: PluginMarkdown,
       Code: PluginCode,
+      Spinner: (props: SpinnerProps) => <Spinner color={props.color} />,
     },
   }
   return context
