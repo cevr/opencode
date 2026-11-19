@@ -241,11 +241,20 @@ test("the map is the transcript with every turn collapsed, in its place and its 
   await app.waitForVisualIdle({ quietFrames: 3 })
   // The turn unfolds where its collapsed row was: its prompt's band starts on that line, its text below.
   const after = app.captureCharFrame().split("\n")
-  expect(after[row]).toContain("┃")
-  expect(after[row + 1]).toContain(`Look into ${topic(7)}`)
-  expect(firstTopic(transcript(after.join("\n")))).toBe(topic(7))
+  expectTurnAtTop(after, row, topic(7))
   expect(after.join("\n")).not.toContain(topic(TURNS - 1))
 }, 30_000)
+
+/**
+ * The chosen turn's start tops the transcript: its prompt's band begins on `row` (the line its collapsed row was on,
+ * under the map's day label), only blank lines above it, so neither the turn before nor any of its rows is on screen.
+ */
+function expectTurnAtTop(after: string[], row: number, name: string) {
+  expect(after.slice(0, row).every((line) => line.trim() === "")).toBe(true)
+  expect(after[row]!.trim()).toBe("┃")
+  expect(after[row + 1]).toContain(`Look into ${name}`)
+  expect(firstTopic(transcript(after.join("\n")))).toBe(name)
+}
 
 test("leaving the map shows the transcript where it was; enter on the turn it opened at goes to its start", async () => {
   await using view = await open()
@@ -457,6 +466,24 @@ test("pages up a long session whose notices arrive with old ids, the map opens o
   const after = app.captureCharFrame().split("\n")
   expect(after[line]).toContain("┃")
   expect(after[line + 1]).toContain(`Look into ${target}`)
+
+  // From here, a dozen pages up, the filter goes to a turn far older than any shown: its start tops the transcript.
+  const far = topic(20)
+  expect(Number(target.slice("topic-".length))).toBeGreaterThan(40)
+  await view.openMap()
+  app.mockInput.pressKey("/")
+  await app.mockInput.typeText(far)
+  await app.waitForFrame((frame) => frame.includes(`/${far}`) && /\b2 of \d+ turns/.test(frame))
+  app.mockInput.pressEnter()
+  app.mockInput.pressKey("k")
+  await app.renderOnce()
+  const filtered = app.captureCharFrame().split("\n")
+  const row = filtered.findIndex((line) => line.includes(`Look into ${far}`))
+  expect(row).toBeGreaterThan(-1)
+  app.mockInput.pressEnter()
+  await app.waitForFrame((frame) => !isMap(frame) && frame.includes(`Look into ${far}`))
+  await app.waitForVisualIdle({ quietFrames: 3 })
+  expectTurnAtTop(app.captureCharFrame().split("\n"), row, far)
 }, 30_000)
 
 /** How many lines down the row holding `text` moved from frame `a` to frame `b`. */
