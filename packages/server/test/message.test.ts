@@ -1,8 +1,11 @@
+import { Database as Sqlite } from "bun:sqlite"
+import path from "node:path"
 import { expect } from "bun:test"
 import { OpenCode, type SessionMessageInfo } from "@opencode/client"
 import { SessionOutline } from "@opencode/core/session/outline"
 import { Session } from "@opencode/schema/session"
 import { Effect } from "effect"
+import { tmpdirScoped } from "../../core/test/fixture/tmpdir"
 import { it } from "../../core/test/lib/effect"
 import { ServerFetch } from "../src/fetch"
 
@@ -205,6 +208,85 @@ it.live("outlines a session's messages without their bodies, and extends an outl
         new Request(`http://opencode.local/api/session/${session.id}/outline?after=msg_gone`),
       )
       expect(unknown.status).toBe(400)
+    })
+  }),
+)
+
+it.live("outlines a step whose text the projector split across several session_part rows as the map shows it", () =>
+  Effect.gen(function* () {
+    // Acquired first so it is removed after the server below is released.
+    const dir = (yield* tmpdirScoped("opencode-outline-parts-")).path
+    yield* Effect.gen(function* () {
+      const database = path.join(dir, "opencode.db")
+      const handler = yield* ServerFetch.make({
+        app: { version: "test" },
+        database: { path: database },
+        config: { directory: dir, project: false },
+        models: { fetch: false },
+        fs: { filewatcher: false },
+      })
+      const api = OpenCode.make({
+        baseUrl: "http://opencode.local",
+        fetch: Object.assign((input: string | URL | Request, init?: RequestInit) => handler(new Request(input, init)), {
+          preconnect: fetch.preconnect,
+        }),
+      })
+      const sessionID = Session.ID.create()
+      yield* Effect.promise(async () => {
+        const template = await api.session.create({ title: "Split parts" })
+        // A step whose body the projector keeps out of its row: its content is empty inline.
+        await api.experimental.session.import({
+          info: { ...template, id: sessionID },
+          messages: [
+            { id: "msg_ask", type: "user", text: "Map the turns", time: { created: 100 } },
+            {
+              id: "msg_step",
+              type: "assistant",
+              agent: "build",
+              model: { providerID: "test", id: "test" },
+              content: [],
+              finish: "stop",
+              time: { created: 200, completed: 300 },
+            },
+          ],
+        })
+        // The projector's layout: each of the step's parts a `session_part` row, its text in several of them.
+        const sqlite = new Sqlite(database)
+        const parts = [
+          { type: "reasoning", text: "Weighing the layout" },
+          { type: "text", text: "Reading the store first. It holds." },
+          { type: "reasoning", text: "Settled" },
+          { type: "text", text: `**Done:** the map reads turns. ${"More words. ".repeat(100)}` },
+          { type: "text", text: "  " },
+        ]
+        const insert = sqlite.prepare(
+          "INSERT INTO session_part (message_id, session_id, ordinal, type, time_created, time_updated, data) VALUES (?, ?, ?, ?, 250, 250, ?)",
+        )
+        parts.forEach((part, ordinal) => insert.run("msg_step", sessionID, ordinal, part.type, JSON.stringify(part)))
+        sqlite.close()
+
+        // The transcript reads the step whole from its parts.
+        const held = await api.message.list({ sessionID, order: "asc" })
+        const step = held.data.find((message) => message.id === "msg_step")
+        expect(step?.type === "assistant" ? step.content.map((part) => part.type) : []).toEqual(
+          parts.map((part) => part.type),
+        )
+        // The outline's line for it is the first sentence of its last text with words in it, the line the map
+        // folds the loaded step to.
+        const outline = await api.message.outline({ sessionID })
+        expect(outline).toEqual([
+          { id: "msg_ask", type: "user", time: 100, summary: "Map the turns" },
+          {
+            id: "msg_step",
+            type: "assistant",
+            time: 200,
+            completed: 300,
+            summary: "Done: the map reads turns.",
+            thoughts: 2,
+          },
+        ])
+        expect(held.data.map((message) => SessionOutline.entry(message))).toEqual(outline)
+      })
     })
   }),
 )
