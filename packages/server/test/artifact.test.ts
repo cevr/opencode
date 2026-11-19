@@ -2,9 +2,7 @@ import fs from "node:fs/promises"
 import path from "node:path"
 import { expect } from "bun:test"
 import { OpenCode } from "@opencode/client"
-import { Global } from "@opencode/util/global"
 import { Effect } from "effect"
-import { tempGlobalLayer } from "../../core/test/fixture/global"
 import { tmpdirScoped } from "../../core/test/fixture/tmpdir"
 import { it } from "../../core/test/lib/effect"
 import { serveRoutes } from "./fixture/routes"
@@ -27,7 +25,9 @@ it.live("manages local and plugin-backed artifacts through /api/experimental/art
     const pluginDir = path.join(dir, "custom-artifact-plugin")
 
     yield* Effect.promise(async () => {
-      await Promise.all([global, enabled, enabledOther, disabled, pluginDir].map((item) => fs.mkdir(item, { recursive: true })))
+      await Promise.all(
+        [global, enabled, enabledOther, disabled, pluginDir].map((item) => fs.mkdir(item, { recursive: true })),
+      )
       await fs.writeFile(
         path.join(pluginDir, "package.json"),
         JSON.stringify({ name: "custom-artifact-plugin", type: "module", exports: "./index.js" }),
@@ -83,27 +83,22 @@ export default {
       )
     })
 
-    const server = yield* serveRoutes(
-      {
-        app: { version: "test" },
-        database: { path: path.join(dir, "opencode.db") },
-        config: { directory: global, project: true, claude: false },
-        models: { fetch: false },
-        fs: { filewatcher: false },
-      },
-      // A fresh database file imports the legacy auth.json from the global data directory, so a scratch one keeps the
-      // developer's saved credentials, and the Console config fetch an OpenCode key starts, out of the test.
-      [Global.node.replace(tempGlobalLayer)],
-    )
+    const server = yield* serveRoutes({
+      app: { version: "test" },
+      database: { path: path.join(dir, "opencode.db") },
+      config: { directory: global, project: true, claude: false },
+      models: { fetch: false },
+      fs: { filewatcher: false },
+    })
     const handler = server.handler
     const api = client(handler)
     yield* server.pluginsLoaded(enabled)
 
     yield* Effect.promise(async () => {
       // Disabled location returns ForbiddenError
-      await expect(
-        api.experimental.artifacts.list({ location: { directory: disabled } }),
-      ).rejects.toMatchObject({ _tag: "ForbiddenError" })
+      await expect(api.experimental.artifacts.list({ location: { directory: disabled } })).rejects.toMatchObject({
+        _tag: "ForbiddenError",
+      })
 
       // Providers list includes built-in local (default) and plugin-registered s3
       const providers = await api.experimental.artifacts.providers({ location: { directory: enabled } })
@@ -154,9 +149,7 @@ export default {
         title: "Standalone report",
         files: { "index.html": "<h1>no-session</h1>" },
       })
-      const sessionlessHtml = await handler(
-        new Request(`http://opencode.local${sessionless.data.url}`),
-      )
+      const sessionlessHtml = await handler(new Request(`http://opencode.local${sessionless.data.url}`))
       expect(sessionlessHtml.status).toBe(200)
       expect(await sessionlessHtml.text()).toContain("<h1>no-session</h1>")
 
