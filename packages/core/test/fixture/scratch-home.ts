@@ -30,3 +30,28 @@ export function useScratchHome() {
   delete process.env.OPENCODE_CONFIG
   delete process.env.OPENCODE_CONFIG_CONTENT
 }
+
+/**
+ * The global roots, out of `Global.Path` (pass it in: importing Global here would compute its roots before
+ * useScratchHome runs), that lie outside the scratch home. Empty when the package's preload ran useScratchHome;
+ * every root when it did not, so each package's guard test turns red if its preload loses the call.
+ */
+export function rootsOutsideScratchHome(paths: Record<"data" | "config" | "cache" | "state" | "log", string>) {
+  const home = process.env.OPENCODE_TEST_HOME
+  const roots = {
+    data: paths.data,
+    config: paths.config,
+    cache: paths.cache,
+    state: paths.state,
+    log: paths.log,
+    configDirectory: process.env.OPENCODE_CONFIG_DIR ?? paths.config,
+  }
+  const inside = (root: string) => {
+    if (!home) return false
+    const relative = path.relative(home, root)
+    return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative)
+  }
+  return Object.entries(roots)
+    .filter(([, root]) => !inside(root))
+    .map(([name]) => name)
+}
