@@ -58,6 +58,22 @@ describe("--server health check", () => {
     expect(waits).toEqual([`http://127.0.0.1:${port}`])
   })
 
+  test("without a waiting caller, still waits for a server that is starting", async () => {
+    const server = serve(2, { code: "service_starting" })
+    expect((await resolve(server.url))._tag).toBe("Success")
+    expect(server.seen()).toBe(3)
+  })
+
+  test("without a waiting caller, fails at once when nothing listens", async () => {
+    const probe = serve(0, {})
+    servers.splice(0).forEach((server) => server.stop(true))
+    const started = Date.now()
+    const resolved = await resolve(probe.url)
+    expect(Date.now() - started).toBeLessThan(900)
+    expect(resolved._tag).toBe("Failure")
+    expect(String(resolved._tag === "Failure" ? resolved.failure : "")).toContain(`Could not reach server at ${probe.url}`)
+  })
+
   test("does not say it waits for a server that serves at once", async () => {
     const waits: string[] = []
     expect((await resolve(serve(0, {}).url, (url) => waits.push(url)))._tag).toBe("Success")

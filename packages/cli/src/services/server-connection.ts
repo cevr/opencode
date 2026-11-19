@@ -40,16 +40,22 @@ export const resolve = Effect.fn("cli.server-connection.resolve")(function* (arg
       url: server,
       auth: password ? { type: "basic" as const, username: "opencode", password: Redacted.value(password) } : undefined,
     } satisfies Endpoint
+    const info = (fetch: typeof globalThis.fetch) =>
+      OpenCode.make({ baseUrl: endpoint.url, headers: Service.headers(endpoint), fetch }).server.info()
+    const ready = serviceReadyFetch(attemptTimeout(5_000), { onWait: () => args.onWait?.(endpoint.url) })
     // A restarting server refuses connections for a moment, then answers 503 service_starting until
-    // its routes are built: the check waits through both (a minute at most, each try 5 s at most), as
-    // the TUI's own client does, and says once that it waits. Anything else fails at once.
+    // its routes are built. A caller that says it waits (onWait, the TUI) waits through both, a minute
+    // at most and each try 5 s at most. Any other caller waits only for a server that answered 503:
+    // a URL nothing listens on fails at once, as a one-off command such as `run` must.
     const health = yield* Effect.tryPromise({
       try: () =>
-        OpenCode.make({
-          baseUrl: endpoint.url,
-          headers: Service.headers(endpoint),
-          fetch: serviceReadyFetch(attemptTimeout(5_000), { onWait: () => args.onWait?.(endpoint.url) }),
-        }).server.info(),
+        args.onWait
+          ? info(ready)
+          : info(attemptTimeout(5_000)).catch((error: unknown) => {
+              if (!(error instanceof ClientError && error.reason === "UnexpectedStatus" && statusOf(error) === 503))
+                throw error
+              return info(ready)
+            }),
       catch: (cause) => connectError(endpoint, cause),
     })
     if (health.version !== OPENCODE_VERSION)
@@ -120,6 +126,11 @@ function attemptTimeout(ms: number): typeof globalThis.fetch {
     return fetch(input, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout })
   }
   return Object.assign(attempt, { preconnect: fetch.preconnect })
+}
+
+function statusOf(error: ClientError) {
+  const cause: unknown = error.cause
+  return typeof cause === "object" && cause !== null && "status" in cause ? cause.status : undefined
 }
 
 function connectError(endpoint: Endpoint, cause: unknown) {
