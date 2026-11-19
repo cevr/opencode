@@ -1,4 +1,7 @@
 import { NativeError, NativeStatus, OptimizedBuffer } from "@opentui/core"
+import { useScratchHome } from "../../core/test/fixture/scratch-home"
+
+useScratchHome()
 
 // Workaround: OpenTUI's test renderer can read a frame while the native writer is still flushing
 // output, which throws OutputBusy until the event loop runs. Frame reads poll, so fall back to the
