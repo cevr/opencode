@@ -268,7 +268,7 @@ it.live("outlines a step whose text the projector split across several session_p
         // The transcript reads the step whole from its parts.
         const held = await api.message.list({ sessionID, order: "asc" })
         const step = held.data.find((message) => message.id === "msg_step")
-        expect(step?.type === "assistant" ? step.content.map((part) => part.type) : []).toEqual(
+        expect(step?.type === "assistant" ? step.content.map((part): string => part.type) : []).toEqual(
           parts.map((part) => part.type),
         )
         // The outline's line for it is the first sentence of its last text with words in it, the line the map
