@@ -68,13 +68,22 @@ const layer = Layer.effect(
       let entering = true
       let stepped = input.stepped ?? false
       const promotable = input.promotable ?? "input"
+      // Input this drain starts on. A continuation carries none: it goes on with a turn already started.
+      const pending = continuing || stepped ? undefined : yield* SessionInbox.nextPromotable(db, sessionID, "input")
       if (!force && !continuing && !stepped) {
-        const pending = yield* SessionInbox.nextPromotable(db, sessionID, "input")
         if (!pending) return DrainResult.Complete()
         const control = pending.type === "compaction" || pending.type === "move"
         if (promotable === "steer" && pending.delivery === "queue" && !control) return DrainResult.Complete()
       }
       yield* plugins.awaitActivation
+      // Before anything is delivered or loaded, so what a hook changes (the Session's model) holds for the whole turn.
+      if (pending)
+        yield* hooks.trigger("session", "experimental.wake", { sessionID }).pipe(
+          Effect.asVoid,
+          Effect.catchCause((cause) =>
+            Effect.logWarning("wake hook failed", { sessionID, cause: Cause.pretty(cause) }),
+          ),
+        )
       yield* settleStaleCompactions(sessionID)
       yield* settleStaleToolCalls(sessionID)
 

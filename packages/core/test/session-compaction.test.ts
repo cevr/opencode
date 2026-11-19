@@ -43,7 +43,7 @@ import { AbsolutePath } from "@opencode/core/schema"
 import { Money } from "@opencode/schema/money"
 import { Skill } from "@opencode/schema/skill"
 import { Shell } from "@opencode/schema/shell"
-import { DateTime, Deferred, Effect, Fiber, Layer, Schema, Stream } from "effect"
+import { DateTime, Deferred, Effect, Fiber, Layer, Logger, Schema, Stream } from "effect"
 import { TestClock } from "effect/testing"
 import { asc, eq, inArray, sql } from "drizzle-orm"
 import { testEffect } from "./lib/effect"
@@ -1319,6 +1319,86 @@ it.effect("automatic compaction swaps in the background summary without another 
         Bus.versionedType(SessionEvent.Compaction.Ended.type, 1),
       ].toSorted(),
     )
+  }),
+)
+
+it.effect("a swapped-in background summary runs the compaction ended hook once it is recorded", () =>
+  Effect.gen(function* () {
+    requests = []
+    const hooks = yield* PluginHooks.Service
+    const store = yield* SessionStore.Service
+    const compaction = yield* SessionCompaction.Service
+    const sessionID = Session.ID.make("ses_precompute_ended_hook")
+    const session = yield* insertSession(sessionID)
+    const history = precomputeHistory()
+    yield* storeMessages(sessionID, history.due)
+    const ended: Array<{ readonly event: unknown; readonly recorded: unknown }> = []
+    yield* hooks.register("session", "experimental.compaction.ended", (event) =>
+      store.context(sessionID).pipe(
+        Effect.map((context) => {
+          ended.push({ event: { ...event }, recorded: context[0]?.type === "compaction" && context[0].status })
+        }),
+        Effect.orDie,
+      ),
+    )
+
+    yield* compaction.precompute(Effect.succeed(loaded(session, history.near)))
+    expect(yield* compaction.compact({ reason: "auto", context: loaded(session, history.due) })).toEqual({
+      status: "completed",
+    })
+
+    expect(requests).toHaveLength(1)
+    // The hook runs after the compaction is recorded, so what it does lands after it.
+    expect(ended).toEqual([
+      {
+        event: { sessionID, agent: Agent.defaultID, reason: "auto", model: resolved.ref },
+        recorded: "completed",
+      },
+    ])
+  }),
+)
+
+it.effect("a failing compaction ended hook leaves the compaction completed and logs a warning", () =>
+  Effect.gen(function* () {
+    requests = []
+    const warnings: unknown[] = []
+    const logger = Logger.make(({ logLevel, message }) => {
+      if (logLevel === "Warn") warnings.push(message)
+    })
+    const hooks = yield* PluginHooks.Service
+    const store = yield* SessionStore.Service
+    const sessionID = Session.ID.make("ses_failing_ended_hook")
+    const session = yield* insertSession(sessionID)
+    yield* hooks.register("session", "experimental.compaction.ended", () => Effect.die("hook exploded"))
+
+    expect(
+      yield* compactManually(session, [
+        {
+          id: SessionMessage.ID.create(),
+          type: "user" as const,
+          text: "Compact this conversation.",
+          time: { created: DateTime.makeUnsafe(0) },
+        },
+      ]).pipe(Effect.provide(Logger.layer([logger]))),
+    ).toEqual({ status: "completed" })
+
+    expect(yield* store.context(sessionID)).toMatchObject([{ type: "compaction", status: "completed" }])
+    expect((yield* store.get(sessionID))?.model).toBeUndefined()
+    expect(JSON.stringify(warnings)).toContain("compaction ended hook failed")
+    expect(JSON.stringify(warnings)).toContain("hook exploded")
+  }),
+)
+
+it.effect("a compaction that fails runs no compaction ended hook", () =>
+  Effect.gen(function* () {
+    requests = []
+    const hooks = yield* PluginHooks.Service
+    const session = yield* insertSession(Session.ID.make("ses_failed_no_ended_hook"))
+    let ended = 0
+    yield* hooks.register("session", "experimental.compaction.ended", () => Effect.sync(() => ended++))
+
+    expect(yield* compactManually(session, [])).toMatchObject({ status: "failed" })
+    expect(ended).toBe(0)
   }),
 )
 

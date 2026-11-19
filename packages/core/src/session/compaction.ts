@@ -18,12 +18,13 @@ import type { StreamOptions } from "@opencode/ai/route"
 import type { SessionCompactionResult } from "@opencode/plugin/effect/session"
 import type { SessionError } from "@opencode/schema/session-error"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
-import { Clock, Context, DateTime, Effect, Exit, Fiber, Layer, Result, Scope, Stream } from "effect"
+import { Cause, Clock, Context, DateTime, Effect, Exit, Fiber, Layer, Result, Scope, Stream } from "effect"
 import { Agent } from "../agent.js"
 import { Bus } from "../bus.js"
 import { Database } from "../database/database.js"
 import { llmClient } from "../effect/app-node-platform.js"
 import { Model } from "../model.js"
+import { PluginHooks } from "../plugin/hooks.js"
 import { State } from "../state.js"
 import { Token } from "../util/token.js"
 import type { SessionContext } from "./context.js"
@@ -265,6 +266,7 @@ export const layer = Layer.effect(
     const models = yield* SessionRunnerModel.Service
     const db = (yield* Database.Service).db
     const requests = yield* SessionModelRequest.Service
+    const hooks = yield* PluginHooks.Service
 
     const scope = yield* Scope.Scope
     const precomputed = new Map<SessionContext.Loaded["session"]["id"], Precomputed>()
@@ -938,6 +940,28 @@ export const layer = Layer.effect(
       return { status: "completed" }
     })
 
+    /**
+     * Awaited after a compaction is recorded, before `compact` returns and the runner builds the next request from the
+     * Session, so what a hook changes there (its model) holds from that request on. A hook's failure is logged only.
+     */
+    const ended = (trigger: Trigger) =>
+      hooks
+        .trigger("session", "experimental.compaction.ended", {
+          sessionID: trigger.context.session.id,
+          agent: trigger.context.agent.id,
+          reason: trigger.reason === "manual" ? (trigger.recorded ?? "manual") : "auto",
+          model: trigger.context.model.ref,
+        })
+        .pipe(
+          Effect.asVoid,
+          Effect.catchCause((cause) =>
+            Effect.logWarning("compaction ended hook failed", {
+              sessionID: trigger.context.session.id,
+              cause: Cause.pretty(cause),
+            }),
+          ),
+        )
+
     return Service.of({
       transform: state.transform,
       reload: state.reload,
@@ -950,6 +974,9 @@ export const layer = Layer.effect(
               : publish(trigger, { error: { type: "compaction.interrupted", message: "Compaction was interrupted" } }),
           ),
           Effect.ensuring(Effect.sync(() => spent.delete(trigger.context.session.id))),
+          // Outside the interruption handler above: the compaction is recorded by now, so interrupting a hook must not
+          // record it as failed.
+          Effect.tap((outcome) => (outcome.status === "completed" ? ended(trigger) : Effect.void)),
         ),
       precompute,
     })
@@ -959,7 +986,16 @@ export const layer = Layer.effect(
 export const node = makeLocationNode({
   service: Service,
   layer,
-  deps: [Agent.node, Bus.node, Database.node, llmClient, Model.node, SessionModelRequest.node, SessionRunnerModel.node],
+  deps: [
+    Agent.node,
+    Bus.node,
+    Database.node,
+    llmClient,
+    Model.node,
+    PluginHooks.node,
+    SessionModelRequest.node,
+    SessionRunnerModel.node,
+  ],
 })
 
 /**

@@ -87,6 +87,7 @@ import {
   Exit,
   Fiber,
   Layer,
+  Logger,
   Queue,
   Schema,
   Scope,
@@ -2114,9 +2115,7 @@ describe("SessionRunnerLLM", () => {
     expect(userTexts(last)).toEqual(["First", "Fourth"])
     expect(last.system.map((part) => part.text).join("\n")).not.toContain("Entered mode")
     // Clients still see every message; only the model context hides the stale update.
-    expect((yield* s.messages).filter((message) => message.type === "system")).toMatchObject([
-      { text: "Entered mode" },
-    ])
+    expect((yield* s.messages).filter((message) => message.type === "system")).toMatchObject([{ text: "Entered mode" }])
   })
 
   scenario("uses the selected model family prompt when the agent does not override it", function* (s) {
@@ -3709,6 +3708,353 @@ describe("SessionRunnerLLM", () => {
       reason: "manual",
       error: { type: "provider.no-route", message: "Model unavailable: test/missing" },
     })
+  })
+
+  // A plugin switching the model from `experimental.compaction.ended`: the old model writes the summary, and the
+  // next request goes to the new one. Each case runs many times, so a projection that lagged the hook would show.
+  const COMPACTION_ENDED_RUNS = 50
+  const replacementRef = Model.Ref.make({ providerID: Provider.ID.make("fake"), id: Model.ID.make("replacement") })
+  const switchAtCompactionEnded = (s: Scenario) =>
+    Effect.gen(function* () {
+      const hooks = yield* PluginHooks.Service
+      const ended: Array<{ readonly reason: string; readonly agent: string; readonly model: string }> = []
+      yield* hooks.register("session", "experimental.compaction.ended", (event) =>
+        Effect.gen(function* () {
+          ended.push({ reason: event.reason, agent: event.agent, model: event.model.id })
+          yield* s.session.switchModel({ sessionID: event.sessionID, model: replacementRef }).pipe(Effect.orDie)
+        }),
+      )
+      return ended
+    })
+  const requestModels = (s: Scenario) => s.requests.map((request) => String(request.model.id))
+  /**
+   * Drains the Session in this fiber, so its warnings reach a logger the test provides; `Session.resume` would drain
+   * in the execution's own fiber.
+   */
+  const drainCapturingWarnings = Effect.gen(function* () {
+    const runner = yield* SessionRunner.Service
+    const warnings: unknown[] = []
+    const logger = Logger.make(({ logLevel, message }) => {
+      if (logLevel === "Warn") warnings.push(message)
+    })
+    yield* runner.drain({ sessionID, force: true }).pipe(Effect.provide(Logger.layer([logger])))
+    return JSON.stringify(warnings)
+  })
+  /** Message types, oldest first, from the compaction on: the switch is recorded after the compaction it waited for. */
+  const typesFromCompaction = (newestFirst: readonly SessionMessage.Info[]) => {
+    const messages = newestFirst.toReversed()
+    return messages.slice(messages.findIndex((message) => message.type === "compaction")).map((message) => message.type)
+  }
+
+  for (let run = 1; run <= COMPACTION_ENDED_RUNS; run++) {
+    scenario(`switches the model at a mid-turn automatic compaction from its ended hook (run ${run})`, function* (s) {
+      s.currentModel = compactModel
+      const ended = yield* switchAtCompactionEnded(s)
+      yield* s.llm.push(
+        TestLLM.complete(
+          { reason: { normalized: "tool-calls" }, usage: { inputTokens: 3_950, nonCachedInputTokens: 3_950 } },
+          LLMEvent.toolCall({ id: "call-ended-auto", name: "echo", input: { text: "mid-turn" } }),
+        ),
+        TestLLM.text("## Objective\n- Mid-turn summary", "text-ended-auto-summary"),
+        TestLLM.text("Done", "text-ended-auto-done"),
+      )
+
+      yield* s.runPrompt("Work")
+
+      expect(requestModels(s)).toEqual(["compact", "compact", "replacement"])
+      expect(s.executions).toEqual(["mid-turn"])
+      expect(userTexts(s.requests[1]!).at(-1)).toContain("## Objective")
+      expect(userTexts(s.requests[2]!)[0]).toContain("<summary>\n## Objective\n- Mid-turn summary\n</summary>")
+      expect(ended).toEqual([{ reason: "auto", agent: "build", model: "compact" }])
+      expect((yield* s.session.get(sessionID))?.model).toMatchObject(replacementRef)
+      expect(typesFromCompaction(yield* s.messages)).toEqual(["compaction", "model-switched", "assistant"])
+    })
+
+    scenario(`switches the model at an overflow compaction from its ended hook (run ${run})`, function* (s) {
+      yield* setupOverflowRecovery(s)
+      const ended = yield* switchAtCompactionEnded(s)
+      yield* s.llm.push(
+        TestLLM.failAfter(
+          providerRejected({ message: "prompt too long", classification: "context-overflow" }),
+          LLMEvent.stepStart({ index: 0 }),
+        ),
+        TestLLM.text("## Objective\n- Overflow summary", "text-ended-overflow-summary"),
+        TestLLM.text("Recovered", "text-ended-overflow-final"),
+      )
+
+      yield* s.runPrompt("Continue")
+
+      expect(requestModels(s)).toEqual(["recovery", "recovery", "replacement"])
+      expect(userTexts(s.requests[2]!)[0]).toContain("<summary>\n## Objective\n- Overflow summary\n</summary>")
+      expect(ended).toEqual([{ reason: "auto", agent: "build", model: "recovery" }])
+      expect((yield* s.session.get(sessionID))?.model).toMatchObject(replacementRef)
+      expect(typesFromCompaction(yield* s.messages)).toEqual(["compaction", "model-switched", "assistant"])
+    })
+
+    scenario(`switches the model when a held background summary is swapped in (run ${run})`, function* (s) {
+      s.currentModel = compactModel
+      // The first measured response starts the cycle low, so the second one is near enough the ceiling to summarize
+      // in the background once its turn ends.
+      yield* s.llm.push(TestLLM.textWithUsage("Hello", "text-ended-held-first", 100))
+      yield* s.runPrompt("Hi")
+      yield* s.llm.push(
+        TestLLM.textWithUsage("Answer", "text-ended-held-second", 3_000),
+        TestLLM.text("## Objective\n- Held summary", "text-ended-held-summary"),
+      )
+      yield* s.runPrompt("Question")
+      const ended = yield* switchAtCompactionEnded(s)
+      yield* s.llm.push(TestLLM.text("Done", "text-ended-held-done"))
+
+      yield* s.runPrompt("More ".repeat(400))
+
+      // Two turns, the background summary written ahead of the third, then the third on the new model.
+      expect(requestModels(s)).toEqual(["compact", "compact", "compact", "replacement"])
+      expect(userTexts(s.requests[2]!).at(-1)).toContain("## Objective")
+      expect(JSON.stringify(s.requests[2]!.messages)).not.toContain("More More")
+      expect(userTexts(s.requests[3]!)[0]).toContain("<summary>\n## Objective\n- Held summary\n</summary>")
+      expect(ended).toEqual([{ reason: "auto", agent: "build", model: "compact" }])
+      expect((yield* s.session.get(sessionID))?.model).toMatchObject(replacementRef)
+      expect(typesFromCompaction(yield* s.messages)).toEqual(["compaction", "model-switched", "assistant"])
+    })
+
+    scenario(`switches the model at a requested compaction from its ended hook (run ${run})`, function* (s) {
+      yield* s.llm.push(TestLLM.text("Earlier answer", "text-ended-manual-history"))
+      yield* s.runPrompt("Earlier question")
+      s.requests.length = 0
+      const ended = yield* switchAtCompactionEnded(s)
+      yield* s.llm.push(
+        TestLLM.text("## Objective\n- Requested summary", "text-ended-manual-summary"),
+        TestLLM.text("After", "text-ended-manual-after"),
+      )
+
+      yield* s.session.compact({ sessionID })
+      yield* s.admit("Next")
+      yield* s.resume
+
+      expect(requestModels(s)).toEqual(["fake-model", "replacement"])
+      expect(userTexts(s.requests[1]!)).toContain("Next")
+      expect(ended).toEqual([{ reason: "manual", agent: "build", model: "fake-model" }])
+      expect((yield* s.session.get(sessionID))?.model).toMatchObject(replacementRef)
+    })
+  }
+
+  scenario("runs no compaction ended hook when automatic compaction fails", function* (s) {
+    yield* s.llm.push(TestLLM.textWithUsage("Earlier answer", "text-ended-failed-history", 3_950))
+    yield* s.runPrompt("Earlier question ".repeat(180))
+    s.currentModel = compactModel
+    s.requests.length = 0
+    const ended = yield* switchAtCompactionEnded(s)
+    yield* s.llm.push(
+      TestLLM.failAfter(providerRejected({ message: "Unsupported parameter: max_output_tokens" })),
+      TestLLM.text("Must not run", "text-ended-failed-after"),
+    )
+    yield* s.admit("Recent exact request ".repeat(180))
+    expect(yield* Effect.exit(s.resume)).toMatchObject({ _tag: "Failure" })
+
+    expect(ended).toEqual([])
+    expect(requestModels(s)).toEqual(["compact"])
+    expect((yield* s.session.get(sessionID))?.model).toBeUndefined()
+  })
+
+  scenario("runs no compaction ended hook when a requested compaction is interrupted", function* (s) {
+    yield* s.llm.push(TestLLM.text("Earlier answer", "text-ended-interrupt-history"))
+    yield* s.runPrompt("Earlier question")
+    const ended = yield* switchAtCompactionEnded(s)
+    const streamed = yield* Deferred.make<void>()
+    const partial = fragmentFixture("text", "text-ended-interrupt-summary", ["Partial summary"])
+    yield* s.llm.push(
+      Stream.concat(
+        Stream.fromIterable(partial.partialEvents),
+        Stream.fromEffect(Deferred.succeed(streamed, undefined)).pipe(Stream.flatMap(() => Stream.never)),
+      ),
+    )
+    const compaction = yield* s.session.compact({ sessionID })
+    const run = yield* s.resume.pipe(Effect.forkChild)
+    yield* Deferred.await(streamed)
+    yield* s.session.interrupt(sessionID)
+    yield* Fiber.await(run)
+
+    expect((yield* s.messages).find((message) => message.id === compaction.id)).toMatchObject({ status: "failed" })
+    expect(ended).toEqual([])
+    expect((yield* s.session.get(sessionID))?.model).toBeUndefined()
+  })
+
+  scenario("keeps the session on its model when a compaction ended hook fails", function* (s) {
+    yield* s.llm.push(TestLLM.text("Earlier answer", "text-ended-defect-history"))
+    yield* s.runPrompt("Earlier question")
+    s.requests.length = 0
+    const hooks = yield* PluginHooks.Service
+    yield* hooks.register("session", "experimental.compaction.ended", () => Effect.die("hook exploded"))
+    yield* s.llm.push(
+      TestLLM.text("## Objective\n- Requested summary", "text-ended-defect-summary"),
+      TestLLM.text("After", "text-ended-defect-after"),
+    )
+
+    // Admitted without waking the Session, so the drain below is the only one.
+    const compaction = yield* s.sessionInbox.admitCompaction({
+      id: SessionMessage.ID.create(),
+      sessionID,
+      delivery: "steer",
+    })
+    yield* s.admit("Next")
+    const logged = yield* drainCapturingWarnings
+
+    expect((yield* s.messages).find((message) => message.id === compaction.id)).toMatchObject({
+      type: "compaction",
+      status: "completed",
+    })
+    expect(logged).toContain("compaction ended hook failed")
+    expect(logged).toContain("hook exploded")
+    expect(requestModels(s)).toEqual(["fake-model", "fake-model"])
+    expect((yield* s.session.get(sessionID))?.model).toBeUndefined()
+  })
+
+  // A plugin switching the model from `experimental.wake`: the execution's first request already goes to the new one.
+  const WAKE_RUNS = 50
+  const switchAtWake = (s: Scenario, switchTo: Model.Ref | undefined = replacementRef) =>
+    Effect.gen(function* () {
+      const hooks = yield* PluginHooks.Service
+      const wakes: Array<{ readonly sessionID: string; readonly requestsBefore: number }> = []
+      yield* hooks.register("session", "experimental.wake", (event) =>
+        Effect.gen(function* () {
+          wakes.push({ sessionID: event.sessionID, requestsBefore: s.requests.length })
+          if (switchTo) yield* s.session.switchModel({ sessionID: event.sessionID, model: switchTo }).pipe(Effect.orDie)
+        }),
+      )
+      return wakes
+    })
+  /** Message types, oldest first. */
+  const chronologicalTypes = (newestFirst: readonly SessionMessage.Info[]) =>
+    newestFirst.toReversed().map((message) => message.type)
+  const earlierTurn = (s: Scenario) =>
+    Effect.gen(function* () {
+      yield* s.llm.push(TestLLM.text("Earlier answer", "text-wake-history"))
+      yield* s.runPrompt("Earlier question")
+      s.requests.length = 0
+    })
+
+  for (let run = 1; run <= WAKE_RUNS; run++) {
+    scenario(`switches the model from the wake hook when a prompt wakes an idle session (run ${run})`, function* (s) {
+      yield* earlierTurn(s)
+      const wakes = yield* switchAtWake(s)
+      yield* s.llm.push(TestLLM.text("Answer", "text-wake-prompt"))
+
+      yield* s.runPrompt("Next question")
+
+      expect(wakes).toEqual([{ sessionID, requestsBefore: 0 }])
+      expect(requestModels(s)).toEqual(["replacement"])
+      expect(userTexts(s.requests[0]!)).toContain("Next question")
+      expect((yield* s.session.get(sessionID))?.model).toMatchObject(replacementRef)
+      // The switch is recorded before the prompt it serves is delivered.
+      expect(chronologicalTypes(yield* s.messages).slice(-3)).toEqual(["model-switched", "user", "assistant"])
+    })
+
+    scenario(
+      `switches the model from the wake hook when a synthetic message wakes the session (run ${run})`,
+      function* (s) {
+        yield* earlierTurn(s)
+        const wakes = yield* switchAtWake(s)
+        yield* s.llm.push(TestLLM.text("Answer", "text-wake-synthetic"))
+
+        yield* s.session.synthetic({ sessionID, text: "Background work finished" })
+        yield* s.session.wait(sessionID)
+
+        expect(wakes).toEqual([{ sessionID, requestsBefore: 0 }])
+        expect(requestModels(s)).toEqual(["replacement"])
+        expect(userTexts(s.requests[0]!)).toContain("Background work finished")
+        expect((yield* s.session.get(sessionID))?.model).toMatchObject(replacementRef)
+      },
+    )
+
+    scenario(`switches the model from the wake hook before a requested compaction (run ${run})`, function* (s) {
+      yield* earlierTurn(s)
+      const wakes = yield* switchAtWake(s)
+      yield* s.llm.push(TestLLM.text("## Objective\n- Woken summary", "text-wake-compaction"))
+
+      const compaction = yield* s.session.compact({ sessionID })
+      yield* s.resume
+
+      expect(wakes).toEqual([{ sessionID, requestsBefore: 0 }])
+      // The summary itself is the new model's first request.
+      expect(requestModels(s)).toEqual(["replacement"])
+      expect(userTexts(s.requests[0]!).at(-1)).toContain("## Objective")
+      expect((yield* s.messages).find((message) => message.id === compaction.id)).toMatchObject({
+        type: "compaction",
+        status: "completed",
+      })
+    })
+  }
+
+  scenario("runs no wake hook for a steer delivered into a running turn", function* (s) {
+    const wakes = yield* switchAtWake(s, undefined)
+    yield* s.admit("First")
+    yield* s.llm.push(
+      TestLLM.toolCall("call-wake-steer", "echo", { text: "working" }),
+      TestLLM.text("Done", "text-wake-steer-done"),
+    )
+    const tools = yield* s.blockTools()
+    const run = yield* s.resume.pipe(Effect.forkChild)
+    yield* tools.started
+    yield* s.session.prompt({ sessionID, text: "Steer while working", delivery: "steer" })
+    yield* tools.release
+    yield* Fiber.join(run)
+    yield* s.session.wait(sessionID)
+
+    expect(s.requests).toHaveLength(2)
+    expect(userTexts(s.requests[1]!)).toContain("Steer while working")
+    expect(wakes).toEqual([{ sessionID, requestsBefore: 0 }])
+  })
+
+  scenario("runs no wake hook for a continuation after a move or a reload", function* (s) {
+    const runner = yield* SessionRunner.Service
+    const wakes = yield* switchAtWake(s, undefined)
+    yield* s.admit("Echo before moving")
+    yield* s.llm.push(
+      TestLLM.toolCall("call-wake-move", "echo", { text: "moving" }),
+      TestLLM.text("Done", "text-wake-after-move"),
+    )
+    const tools = yield* s.blockTools()
+    const run = yield* s.resume.pipe(Effect.forkChild)
+    yield* tools.started
+    yield* s.sessionInbox.admit({
+      id: SessionMessage.ID.create(),
+      sessionID,
+      item: {
+        type: "move",
+        payload: {
+          location: Location.Ref.make({ directory: AbsolutePath.make("/project") }),
+          projectID: Project.ID.global,
+        },
+        delivery: "steer",
+      },
+    })
+    yield* tools.release
+    yield* Fiber.join(run)
+    expect(s.requests).toHaveLength(2)
+    expect(wakes).toHaveLength(1)
+
+    // A reload hands the turn on as a continuation, forced, with no new input.
+    yield* s.llm.push(TestLLM.text("Continued", "text-wake-after-reload"))
+    yield* runner.drain({ sessionID, force: true, continuation: { step: 3 } })
+
+    expect(s.requests).toHaveLength(3)
+    expect(wakes).toHaveLength(1)
+  })
+
+  scenario("keeps the session on its model and its work going when a wake hook fails", function* (s) {
+    yield* earlierTurn(s)
+    const hooks = yield* PluginHooks.Service
+    yield* hooks.register("session", "experimental.wake", () => Effect.die("wake hook exploded"))
+    yield* s.llm.push(TestLLM.text("Answer", "text-wake-defect"))
+
+    yield* s.admit("Next question")
+    const logged = yield* drainCapturingWarnings
+
+    expect(logged).toContain("wake hook failed")
+    expect(logged).toContain("wake hook exploded")
+    expect(requestModels(s)).toEqual(["fake-model"])
+    expect(userTexts(s.requests[0]!)).toContain("Next question")
+    expect((yield* s.session.get(sessionID))?.model).toBeUndefined()
   })
 
   scenario("automatically compacts into a completed summary and retained recent turn", function* (s) {

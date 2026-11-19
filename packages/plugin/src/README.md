@@ -146,6 +146,14 @@ restart recovery and the hook keeps running. Persist your own state if the loop 
 fails, fails the execution like any other session hook, so handle errors from slow or remote work such as a judge model
 call.
 
+Two experimental hooks mark where the Session goes on, and the host waits for both before it builds the next request,
+so what they change (the Session's model, through `ctx.session.switchModel`) serves that request: `experimental.wake`
+(`{ sessionID }`) runs once as an execution starts on input (a prompt, a synthetic message, a requested compaction or
+move), before that input is delivered, and not for a steer into a running turn or a continuation after a move, reload
+or restart; `experimental.compaction.ended` (`{ sessionID, agent, reason, model }`) runs after a compaction completes and
+is recorded, before the Session continues, and not for one that fails or is interrupted. A failure in either is logged
+and changes nothing else.
+
 Promise tools use complete executable tool values with async executors:
 
 ```ts

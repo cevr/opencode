@@ -218,11 +218,39 @@ export interface SessionQueueDeliver {
   separator: string
 }
 
+/**
+ * Runs after a compaction of the Session completes (automatic, overflow or requested, a swapped-in background summary
+ * included), once it is recorded and before the Session continues: the next request is built only after every hook
+ * has returned, from the Session as the hooks left it. A hook that switches the Session's model there makes the next
+ * request the new model's first, which reads only the summary. `model` is the Session's model the compaction ran
+ * under, and `reason` is the recorded compaction's. It does not run for a compaction that fails or is interrupted. A
+ * hook that fails is logged and changes nothing about the compaction. Experimental.
+ */
+export interface SessionCompactionEnded {
+  readonly sessionID: Session.ID
+  readonly agent: Agent.ID
+  readonly reason: SessionMessage.CompactionReason
+  readonly model: Model.Ref
+}
+
+/**
+ * Runs once as the Session starts an execution on input (a prompt, a synthetic message, a requested compaction or
+ * move), after the plugins are active and before that input is delivered or any context is loaded or request built.
+ * The mirror of `experimental.idle`. It does not run for a steer delivered into a running turn, nor for a
+ * continuation after a move, reload or restart recovery, which carry no new input. The execution waits for every
+ * hook, then reads the Session as the hooks left it, so a model switched there serves its first request. A hook that
+ * fails is logged and the execution goes on. Experimental.
+ */
+export interface SessionWake {
+  readonly sessionID: Session.ID
+}
+
 export interface SessionHooks {
   readonly fork: { readonly sessionID: Session.ID }
   readonly prompt: SessionPrompt
   readonly context: SessionContext
   readonly compaction: SessionCompaction
+  readonly "experimental.compaction.ended": SessionCompactionEnded
   readonly generate: SessionGenerate
   readonly title: SessionTitle
   readonly "experimental.model.resolve": SessionModelResolve
@@ -233,6 +261,7 @@ export interface SessionHooks {
   readonly "experimental.ws.send": SessionWebSocketSend
   readonly "experimental.ws.receive": SessionWebSocketReceive
   readonly retry: SessionRetry
+  readonly "experimental.wake": SessionWake
   readonly "experimental.idle": SessionIdle
   readonly "experimental.queue.deliver": SessionQueueDeliver
 }
