@@ -19,6 +19,9 @@ describe("debug paths command", () => {
 
     try {
       const result = await cli(["debug", "paths"], {
+        // The test preload's scratch home and config directory would win over the roots below.
+        OPENCODE_TEST_HOME: path.join(root, "home"),
+        OPENCODE_CONFIG_DIR: undefined,
         XDG_DATA_HOME: path.join(root, "data"),
         XDG_CONFIG_HOME: path.join(root, "config"),
         XDG_CACHE_HOME: path.join(root, "cache"),
@@ -33,7 +36,7 @@ describe("debug paths command", () => {
 
       expect({ exitCode: result.exitCode, stderr: result.stderr }).toEqual({ exitCode: 0, stderr: "" })
       expect(paths).toMatchObject({
-        home: os.homedir(),
+        home: path.join(root, "home"),
         data: path.join(root, "data", "opencode"),
         config: path.join(root, "config", "opencode"),
         cache: path.join(root, "cache", "opencode"),
@@ -50,7 +53,7 @@ describe("debug paths command", () => {
   })
 })
 
-async function cli(args: string[], env?: Record<string, string>) {
+async function cli(args: string[], env?: Record<string, string | undefined>) {
   const child = Bun.spawn([process.execPath, "run", path.join(import.meta.dir, "../src/index.ts"), ...args], {
     cwd: path.join(import.meta.dir, ".."),
     env: { ...process.env, ...env },

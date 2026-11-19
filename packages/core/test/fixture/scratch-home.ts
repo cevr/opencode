@@ -29,6 +29,32 @@ export function useScratchHome() {
   })
   delete process.env.OPENCODE_CONFIG
   delete process.env.OPENCODE_CONFIG_CONTENT
+  spawnWithCurrentEnvironment()
+}
+
+/**
+ * Bun.spawn and Bun.spawnSync called without `env` pass the environment the process started with, not
+ * process.env (measured on Bun 1.4.4; node:child_process and Bun.$ pass process.env), so their children would
+ * still resolve the developer's real roots: cli tests wrote the real opencode-local.log that way. Default
+ * their `env` to the current process.env, as Bun documents.
+ */
+function spawnWithCurrentEnvironment() {
+  type Options = { env?: Record<string, string | undefined> }
+  const withEnvironment = (options: unknown) => {
+    const given = (options ?? {}) as Options
+    return given.env ? given : { ...given, env: process.env }
+  }
+  type Spawn = (...args: unknown[]) => unknown
+  const wrap = (original: Spawn): Spawn =>
+    function (this: unknown, ...args) {
+      const [first, second, ...rest] = args
+      const call = Array.isArray(first)
+        ? [first, withEnvironment(second), ...rest]
+        : [withEnvironment(first), ...args.slice(1)]
+      return original.apply(this, call)
+    }
+  Bun.spawn = wrap(Bun.spawn as Spawn) as typeof Bun.spawn
+  Bun.spawnSync = wrap(Bun.spawnSync as Spawn) as typeof Bun.spawnSync
 }
 
 /**
