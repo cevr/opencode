@@ -1,7 +1,7 @@
 import fs from "fs"
 import os from "os"
 import path from "path"
-import { afterAll } from "bun:test"
+import { afterAll, mock } from "bun:test"
 
 /**
  * Points opencode's global roots (Global.home and the XDG data, config, cache and state roots) at a
@@ -10,9 +10,10 @@ import { afterAll } from "bun:test"
  * Call it from a test preload, before any module computes its paths (`@opencode/util/global` reads
  * them once, at import).
  *
- * HOME stays as it is: Bun's os.homedir() keeps the value the process started with, so changing HOME
- * here would split in-process paths from child processes. A runner that sets HOME before it starts
- * Bun (packages/core's script/test.ts) also sets OPENCODE_TEST_HOME, and then this does nothing.
+ * HOME and os.homedir() name the scratch home too, so code that reads the home directory itself (`~`
+ * expansion, protected paths, editor lock files) sees no real file either. A runner that sets all of
+ * this before it starts Bun (packages/core's script/test.ts) also sets OPENCODE_TEST_HOME, and then
+ * this does nothing.
  */
 export function useScratchHome() {
   if (process.env.OPENCODE_TEST_HOME) return
@@ -29,7 +30,19 @@ export function useScratchHome() {
   })
   delete process.env.OPENCODE_CONFIG
   delete process.env.OPENCODE_CONFIG_CONTENT
+  useScratchHomeDirectory(home)
   spawnWithCurrentEnvironment()
+}
+
+/**
+ * Bun's os.homedir() keeps the HOME the process started with, so setting HOME alone would split in-process
+ * paths from children's. Replace the module's homedir as well; children get HOME from process.env.
+ */
+function useScratchHomeDirectory(home: string) {
+  process.env.HOME = home
+  if (process.platform === "win32") process.env.USERPROFILE = home
+  const homedir = () => home
+  for (const id of ["os", "node:os"]) mock.module(id, () => ({ ...os, homedir, default: { ...os, homedir } }))
 }
 
 /**
@@ -58,12 +71,22 @@ function spawnWithCurrentEnvironment() {
 }
 
 /**
- * The global roots, out of `Global.Path` (pass it in: importing Global here would compute its roots before
- * useScratchHome runs), that lie outside the scratch home. Empty when the package's preload ran useScratchHome;
- * every root when it did not, so each package's guard test turns red if its preload loses the call.
+ * The global roots, out of `Global.Path` and the test file's `os.homedir()` (pass them in: importing Global or
+ * os here would read them before useScratchHome runs), plus a spawned child's home and data root, that lie
+ * outside the scratch home. Empty when the package's preload ran useScratchHome; every root when it did not, so
+ * each package's guard test turns red if its preload loses the call.
  */
-export function rootsOutsideScratchHome(paths: Record<"data" | "config" | "cache" | "state" | "log", string>) {
+export function rootsOutsideScratchHome(
+  paths: Record<"data" | "config" | "cache" | "state" | "log", string>,
+  homedir: string,
+) {
   const home = process.env.OPENCODE_TEST_HOME
+  const child = Bun.spawnSync([
+    process.execPath,
+    "-p",
+    `[require("os").homedir(), process.env.XDG_DATA_HOME ?? ""].join("\\n")`,
+  ])
+  const [childHome = "", childData = ""] = child.stdout.toString().trim().split("\n")
   const roots = {
     data: paths.data,
     config: paths.config,
@@ -71,11 +94,14 @@ export function rootsOutsideScratchHome(paths: Record<"data" | "config" | "cache
     state: paths.state,
     log: paths.log,
     configDirectory: process.env.OPENCODE_CONFIG_DIR ?? paths.config,
+    homedir,
+    childHome,
+    childData,
   }
   const inside = (root: string) => {
-    if (!home) return false
+    if (!home || !root) return false
     const relative = path.relative(home, root)
-    return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative)
+    return !relative.startsWith("..") && !path.isAbsolute(relative)
   }
   return Object.entries(roots)
     .filter(([, root]) => !inside(root))
