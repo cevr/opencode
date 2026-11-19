@@ -183,7 +183,7 @@ test("activity summary counts finished work by category", () => {
   })
 })
 
-test("running work is active but not counted, and failed tools are counted", () => {
+test("running calls are active and counted, a live thought is not, and failed tools are counted", () => {
   const open = { ...assistant("a", []), time: { created: 1 } }
   const summary = activitySummary(
     [
@@ -194,10 +194,41 @@ test("running work is active but not counted, and failed tools are counted", () 
     ],
     0,
   )
-  expect(summary).toEqual({ label: "1 read, 1 tool", active: true })
+  expect(summary).toEqual({ label: "2 reads, 1 tool", active: true })
 })
 
-test("execute counts its finished nested calls instead of itself", () => {
+const kernel = (operations: { tool: string; status: "running" | "completed" | "error" }[]): SessionMessageAssistantTool => ({
+  ...tool("k", "kernel", "running"),
+  state: { status: "running", input: {}, metadata: { operations } },
+})
+
+test("a kernel cell running a command after a thought names the command, not just the thought", () => {
+  const open = { ...assistant("a", []), time: { created: 1 } }
+  const items = [
+    { message: open, part: { type: "reasoning" as const, text: "Thaw it", time: { created: 1, completed: 2 } } },
+    { message: open, part: kernel([{ tool: "shell", status: "running" }]) },
+  ]
+  expect(activitySummary(items, 0)).toEqual({ label: "1 command, 1 thought", active: true })
+})
+
+test("a kernel cell that has called nothing yet leaves the row unlabeled", () => {
+  const open = { ...assistant("a", [kernel([])]), time: { created: 1 } }
+  const activity = reduceSessionRows([open], new Set(), false, "low")[0]
+  if (activity.type !== "group") throw new Error("Expected activity")
+  expect(summarizeActivity(activity, () => open, [], false)).toEqual({ label: "", active: true })
+})
+
+test("a lone live thought labels the row Thinking…", () => {
+  const open = {
+    ...assistant("a", [{ type: "reasoning" as const, text: "Plan", time: { created: 1 } }]),
+    time: { created: 1 },
+  }
+  const activity = reduceSessionRows([open], new Set(), false, "low")[0]
+  if (activity.type !== "group") throw new Error("Expected activity")
+  expect(summarizeActivity(activity, () => open, [], false)).toEqual({ label: "Thinking…", active: true })
+})
+
+test("execute counts its nested calls instead of itself", () => {
   const message = assistant("a", [])
   const execute: SessionMessageAssistantTool = {
     ...tool("x", "execute"),
@@ -216,7 +247,7 @@ test("execute counts its finished nested calls instead of itself", () => {
     },
   }
   expect(activitySummary([{ message, part: execute }], 0)).toEqual({
-    label: "2 reads, 1 tool",
+    label: "2 reads, 2 tools",
     active: false,
   })
 })
@@ -259,7 +290,7 @@ test("a thought still streaming counts as finished once a later row closes its g
   expect(activitySummary(items, 0, true)).toEqual({ label: "1 thought, 1 read", active: false })
 })
 
-test("until something finishes, the label is the first running item's status", () => {
+test("before anything finishes, the label counts the running calls", () => {
   const open = {
     ...assistant("a", [tool("e1", "edit", "running"), tool("s1", "shell", "running")]),
     time: { created: 1 },
@@ -267,7 +298,7 @@ test("until something finishes, the label is the first running item's status", (
   const activity = reduceSessionRows([open], new Set(), false, "low")[0]
   if (activity.type !== "group") throw new Error("Expected activity")
   expect(summarizeActivity(activity, () => open, [], false)).toEqual({
-    label: "Running edit…",
+    label: "1 command, 1 edit",
     active: true,
   })
 })

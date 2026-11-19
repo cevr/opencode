@@ -202,7 +202,7 @@ test("expanded instructions stay adjacent to their summary and each other", asyn
   }
 })
 
-test("a low activity group with nothing finished stays collapsed behind a status", async () => {
+test("a low activity group with nothing finished stays collapsed behind its running count", async () => {
   const config = createTuiResolvedConfig({ animations: false })
   const shell = (id: string) => ({
     type: "tool" as const,
@@ -241,7 +241,7 @@ test("a low activity group with nothing finished stays collapsed behind a status
   })
   try {
     app.renderer.start()
-    await app.waitForFrame((frame) => frame.includes("Running command…"))
+    await app.waitForFrame((frame) => frame.includes("2 commands"))
     expect(app.captureCharFrame()).not.toContain("Shell one")
     expect(app.captureCharFrame()).not.toContain("Shell two")
   } finally {

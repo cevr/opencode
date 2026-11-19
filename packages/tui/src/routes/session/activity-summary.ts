@@ -17,7 +17,8 @@ type Item = {
 
 /**
  * Summary for an activity group's subtree; permission-blocked tools are left out.
- * Until something finishes, the label is the first running item's status, e.g. "Running command…".
+ * With nothing to count yet, a live thought labels it "Thinking…"; a code cell that has called nothing yet leaves it
+ * unlabeled, so no row shows and the turn's own loader speaks for it.
  */
 export function summarizeActivity(
   node: Extract<SessionNode, { type: "group" }>,
@@ -39,8 +40,8 @@ export function summarizeActivity(
     entries.flatMap((entry) => (entry.type === "message" ? instructionPaths(message(entry.messageID)) : [])),
   )
   const summary = activitySummary(items, files.size, closed)
-  const current = items.find((item) => isActive(item, closed))
-  return { ...summary, label: summary.label || (current ? busyLabel(current.part) : "") }
+  const thinking = items.find((item) => item.part.type === "reasoning" && isActive(item, closed))
+  return { ...summary, label: summary.label || (thinking ? busyLabel(thinking.part) : "") }
 }
 
 /** Status for a running item, independent of its details, so it doesn't flicker as they arrive. */
@@ -53,37 +54,35 @@ export function busyLabel(part: Item["part"]) {
 
 /**
  * Low verbosity's activity summary, e.g. "3 commands, 1 edit, 2 thoughts, 4 reads".
- * The label counts only finished work; running items are reported through `active`.
- * Code-mode `execute` counts its finished nested calls rather than itself.
+ * The label counts calls, running ones too, so a command still running is named; a thought counts once finished,
+ * and `active` reports anything still running.
+ * A code cell (code-mode `execute`, Prime's `kernel`) counts its nested calls rather than itself.
  * Instructions count distinct loaded files, matching the instruction subgroup.
  * Once a later row closes the group, its thoughts count as finished, as in Medium.
  */
 export function activitySummary(items: readonly Item[], instructions: number, closed = false) {
   const counts = { command: 0, edit: 0, thought: 0, read: 0, tool: 0, instruction: instructions }
+  const count = (tool: string) => {
+    const name = canonicalToolName(tool)
+    if (name === "shell") counts.command++
+    else if (name === "read") counts.read++
+    else if (name === "edit" || name === "write" || name === "patch") counts.edit++
+    else counts.tool++
+  }
   items.forEach((item) => {
     if (item.part.type === "reasoning") {
       // Redacted-only reasoning renders nothing, so it isn't a visible thought.
       if (!isActive(item, closed) && reasoningContent(item.part)) counts.thought++
       return
     }
-    const name = canonicalToolName(item.part.name)
-    if (name === "execute") {
-      const calls = executeCalls(
-        item.part.state.status === "streaming" ? undefined : item.part.state.metadata?.toolCalls,
-      ).filter((call) => call.status !== "running")
-      calls.forEach((call) => {
-        if (canonicalToolName(call.tool) === "read") counts.read++
-        else counts.tool++
-      })
-      // With no finished nested calls to count, a finished execute counts as itself.
+    const calls = cellCalls(item.part)
+    if (calls) {
+      calls.forEach((call) => count(call.tool))
+      // With no nested calls to count, a finished cell counts as itself.
       if (calls.length === 0 && !isActive(item, closed)) counts.tool++
       return
     }
-    if (isActive(item, closed)) return
-    if (name === "shell") counts.command++
-    else if (name === "read") counts.read++
-    else if (name === "edit" || name === "write" || name === "patch") counts.edit++
-    else counts.tool++
+    count(item.part.name)
   })
   return {
     label: Object.entries(counts)
@@ -92,6 +91,14 @@ export function activitySummary(items: readonly Item[], instructions: number, cl
       .join(", "),
     active: items.some((item) => isActive(item, closed)),
   }
+}
+
+/** A code cell's nested calls: code mode's `execute` keeps them in `toolCalls`, Prime's `kernel` in `operations`. */
+function cellCalls(part: SessionMessageAssistantTool) {
+  const name = canonicalToolName(part.name)
+  if (name !== "execute" && name !== "kernel") return
+  if (part.state.status === "streaming") return []
+  return executeCalls(part.state.metadata?.[name === "execute" ? "toolCalls" : "operations"])
 }
 
 function isActive(item: Item, closed: boolean) {
