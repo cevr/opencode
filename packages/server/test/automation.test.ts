@@ -2,12 +2,18 @@ import fs from "node:fs/promises"
 import path from "node:path"
 import { expect } from "bun:test"
 import { OpenCode } from "@opencode/client"
+import { Global } from "@opencode/util/global"
 import { Effect } from "effect"
+import { tempGlobalLayer } from "../../core/test/fixture/global"
 import { tmpdirScoped } from "../../core/test/fixture/tmpdir"
 import { it } from "../../core/test/lib/effect"
 import { ServerFetch } from "../src/fetch"
 import { ServerProcess } from "../src/process"
 import { startServer } from "./fixture/server"
+
+// A fresh database file imports the legacy auth.json from the global data directory, so a scratch one keeps the
+// developer's saved credentials, and the Console config fetch an OpenCode key starts, out of the test.
+const scratchGlobal = { overrides: [Global.node.replace(tempGlobalLayer)] }
 
 const client = (handler: (request: Request) => Promise<Response>) =>
   OpenCode.make({
@@ -40,13 +46,16 @@ it.live(
           JSON.stringify({ experimental: { automations: true }, permission: { execute: "ask" } }),
         )
       })
-      const handler = yield* ServerFetch.make({
-        app: { version: "test" },
-        database: { path: path.join(dir, "opencode.db") },
-        config: { directory: global, project: true, claude: false },
-        models: { fetch: false },
-        fs: { filewatcher: false },
-      })
+      const handler = yield* ServerFetch.make(
+        {
+          app: { version: "test" },
+          database: { path: path.join(dir, "opencode.db") },
+          config: { directory: global, project: true, claude: false },
+          models: { fetch: false },
+          fs: { filewatcher: false },
+        },
+        scratchGlobal,
+      )
       const api = client(handler)
       const post = (body: unknown) =>
         handler(
@@ -269,13 +278,17 @@ it.live("starts one child for a due automation when two servers share a database
     // Seed an active automation in a short-lived scope so it falls due while no server is running.
     const createdID = yield* Effect.scoped(
       Effect.gen(function* () {
-        const handler = yield* ServerFetch.make({
-          app: { version: "test" },
-          database: { path: dbPath },
-          config: { directory: dir, project: true, claude: false },
-          models: { fetch: false },
-          fs: { filewatcher: false },
-        })
+        const handler = yield* ServerFetch.make(
+          {
+            app: { version: "test" },
+            database: { path: dbPath },
+            config: { directory: dir, project: true, claude: false },
+            models: { fetch: false },
+            fs: { filewatcher: false },
+          },
+          scratchGlobal,
+        )
+        // The database now exists, so the server processes below open it without importing credentials again.
         const seededApi = client(handler)
         return yield* Effect.promise(async () => {
           const parent = await seededApi.session.create({ location: { directory: dir } })

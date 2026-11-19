@@ -2,7 +2,9 @@ import fs from "node:fs/promises"
 import path from "node:path"
 import { expect } from "bun:test"
 import { OpenCode } from "@opencode/client"
+import { Global } from "@opencode/util/global"
 import { Effect } from "effect"
+import { tempGlobalLayer } from "../../core/test/fixture/global"
 import { tmpdirScoped } from "../../core/test/fixture/tmpdir"
 import { it } from "../../core/test/lib/effect"
 import { serveRoutes } from "./fixture/routes"
@@ -81,13 +83,18 @@ export default {
       )
     })
 
-    const server = yield* serveRoutes({
-      app: { version: "test" },
-      database: { path: path.join(dir, "opencode.db") },
-      config: { directory: global, project: true, claude: false },
-      models: { fetch: false },
-      fs: { filewatcher: false },
-    })
+    const server = yield* serveRoutes(
+      {
+        app: { version: "test" },
+        database: { path: path.join(dir, "opencode.db") },
+        config: { directory: global, project: true, claude: false },
+        models: { fetch: false },
+        fs: { filewatcher: false },
+      },
+      // A fresh database file imports the legacy auth.json from the global data directory, so a scratch one keeps the
+      // developer's saved credentials, and the Console config fetch an OpenCode key starts, out of the test.
+      [Global.node.replace(tempGlobalLayer)],
+    )
     const handler = server.handler
     const api = client(handler)
     yield* server.pluginsLoaded(enabled)

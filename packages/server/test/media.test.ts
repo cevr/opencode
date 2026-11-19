@@ -5,7 +5,9 @@ import path from "node:path"
 import { expect } from "bun:test"
 import { OpenCode, type SessionMessageInfo } from "@opencode/client"
 import { Session } from "@opencode/schema/session"
+import { Global } from "@opencode/util/global"
 import { Effect } from "effect"
+import { tempGlobalLayer } from "../../core/test/fixture/global"
 import { tmpdirScoped } from "../../core/test/fixture/tmpdir"
 import { it } from "../../core/test/lib/effect"
 import { ContentHeaders } from "../src/content-headers"
@@ -59,19 +61,26 @@ const assistant: SessionMessageInfo = {
   time: { created: 110, completed: 120 },
 }
 
+// A fresh database file imports the legacy auth.json from the global data directory, so a scratch one keeps the
+// developer's saved credentials, and the Console config fetch an OpenCode key starts, out of the test.
+const scratchGlobal = { overrides: [Global.node.replace(tempGlobalLayer)] }
+
 const serve = (database: string, mediaBlob: boolean) =>
-  ServerFetch.make({
-    app: { version: "test" },
-    database: { path: database },
-    // Its own global config directory, so the developer's global config can't add remote MCP servers.
-    config: {
-      directory: path.dirname(database),
-      project: false,
-      content: JSON.stringify(mediaBlob ? { experimental: { media_blob: true } } : {}),
+  ServerFetch.make(
+    {
+      app: { version: "test" },
+      database: { path: database },
+      // Its own global config directory, so the developer's global config can't add remote MCP servers.
+      config: {
+        directory: path.dirname(database),
+        project: false,
+        content: JSON.stringify(mediaBlob ? { experimental: { media_blob: true } } : {}),
+      },
+      models: { fetch: false },
+      fs: { filewatcher: false },
     },
-    models: { fetch: false },
-    fs: { filewatcher: false },
-  })
+    scratchGlobal,
+  )
 
 const client = (handler: (request: Request) => Promise<Response>, capabilities?: string) =>
   OpenCode.make({
@@ -293,13 +302,16 @@ it.live("follows experimental.media_blob from the session's project config and s
         await fs.writeFile(path.join(project, "opencode.json"), JSON.stringify({ experimental: { media_blob: true } }))
       })
       // The flag lives only in the project's config; the server's cwd and global config leave it off.
-      const handler = yield* ServerFetch.make({
-        app: { version: "test" },
-        database: { path: database },
-        config: { directory: global, project: true, claude: false },
-        models: { fetch: false },
-        fs: { filewatcher: false },
-      })
+      const handler = yield* ServerFetch.make(
+        {
+          app: { version: "test" },
+          database: { path: database },
+          config: { directory: global, project: true, claude: false },
+          models: { fetch: false },
+          fs: { filewatcher: false },
+        },
+        scratchGlobal,
+      )
       const plain = client(handler)
       const opted = client(handler, "experimental-media-uri")
 
