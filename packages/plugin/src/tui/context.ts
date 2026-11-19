@@ -766,6 +766,33 @@ export interface ComposerTab {
   readonly render: (input: ComposerTabInput) => JSX.Element
 }
 
+/** A model as the host's model picker lists it. */
+export interface ModelPickerModel {
+  readonly providerID: string
+  readonly modelID: string
+}
+
+/**
+ * An action in the footer of the host's model picker, on the highlighted
+ * model, beside the host's own (favorite, connect). The host decides nothing
+ * with it: it lists the action, binds its key while the picker is open, and
+ * calls `onTrigger` with the highlighted model.
+ */
+export interface ModelPickerAction {
+  /** Unique among this plugin's picker actions: letters, digits, ".", "_" or "-". */
+  readonly id: string
+  /** The key that triggers it while the picker is open, such as "ctrl+n". Pick one the picker leaves free. */
+  readonly bind: string
+  /** Its label in the picker's footer. */
+  readonly title: string
+  /**
+   * Runs with the highlighted model. The picker stays open and the prompt's
+   * model is unchanged; close it with `ui.dialog.clear()`, or show a dialog of
+   * your own in its place. `ui.router.current()` names the session on screen.
+   */
+  readonly onTrigger: (model: ModelPickerModel) => void
+}
+
 /** Host markdown, styled with the current theme's syntax and every registered code-block renderer. */
 export type MarkdownProps = {
   readonly content: string
@@ -883,6 +910,11 @@ export interface UI {
    * runs; see ComposerTab. Tabs follow the host's, in enable order.
    */
   readonly composerTab: (tab: ComposerTab) => () => void
+  /**
+   * Adds an action to the host's model picker until the returned cleanup
+   * runs; see ModelPickerAction. Actions follow the host's, in enable order.
+   */
+  readonly modelPickerAction: (action: ModelPickerAction) => () => void
   /**
    * The terminal's OSC 7501 program status. The host reports its sessions
    * there (working, blocked, idle); `claim()` takes that over: every record is

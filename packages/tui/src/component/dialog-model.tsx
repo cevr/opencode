@@ -13,6 +13,7 @@ import { useLocation } from "../context/location"
 import { useNewDesigns } from "../config"
 import { DialogFreeModels } from "./dialog-model-free"
 import { FavoriteMarker, isFreeModel, prioritizeFavorites, sortModelOptions } from "./model-options"
+import { modelPickerActions } from "../plugin/context"
 
 export function DialogModel(props: { providerID?: string }) {
   const local = useLocal()
@@ -218,6 +219,13 @@ function DialogConnectedModels(props: {
             local.model.toggleFavorite(option.value as { providerID: string; modelID: string })
           },
         },
+        ...modelPickerActions().map((action) => ({
+          command: action.command,
+          title: action.title,
+          bind: action.bind,
+          onTrigger: (option: { value: { providerID: string; modelID: string } }) =>
+            action.onTrigger({ providerID: option.value.providerID, modelID: option.value.modelID }),
+        })),
       ]}
       onFilter={setQuery}
       flat={true}

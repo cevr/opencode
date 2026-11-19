@@ -32,6 +32,7 @@ import {
   createPluginContext,
   usePluginHost,
   type Dispose,
+  type RegisteredModelPickerAction,
   type RegisteredSlot,
   type RegistryKind,
   type SlotRender,
@@ -76,6 +77,8 @@ type Value = {
   readonly autocomplete: () => ReadonlyMap<string, AutocompleteSource>
   /** The composer panel's plugin tabs of active plugins, in enable order; an id taken twice keeps the first. */
   readonly composerTabs: () => readonly ComposerTab[]
+  /** The model picker's plugin actions of active plugins, in enable order. */
+  readonly modelPickerActions: () => readonly RegisteredModelPickerAction[]
   readonly activate: (id: string) => Promise<boolean>
   readonly deactivate: (id: string) => Promise<boolean>
 }
@@ -93,6 +96,7 @@ type Registration = {
   layout: Record<string, Layout>
   autocomplete: Record<string, AutocompleteSource>
   composer: Record<string, ComposerTab>
+  modelPicker: Record<string, RegisteredModelPickerAction>
   cleanups: Dispose[]
 }
 
@@ -101,6 +105,16 @@ type Desired = Pick<Registration, "plugin" | "source" | "target" | "version" | "
 type Trace = <T>(stage: string, tags: LogTags, task: () => Promise<T>) => Promise<T>
 
 const PluginContext = createContext<Value>()
+
+const noPickerActions = (): readonly RegisteredModelPickerAction[] => []
+// The mounted provider's picker actions. Dialogs render beside the provider, outside its context, so the host's model
+// picker cannot `usePlugin()`; the provider publishes its actions here while it is mounted.
+const [pickerActions, setPickerActions] = createSignal(noPickerActions)
+
+/** The model picker's plugin actions of the mounted PluginProvider's active plugins, in enable order. Reactive. */
+export function modelPickerActions(): readonly RegisteredModelPickerAction[] {
+  return pickerActions()()
+}
 
 export function PluginProvider(props: ParentProps<{ packages: PackageSource; directories: string[] }>) {
   const host = usePluginHost()
@@ -165,6 +179,7 @@ export function PluginProvider(props: ParentProps<{ packages: PackageSource; dir
     setStore("registrations", id, "layout", reconcileStore({}))
     setStore("registrations", id, "autocomplete", reconcileStore({}))
     setStore("registrations", id, "composer", reconcileStore({}))
+    setStore("registrations", id, "modelPicker", reconcileStore({}))
   }
   // Registration-store key order is enable order, so later items win.
   const layout = createMemo<Layout>(() =>
@@ -196,6 +211,14 @@ export function PluginProvider(props: ParentProps<{ packages: PackageSource; dir
     }
     return [...result.values()]
   })
+  const activePickerActions = createMemo(() =>
+    Object.values(store.registrations).flatMap((registration) =>
+      registration.active ? Object.values(registration.modelPicker) : [],
+    ),
+  )
+  // Dialogs render beside this provider, so the host's model picker reads its actions through the bridge.
+  setPickerActions(() => activePickerActions)
+  onCleanup(() => setPickerActions((current) => (current === activePickerActions ? noPickerActions : current)))
 
   const activate = async (id: string) => {
     const item = store.registrations[id]
@@ -216,7 +239,14 @@ export function PluginProvider(props: ParentProps<{ packages: PackageSource; dir
         set: (
           kind: RegistryKind,
           name: string,
-          value: Page | RegisteredSlot | MarkdownCodeBlockRenderer | Layout | AutocompleteSource | ComposerTab,
+          value:
+            | Page
+            | RegisteredSlot
+            | MarkdownCodeBlockRenderer
+            | Layout
+            | AutocompleteSource
+            | ComposerTab
+            | RegisteredModelPickerAction,
         ) => setStore("registrations", id, kind, name, () => value),
         remove: (kind, name) =>
           setStore(
@@ -663,6 +693,7 @@ export function PluginProvider(props: ParentProps<{ packages: PackageSource; dir
         layout,
         autocomplete,
         composerTabs,
+        modelPickerActions: activePickerActions,
         // Manual dialog toggles join the same chain as reconciles so a
         // toggle mid-reload cannot mix registrations across generations.
         activate: (id) => enqueue(() => activate(id)),
@@ -766,6 +797,7 @@ function toRegistration(item: Desired): Registration {
     layout: {},
     autocomplete: {},
     composer: {},
+    modelPicker: {},
     cleanups: [],
   }
 }

@@ -27,6 +27,7 @@ import type {
   Toast,
   AutocompleteSource,
   ComposerTab,
+  ModelPickerAction,
 } from "@opencode/plugin/tui/context"
 import type { Placement, PlacementKind } from "./structure"
 import { infoStringToFiletype, type MarkdownCodeBlockRenderer } from "@opentui/core"
@@ -78,7 +79,10 @@ export const HOST_COMPOSER_TABS: readonly string[] = ["subagents", "shell", "ter
 // The provider's registration store, narrowed to what a plugin context needs:
 // route/slot registration lands there, but ordering and lifecycle stay owned
 // by the provider.
-export type RegistryKind = "routes" | "slots" | "markdown" | "layout" | "autocomplete" | "composer"
+export type RegistryKind = "routes" | "slots" | "markdown" | "layout" | "autocomplete" | "composer" | "modelPicker"
+
+// A plugin's model picker action as the registry keeps it: `command` names its binding in the picker, unique across plugins.
+export type RegisteredModelPickerAction = ModelPickerAction & { readonly command: string }
 
 export type Registry = {
   has(kind: RegistryKind, name: string): boolean
@@ -88,6 +92,7 @@ export type Registry = {
   set(kind: "layout", name: string, layout: Layout): void
   set(kind: "autocomplete", name: string, source: AutocompleteSource): void
   set(kind: "composer", name: string, tab: ComposerTab): void
+  set(kind: "modelPicker", name: string, action: RegisteredModelPickerAction): void
   remove(kind: RegistryKind, name: string): void
   active(): boolean
 }
@@ -394,6 +399,29 @@ export function createPluginContext(input: {
           render: (tabInput) => provide(() => tab.render(tabInput)),
         })
         return registration("composer", tab.id)
+      },
+      modelPickerAction(action) {
+        if (!/^[\w.-]+$/.test(action.id))
+          throw new Error(`Model picker action id must be letters, digits, ".", "_" or "-": ${action.id}`)
+        if (input.registry.has("modelPicker", action.id))
+          throw new Error(`Model picker action already registered: ${action.id}`)
+        input.registry.set("modelPicker", action.id, {
+          ...action,
+          command: `plugin.${input.id}.model-picker.${action.id}`,
+          // A throwing action must not take down the picker; it surfaces as one error toast.
+          onTrigger(model) {
+            try {
+              action.onTrigger(model)
+            } catch (error) {
+              host.toast.show({
+                variant: "error",
+                title: "Plugin",
+                message: `${input.id} failed in the model picker: ${errorMessage(error)}`,
+              })
+            }
+          },
+        })
+        return registration("modelPicker", action.id)
       },
       programStatus: {
         claim() {
