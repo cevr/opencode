@@ -99,6 +99,7 @@ const run = (id: Environment.ID) =>
                 Effect.andThen(Effect.fail(new PersistentPty.UnavailableError({ message: "recording only" }))),
               ),
             timeout: () => Effect.void,
+            background: () => Effect.void,
             stop: () => Effect.void,
             remove: () => Effect.void,
           }),
