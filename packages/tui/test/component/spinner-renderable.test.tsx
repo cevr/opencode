@@ -43,7 +43,7 @@ test.each([
   for (const [index, ms] of item.steps.entries()) expect(await spinner.step(ms)).toBe(item.frames[index]!)
 })
 
-test("frames reset the glyph; autoplay and visibility stop and resume the ticks", async () => {
+test("the glyph is the clock's: new frames, autoplay and visibility stop and resume the ticks on it", async () => {
   const [frames, setFrames] = createSignal(["a", "b", "c"])
   const [autoplay, setAutoplay] = createSignal(true)
   const [visible, setVisible] = createSignal(true)
@@ -54,25 +54,49 @@ test("frames reset the glyph; autoplay and visibility stop and resume the ticks"
   ))
   expect(await spinner.step(80)).toBe("b")
 
+  // At 80 ms the clock is on its second interval: the new frames' second glyph.
   setFrames(["x", "y"])
-  expect(await spinner.step(0)).toBe("x")
-  expect(await spinner.step(80)).toBe("y")
+  expect(await spinner.step(0)).toBe("y")
+  expect(await spinner.step(80)).toBe("x")
 
   setAutoplay(false)
-  expect(await spinner.step(200)).toBe("y")
+  expect(await spinner.step(120)).toBe("x")
+  // Resumes on the clock: 280 ms rounds to its fourth interval ("x"), 360 ms to its fifth.
   setAutoplay(true)
-  // Resumes on the shared clock at the first due time out of reach: 480 ms, so it ticks from 440 ms on.
-  expect(await spinner.step(40)).toBe("y")
-  expect(await spinner.step(40)).toBe("x")
+  expect(await spinner.step(0)).toBe("x")
+  expect(await spinner.step(80)).toBe("y")
 
   // The first tick after a frame that skipped its onUpdate stops the clock.
   setVisible(false)
   await spinner.step(1000)
   await spinner.step(80)
   expect(spinner.clock.pendingTimerCount).toBe(0)
+  // Back in view at 1440 ms it draws the clock's frame at once, not the one it hid on.
   setVisible(true)
-  expect(await spinner.step(39)).toBe("x")
-  expect(await spinner.step(1)).toBe("y")
+  expect(await spinner.step(0)).toBe("x")
+  expect(await spinner.step(40)).toBe("y")
+  expect(await spinner.step(80)).toBe("x")
+})
+
+test("spinners mounted at different times show the same frame", async () => {
+  const [late, setLate] = createSignal(false)
+  await using spinner = await mount(() => (
+    <>
+      <spinner frames={["a", "b", "c"]} interval={80} />
+      <Show when={late()}>
+        <spinner frames={["a", "b", "c"]} interval={80} />
+      </Show>
+    </>
+  ))
+  expect(await spinner.step(130)).toBe("c")
+  setLate(true)
+  for (const [ms, frame] of [
+    [0, "cc"],
+    [70, "aa"],
+    [80, "bb"],
+    [80, "cc"],
+  ] as const)
+    expect(await spinner.step(ms)).toBe(frame)
 })
 
 test("requests its own frames while leaving the renderer idle, and stops when destroyed", async () => {

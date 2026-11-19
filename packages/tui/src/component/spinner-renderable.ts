@@ -89,23 +89,33 @@ export class SpinnerRenderable extends Renderable {
   }
 
   private restart() {
+    // A spinner that stops holds the frame it was showing.
+    if (this.animationFps !== undefined) this.index = this.frame()
     this.animationFps = this._autoplay && this.glyphs.length > 1 ? 1000 / this._interval : undefined
     this.requestRender()
   }
 
-  protected override onAnimationTick(_deltaTime: number, ticks: number) {
-    this.index = (this.index + ticks) % this.glyphs.length
+  protected override onAnimationTick() {
     this.requestRender()
   }
 
+  // A turning spinner's frame is the renderer clock's, not a count from its mount, so every spinner on screen shows
+  // the same one, however late it mounted or came back into view. Tick n is due at n intervals and runs up to half
+  // an interval early, so the frame is the rounded interval: the one the latest tick drew.
+  private frame() {
+    if (this.animationFps === undefined) return this.index
+    return Math.round(this._ctx.clock.now() / this._interval) % this.glyphs.length
+  }
+
   protected override renderSelf(buffer: OptimizedBuffer) {
-    const glyphs = this.glyphs[this.index]
+    const index = this.frame()
+    const glyphs = this.glyphs[index]
     if (!glyphs) return
     let x = this.screenX
     glyphs.forEach((glyph, char) => {
       const color =
         typeof this._color === "function"
-          ? parseColor(this._color(this.index, char, this.glyphs.length, glyphs.length))
+          ? parseColor(this._color(index, char, this.glyphs.length, glyphs.length))
           : this._color
       buffer.drawText(glyph.char, x, this.screenY, color, this._backgroundColor)
       x += glyph.width

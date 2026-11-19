@@ -17,7 +17,8 @@ export function Spinner(props: { children?: JSX.Element; color?: RGBA; shimmer?:
   // The Solid hook is not bound to a node's draw: hidden with visible={false} it keeps ticking. Mount under <Show>.
   onAnimationTick(
     () => ((config.animations ?? true) && props.shimmer ? 1000 / 80 : undefined),
-    (_deltaTime, ticks) => setFrame((value) => (value + ticks) % SPINNER_FRAMES.length),
+    // The frame is the renderer clock's, as SpinnerRenderable's is, so a shimmering spinner turns with the others.
+    (_deltaTime, _ticks, time) => setFrame(Math.round(time / 80) % SPINNER_FRAMES.length),
   )
   // A bare spinner beside a long sibling shrinks to a fractional width that rounds to 0, so the
   // glyph paints on top of the row gap. Only a labeled spinner may shrink (to wrap its text).
