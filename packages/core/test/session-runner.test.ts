@@ -4005,6 +4005,67 @@ describe("SessionRunnerLLM", () => {
     expect(wakes).toEqual([{ sessionID, requestsBefore: 0 }])
   })
 
+  // The doorbell drain of a steer never reaches the hook, so the `pending` guard is what a forced drain meets:
+  // a turn re-run with nothing new in the inbox, steered while it works, is no wake.
+  scenario("runs no wake hook for a steer into a turn re-run with no new input", function* (s) {
+    yield* s.admit("First")
+    yield* s.llm.push(Stream.fail(invalidRequest()))
+    expect((yield* s.resume.pipe(Effect.exit))._tag).toBe("Failure")
+    const wakes = yield* switchAtWake(s, undefined)
+    yield* s.llm.push(
+      TestLLM.toolCall("call-wake-rerun-steer", "echo", { text: "working" }),
+      TestLLM.text("Done", "text-wake-rerun-steer-done"),
+    )
+    const tools = yield* s.blockTools()
+    const run = yield* s.resume.pipe(Effect.forkChild)
+    yield* tools.started
+    yield* s.session.prompt({ sessionID, text: "Steer while re-running", delivery: "steer" })
+    yield* tools.release
+    yield* Fiber.join(run)
+    yield* s.session.wait(sessionID)
+
+    expect(s.requests).toHaveLength(3)
+    expect(userTexts(s.requests[1]!)).toContain("First")
+    expect(userTexts(s.requests[2]!)).toContain("Steer while re-running")
+    expect(wakes).toEqual([])
+  })
+
+  // A move at the idle boundary hands the destination a drain that already ran a step; the input
+  // queued behind the move belongs to the same execution, so it is no wake.
+  scenario("runs no wake hook for queued input after a move that carries a step", function* (s) {
+    const runner = yield* SessionRunner.Service
+    yield* s.admit("Before moving")
+    yield* s.llm.push(TestLLM.text("Done", "text-wake-stepped-before"))
+    const stream = yield* s.llm.gate()
+    const run = yield* runner.drain({ sessionID, force: false }).pipe(Effect.forkChild)
+    yield* stream.started
+    const wakes = yield* switchAtWake(s, undefined)
+    yield* s.sessionInbox.admit({
+      id: SessionMessage.ID.create(),
+      sessionID,
+      item: {
+        type: "move",
+        payload: {
+          location: Location.Ref.make({ directory: AbsolutePath.make("/project") }),
+          projectID: Project.ID.global,
+        },
+        delivery: "queue",
+      },
+    })
+    yield* s.session.prompt({ sessionID, text: "After moving", delivery: "queue", resume: false })
+    yield* stream.release
+    const moved = yield* Fiber.join(run)
+    expect(moved).toEqual(SessionRunner.DrainResult.Moved({ stepped: true }))
+    if (moved._tag !== "Moved") throw new Error("Expected a Location handoff")
+
+    yield* s.llm.push(TestLLM.text("Moved answer", "text-wake-stepped-after"))
+    yield* runner.drain({ sessionID, force: false, stepped: moved.stepped })
+
+    expect(s.requests).toHaveLength(2)
+    expect(userTexts(s.requests[1]!)).toContain("After moving")
+    expect(wakes).toEqual([])
+  })
+
   scenario("runs no wake hook for a continuation after a move or a reload", function* (s) {
     const runner = yield* SessionRunner.Service
     const wakes = yield* switchAtWake(s, undefined)
