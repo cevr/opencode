@@ -1389,7 +1389,7 @@ describe("SessionRestart background recovery", () => {
       const driver = Environment.makeMemoryDriver()
       const files = Environment.makeFiles(driver)
       const location = Layer.mergeAll(
-        Layer.succeed(Environment.Service, Environment.Service.of({ files, spawner: driver.spawner })),
+        Layer.succeed(Environment.Service, Environment.make(Environment.localID, driver)),
         Layer.succeed(VideoGeneration.Service, videos),
         Layer.succeedContext(storage),
       )

@@ -281,6 +281,8 @@ import type {
   ExperimentalArtifactsViewOutput,
   ExperimentalJobListInput,
   ExperimentalJobListOutput,
+  ExperimentalJobCancelInput,
+  ExperimentalJobCancelOutput,
   ShellListInput,
   ShellListOutput,
   ShellCreateInput,
@@ -1782,6 +1784,17 @@ export function make(options: ClientOptions) {
             },
             requestOptions,
           ).then((value) => value.data),
+        cancel: (input: ExperimentalJobCancelInput, requestOptions?: RequestOptions) =>
+          request<ExperimentalJobCancelOutput>(
+            {
+              method: "POST",
+              path: `/api/experimental/job/${encodeURIComponent(input.id)}/cancel`,
+              successStatus: 204,
+              declaredStatuses: [400, 401],
+              empty: true,
+            },
+            requestOptions,
+          ),
       },
       migration: {
         v1: {

@@ -79,6 +79,8 @@ type CreateInput = Shell.CreateInput & {
   // A call waits on the command. A server that takes the command over moves it to the background, which clears
   // its timeout, so its deadline is not kept for a restart.
   waited?: boolean
+  // Where the working directory lives, and so where the command runs. The Location's own environment when unset.
+  environment?: Environment.Interface
 }
 
 // What a server needs to take a daemon-run command back after a restart, kept in the daemon's metadata.
@@ -156,8 +158,8 @@ type Ended = {
  * here; callers (e.g. `ShellTool`) own that association and store the shell ID.
  *
  * Local commands run in the process daemon when it is available (`Daemon`), so they outlive a planned server
- * restart: the next server takes them back. Remote workspaces and an unavailable daemon keep spawning them from
- * the server.
+ * restart: the next server takes them back. Remote workspaces, a working directory in another environment and an
+ * unavailable daemon keep spawning them from the server.
  */
 export interface Interface {
   readonly create: <E = never, R = never>(
@@ -652,6 +654,7 @@ const layer = () =>
       const bus = yield* Bus.Service
       const location = yield* Location.Service
       const global = yield* Global.Service
+      const fs = yield* FSUtil.Service
       const shell = yield* ShellSelect.Service
       const environment = yield* Environment.Service
       const hooks = yield* PluginHooks.Service
@@ -668,9 +671,8 @@ const layer = () =>
         location.workspaceID === undefined && PersistentPty.available ? yield* daemon.at(location) : undefined
 
       const outputDir = path.join(global.data, DIRECTORY, location.project.id)
-      const { mkdir, unlink, stat, rename } = yield* Effect.promise(() => import("fs/promises"))
+      const { unlink, stat, rename } = yield* Effect.promise(() => import("fs/promises"))
       const { createWriteStream, createReadStream } = yield* Effect.promise(() => import("fs"))
-      yield* Effect.promise(() => mkdir(outputDir, { recursive: true }))
 
       yield* Effect.addFinalizer(() =>
         Effect.gen(function* () {
@@ -1001,10 +1003,13 @@ const layer = () =>
         before?: (input: ShellCreateBefore) => Effect.Effect<void, E, R>,
       ) {
         const sessionID = input.metadata?.sessionID
-        const baseEnv =
-          location.workspaceID !== undefined
-            ? undefined
-            : ((Schema.is(SessionSchema.ID)(sessionID) ? yield* environments.get(sessionID) : undefined) ?? process.env)
+        const target = input.environment ?? environment
+        // Local only on this server's own machine: the Location's environment, by id, outside a workspace. A command
+        // anywhere else takes none of this machine's variables, keeps its cwd as given and is spawned from the server.
+        const local = location.workspaceID === undefined && target.id === environment.id
+        const baseEnv = local
+          ? ((Schema.is(SessionSchema.ID)(sessionID) ? yield* environments.get(sessionID) : undefined) ?? process.env)
+          : undefined
         const invocation: ShellCreateBefore = {
           command: input.command,
           cwd: input.cwd ?? location.directory,
@@ -1019,7 +1024,12 @@ const layer = () =>
         yield* hooks.trigger("shell", "create.before", invocation)
         if (before) yield* before(invocation)
         // Absolute for local commands, so the command reports the same cwd wherever it runs.
-        if (location.workspaceID === undefined) invocation.cwd = path.resolve(location.directory, invocation.cwd)
+        if (local) invocation.cwd = path.resolve(location.directory, invocation.cwd)
+
+        // Created per command: the directory can be removed while the Location stays open.
+        yield* fs
+          .ensureDir(outputDir)
+          .pipe(Effect.mapError((cause) => new AppProcess.AppProcessError({ command: invocation.command, cause })))
 
         const id = Shell.ID.ascending()
         const args = ShellSelect.args(invocation.shell, invocation.command)
@@ -1037,7 +1047,7 @@ const layer = () =>
         }
         yield* annotate(info)
 
-        if (runs) {
+        if (runs && local) {
           const created = yield* runs
             .create({
               info,
@@ -1072,7 +1082,7 @@ const layer = () =>
         runFork(
           Effect.scoped(
             Effect.gen(function* () {
-              const handle = yield* environment.spawner
+              const handle = yield* target.spawner
                 .spawn(
                   ChildProcess.make(invocation.shell, args, {
                     cwd: invocation.cwd,
@@ -1323,6 +1333,7 @@ export const node = makeLocationNode({
     Bus.node,
     Location.node,
     Global.node,
+    FSUtil.node,
     ShellSelect.node,
     Environment.node,
     PluginHooks.node,

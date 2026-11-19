@@ -139,11 +139,25 @@ test.each(["close", "stop"])("discards an incomplete preview when the stream end
   await output.renderOnce()
   expect(output.markdown.getChildren()[0]).toBeInstanceOf(ScrollBoxRenderable)
 
-  // While streaming, OpenTUI 0.9 decides a closing fence once its line ends.
+  // A closing fence counts once its line ends.
   if (end === "close") output.markdown.content += "\n```\n"
   if (end === "stop") output.markdown.streaming = false
   await output.renderOnce()
   expect(output.markdown.getChildren()[0]).toBeInstanceOf(CodeRenderable)
+})
+
+test("a closed fence that stops parsing shows its source after a rendered formula", async () => {
+  const output = await setup("```math\n\\frac{")
+  output.markdown.content += "1}{2}\n"
+  await output.renderOnce()
+  expect(output.markdown.getChildren()[0]).toBeInstanceOf(ScrollBoxRenderable)
+  output.markdown.content += "\\badunknown\n```\n"
+  output.markdown.streaming = false
+  await output.renderOnce()
+  const fallback = output.markdown.getChildren()[0]
+  expect(fallback).toBeInstanceOf(CodeRenderable)
+  expect(fallback!.isDestroyed).toBe(false)
+  expect(output.captureCharFrame()).toContain("\\badunknown")
 })
 
 test("does not reuse another fence's preview or keep a removed fence's preview", async () => {

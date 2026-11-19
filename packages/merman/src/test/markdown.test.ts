@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, expect, test } from "bun:test"
 import { mkdir } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { CodeRenderable, MarkdownRenderable, RGBA, SyntaxStyle, TreeSitterClient } from "@opentui/core"
+import { CodeRenderable, MarkdownRenderable, RGBA, SyntaxStyle, TextRenderable, TreeSitterClient } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { createMermaidMarkdownRenderer } from "../markdown.js"
 
@@ -325,8 +325,10 @@ flowchart TB
 
   const frame = testRenderer.captureCharFrame()
   const heading = frame.split("\n").find((line) => line.includes("Architecture"))
-  // Since OpenTUI 0.9 the heading is a TextRenderable the engine writes, so it has no scroll of its own to check.
+  // The wide diagram does not scroll the heading beside it.
+  const title = markdown.getChildren().find((child) => child instanceof TextRenderable) as TextRenderable
   expect(heading?.trimStart()).toStartWith("Architecture")
+  expect(title.scrollX).toBe(0)
   expect(frame).toContain("Durable Object")
   expect(frame).not.toMatch(/<\/?i>|<br|events persist|mcp stdio/)
 })

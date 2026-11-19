@@ -82,6 +82,7 @@ import { DialogGoUpsell } from "../../component/dialog-go-upsell"
 import { UsageLimitNotice, useLimitNotice, useUsageAlerts } from "../../component/usage"
 import { useStorage } from "../../context/storage"
 import { Composer } from "./composer"
+import { busyCounts, busyTab } from "./composer/tabs"
 import { filetype } from "../../util/filetype"
 import parsers from "../../parsers-config"
 import { errorMessage } from "../../util/error"
@@ -261,6 +262,7 @@ export function Session(props: {
       item.delivery === "queue" ? [{ id: item.id, text: item.payload.text, payload: item.payload }] : [],
     ),
   )
+  const openingTab = () => busyTab(busyCounts({ data, sessionID: route.sessionID, location: location() }))
   const [composer, setComposer] = createStore({
     open: false,
     tab: undefined as string | undefined,
@@ -462,6 +464,7 @@ export function Session(props: {
       }
       reloadFailures = 0
       editor.reconnect(info.location.directory)
+      void data.job.sync(data.session.root(sessionID)).catch(() => undefined)
       setSynced(true)
     })().catch((error) => {
       if (route.sessionID !== sessionID) return
@@ -1663,9 +1666,9 @@ export function Session(props: {
       id: "session.child.first",
       group: "Session",
       run: (tab?: string) => {
-        if (tab === "shell" || tab === "subagents") setComposer({ open: true, tab })
+        if (tab === "shell" || tab === "subagents" || tab === "scripts") setComposer({ open: true, tab })
         else if (picker()) setComposer({ open: false, dismissed: true })
-        else setComposer({ open: true, tab: "subagents" })
+        else setComposer({ open: true, tab: openingTab() })
         dialog.clear()
       },
     },
@@ -1807,6 +1810,8 @@ export function Session(props: {
                 }}
                 stickyScroll={!navigationMessage() && !navigationSlack()}
                 stickyStart="bottom"
+                // Rows never grow or shrink, so a change to one row lays out only that row.
+                contentOptions={{ layoutMode: "list" }}
                 flexGrow={1}
                 // Map mode puts the turn list in the transcript's place; the transcript stays mounted, at its position.
                 visible={!mapOpen()}
@@ -2638,7 +2643,7 @@ function CompactionMessage(props: { message: Extract<SessionMessageInfo, { type:
             ref={useSessionLinks()}
             syntaxStyle={syntax()}
             renderBlock={plugins.markdown()}
-            streaming={true}
+            streaming={status() === "running"}
             content={content()}
             tableOptions={{ style: "grid", cellPaddingX: 1 }}
             conceal={ctx.markdownMode() === "rendered"}
@@ -3680,7 +3685,7 @@ function Read(props: ToolProps) {
       <For each={loaded()}>
         {(filepath) => (
           <box paddingLeft={gutter()}>
-            <text paddingRight={3} fg={theme.text.muted}>
+            <text fg={theme.text.muted}>
               ↳ Loaded {pathFormatter.format(filepath)}
             </text>
           </box>
@@ -3877,7 +3882,7 @@ function Execute(props: ToolProps) {
         <box paddingLeft={gutter()}>
           <For each={outputPreview().split("\n")}>
             {(line, index) => (
-              <text paddingRight={3} fg={theme.text.feedback.error.base}>
+              <text fg={theme.text.feedback.error.base}>
                 {index() === 0 ? "↳ " : "  "}
                 {line}
               </text>

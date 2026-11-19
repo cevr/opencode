@@ -14,6 +14,7 @@ import { Session } from "@opencode/schema/session"
 import { SessionMessageTable, SessionPartTable, SessionTable } from "./sql.js"
 import { fromRow } from "./info.js"
 import { SessionOutline } from "./outline.js"
+import { LiveToolMetadata } from "./runner/live-tool-metadata.js"
 
 const ListInputBase = {
   workspaceID: Workspace.ID.pipe(Schema.optional),
@@ -257,10 +258,14 @@ const layer = Layer.effect(
         return ordered.map((row) => fromRow(row))
       }),
       messages: Effect.fn("SessionStore.messages")(function* (input) {
-        return yield* SessionHistory.decodeMessageRows(db, yield* messageRows(input))
+        return (yield* SessionHistory.decodeMessageRows(db, yield* messageRows(input))).map((message) =>
+          LiveToolMetadata.overlay(message),
+        )
       }),
       messagesWithRefs: Effect.fn("SessionStore.messagesWithRefs")(function* (input) {
-        return yield* SessionHistory.decodeMessageRowsWithRefs(db, yield* messageRows(input))
+        return (yield* SessionHistory.decodeMessageRowsWithRefs(db, yield* messageRows(input))).map(
+          LiveToolMetadata.overlay,
+        )
       }),
       outline: Effect.fn("SessionStore.outline")(function* (input) {
         const seqOf = (id: SessionMessage.ID | undefined) =>
@@ -395,13 +400,13 @@ const layer = Layer.effect(
         const row = yield* messageRow(messageID)
         if (!row) return undefined
         const [message] = yield* SessionHistory.decodeMessageRows(db, [row]).pipe(Effect.orDie)
-        return message && { sessionID: row.session_id, message }
+        return message && { sessionID: row.session_id, message: LiveToolMetadata.overlay(message) }
       }),
       messageWithRefs: Effect.fn("SessionStore.messageWithRefs")(function* (messageID) {
         const row = yield* messageRow(messageID)
         if (!row) return undefined
         const [message] = yield* SessionHistory.decodeMessageRowsWithRefs(db, [row]).pipe(Effect.orDie)
-        return message && { sessionID: row.session_id, message }
+        return message && { sessionID: row.session_id, message: LiveToolMetadata.overlay(message) }
       }),
       listSuspended: Effect.fn("SessionStore.listSuspended")(function* () {
         return yield* db

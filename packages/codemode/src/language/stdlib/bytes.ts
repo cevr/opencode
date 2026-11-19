@@ -5,6 +5,7 @@ import { IteratorSymbol, rangeError, syntaxError, typeError } from "../runtime/m
 import {
   define,
   defineAccessor,
+  frozen,
   get,
   hidden,
   Bytes,
@@ -15,7 +16,7 @@ import {
   type Value,
 } from "../runtime/objects.js"
 import { describeValue } from "../runtime/references.js"
-import { requireCallback } from "../runtime/callback.js"
+import { requireCallback, readsPending, withReads } from "../runtime/callback.js"
 import type { Interpreter } from "../runtime/interpreter.js"
 import { sortArray } from "./array.js"
 
@@ -84,6 +85,8 @@ export const uint8ArrayGlobal = <R>(ctx: Interpreter<R>) => {
     ["fromBase64", 1, (_, args) => decode("fromBase64", args, (text) => Uint8Array.fromBase64(text))],
     ["fromHex", 1, (_, args) => decode("fromHex", args, (text) => Uint8Array.fromHex(text))],
   ])
+  define(uint8Array, "BYTES_PER_ELEMENT", 1, frozen)
+  define(proto, "BYTES_PER_ELEMENT", 1, frozen)
 
   const self = (thisValue: Value, name: string) => receiver(Bytes, thisValue, `Uint8Array.prototype.${name}`)
   const optNumber = (value: Value): number | undefined => (value === undefined ? undefined : coerceToInteger(value))
@@ -289,8 +292,10 @@ export const textDecoderGlobal = <R>(ctx: Interpreter<R>) => {
         if (options !== undefined && typeof options !== "object") {
           throw typeError("TextDecoder.decode expects an options object.")
         }
-        const stream = options instanceof Obj && Boolean(get(options, "stream"))
-        return decoder.decode(args[0]?.bytes ?? empty, stream)
+        return withReads(() => {
+          const stream = options instanceof Obj && Boolean(get(options, "stream"))
+          return readsPending() ? undefined : decoder.decode((args[0] as Bytes | undefined)?.bytes ?? empty, stream)
+        })
       },
     ],
   ])
@@ -302,10 +307,13 @@ export const textDecoderGlobal = <R>(ctx: Interpreter<R>) => {
       if (!utf8Labels.has(label)) throw rangeError(`The "${label}" encoding is not supported; only UTF-8 is.`)
       const options = args[1] instanceof Obj ? args[1] : undefined
       const flag = (name: string) => options !== undefined && Boolean(get(options, name))
-      return new TextDecoderObj(
-        prototypeFrom(newTarget, proto),
-        new TextDecoder("utf-8", { fatal: flag("fatal"), ignoreBOM: true }),
-        flag("ignoreBOM"),
+      return withReads(
+        () =>
+          new TextDecoderObj(
+            prototypeFrom(newTarget, proto),
+            new TextDecoder("utf-8", { fatal: flag("fatal"), ignoreBOM: true }),
+            flag("ignoreBOM"),
+          ),
       )
     },
   })

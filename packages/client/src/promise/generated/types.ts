@@ -311,6 +311,10 @@ export type PermissionReply = "once" | "always" | "reject"
 
 export type PtyID = string
 
+export type JobStatus = "running" | "completed" | "error" | "cancelled"
+
+export type JobTime = { started: number; completed?: number }
+
 export type FormMetadata1 = { [x: string]: any }
 
 export type FormWhen1 = { key: string; op: "eq" | "neq"; value: string | number | boolean }
@@ -351,10 +355,6 @@ export type ArtifactCapability = "static" | "server-code" | "sqlite" | "durable-
 export type ArtifactID = string
 
 export type ArtifactTime = { created: number; updated: number }
-
-export type JobStatus = "running" | "completed" | "error" | "cancelled"
-
-export type JobTime = { started: number; completed?: number }
 
 export type ReferenceGitSource = { type: "git"; repository: string; branch?: string }
 
@@ -901,6 +901,59 @@ export type PersistentPtyReadResult = {
   screen: { text: string; cols: number; rows: number; cursor: { x: number; y: number } }
 }
 
+export type JobShell = {
+  kind: "shell"
+  id: string
+  sessionID: SessionID
+  status: JobStatus
+  title?: string
+  time: JobTime
+  shellID: string
+  command: string
+}
+
+export type JobSubagent = {
+  kind: "subagent"
+  id: string
+  sessionID: SessionID
+  status: JobStatus
+  title?: string
+  time: JobTime
+  childSessionID: SessionID
+  agent: string
+  description: string
+}
+
+export type JobImage = {
+  kind: "image"
+  id: string
+  sessionID: SessionID
+  status: JobStatus
+  title?: string
+  time: JobTime
+  path: string
+  model: string
+}
+
+export type JobVideo = {
+  kind: "video"
+  id: string
+  sessionID: SessionID
+  status: JobStatus
+  title?: string
+  time: JobTime
+  path: string
+}
+
+export type JobCodeMode = {
+  kind: "codemode"
+  id: string
+  sessionID: SessionID
+  status: JobStatus
+  title?: string
+  time: JobTime
+}
+
 export type FormStringField1 = {
   key: string
   title?: string
@@ -985,59 +1038,6 @@ export type ArtifactInfo = {
   entry: string
   url: string
   time: ArtifactTime
-}
-
-export type JobShell = {
-  kind: "shell"
-  id: string
-  sessionID: SessionID
-  status: JobStatus
-  title?: string
-  time: JobTime
-  shellID: string
-  command: string
-}
-
-export type JobSubagent = {
-  kind: "subagent"
-  id: string
-  sessionID: SessionID
-  status: JobStatus
-  title?: string
-  time: JobTime
-  childSessionID: SessionID
-  agent: string
-  description: string
-}
-
-export type JobImage = {
-  kind: "image"
-  id: string
-  sessionID: SessionID
-  status: JobStatus
-  title?: string
-  time: JobTime
-  path: string
-  model: string
-}
-
-export type JobVideo = {
-  kind: "video"
-  id: string
-  sessionID: SessionID
-  status: JobStatus
-  title?: string
-  time: JobTime
-  path: string
-}
-
-export type JobCodeMode = {
-  kind: "codemode"
-  id: string
-  sessionID: SessionID
-  status: JobStatus
-  title?: string
-  time: JobTime
 }
 
 export type VcsInfo = { provider?: string; branch: VcsBranch }
@@ -2315,6 +2315,8 @@ export type PersistentPtySnapshot = {
   cursor: { x: number; y: number }
 }
 
+export type JobInfo = JobShell | JobSubagent | JobImage | JobVideo | JobCodeMode
+
 export type FormField1 =
   | FormStringField1
   | FormNumberField1
@@ -2339,8 +2341,6 @@ export type AutomationTrigger =
   | AutomationTriggerEvent
 
 export type ArtifactContent = { info: ArtifactInfo; files: { [x: string]: string } }
-
-export type JobInfo = JobShell | JobSubagent | JobImage | JobVideo | JobCodeMode
 
 export type SessionInboxMove = {
   id: SessionMessageID
@@ -2764,6 +2764,15 @@ export type CredentialEntry = {
   value: CredentialValue
 }
 
+export type ExperimentalJobUpdated = {
+  id: EventID
+  created: number
+  metadata?: { [x: string]: any }
+  type: "experimental.job.updated"
+  location?: LocationRef
+  data: { info: JobInfo }
+}
+
 export type FormFields1 = [FormField1, ...Array<FormField1>]
 
 export type AgentInfo = {
@@ -3064,6 +3073,7 @@ export type V2Event =
   | ShellCreated
   | ShellExited
   | ShellDeleted
+  | ExperimentalJobUpdated
   | FormCreated
   | FormReplied
   | FormCancelled
@@ -4618,6 +4628,7 @@ export type EventSubscribeInput = {
         | "shell.created"
         | "shell.exited"
         | "shell.deleted"
+        | "experimental.job.updated"
         | "form.created"
         | "form.replied"
         | "form.cancelled"
@@ -4865,6 +4876,10 @@ export type ExperimentalJobListInput = {
 }
 
 export type ExperimentalJobListOutput = { data: Array<JobInfo> }["data"]
+
+export type ExperimentalJobCancelInput = { readonly id: string }
+
+export type ExperimentalJobCancelOutput = void
 
 export type ShellListInput = {
   readonly location?: { readonly directory?: string | undefined } | undefined
