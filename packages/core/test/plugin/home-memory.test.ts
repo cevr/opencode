@@ -18,13 +18,16 @@ import { Global } from "@opencode/util/global"
 import { Npm } from "@opencode/util/npm"
 import { Bus } from "../../src/bus"
 import { Database } from "../../src/database/database"
-import { tempGlobalLayer } from "../fixture/global"
+import { tempGlobal } from "../fixture/global"
 import { offlineModels } from "../fixture/models"
 import { tmpdirScoped } from "../fixture/tmpdir"
 import { testEffect } from "../lib/effect"
 
 const unexpected = (pkg: string) =>
   Effect.fail(new Npm.InstallFailedError({ add: [pkg], dir: "", cause: new Error(`Unexpected Npm call: ${pkg}`) }))
+
+// The fork's scratch home stays out of this test: the plugin is about the user's real home folder.
+const homeGlobal = tempGlobal({ home: Global.Path.home })
 
 const instances = Layer.effect(
   LocationServiceMap.Service,
@@ -35,7 +38,7 @@ const instances = Layer.effect(
     )
     const bindings: LayerNode.Replacements = [
       App.node.replace(App.configured({ channel: "dev" })),
-      Global.node.replace(tempGlobalLayer),
+      Global.node.replace(homeGlobal),
       offlineModels,
       ConfigPluginSource.node.replace(
         Layer.succeed(
@@ -67,7 +70,7 @@ const instances = Layer.effect(
 
 const it = testEffect(
   AppNodeBuilder.build(LayerNode.group([Database.node, Bus.node, SdkPlugins.node, LocationServiceMap.node]), [
-    Global.node.replace(tempGlobalLayer),
+    Global.node.replace(homeGlobal),
     offlineModels,
     LocationServiceMap.node.replace(instances),
   ]),
