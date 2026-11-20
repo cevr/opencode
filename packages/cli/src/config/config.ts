@@ -8,6 +8,7 @@ import { applyEdits, modify, parse, type ParseError } from "jsonc-parser"
 import path from "path"
 import { ConfigMigration } from "./migrate"
 import { Info, normalizeLegacyTabs, SchemaURL } from "./schema"
+import { cliConfigContent } from "../adjacent-config"
 
 export * from "./schema"
 
@@ -29,9 +30,8 @@ export const layer = Layer.effect(
     const fs = yield* FileSystem.FileSystem
     const global = yield* Global.Service
     const file = path.join(global.config, "cli.json")
-    const content = process.env.OPENCODE_CLI_CONFIG_CONTENT
-      ? Option.getOrUndefined(decode(parseRecord(process.env.OPENCODE_CLI_CONFIG_CONTENT)))
-      : undefined
+    const inline = cliConfigContent()
+    const content = inline ? Option.getOrUndefined(decode(parseRecord(inline))) : undefined
 
     const readJson = Effect.fnUntraced(function* () {
       const text = yield* fs.readFileString(file).pipe(Effect.orElseSucceed(() => undefined))

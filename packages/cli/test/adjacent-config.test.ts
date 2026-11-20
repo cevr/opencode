@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { bind, directoryOf, KEYS } from "../src/adjacent-config"
+import { bind, cliConfigContent, configFile, directoryOf, KEYS } from "../src/adjacent-config"
 
 // Real path: a compiled build reports its executable resolved (macOS's /var is /private/var).
 const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "opencode-adjacent-")))
@@ -21,6 +21,7 @@ async function build(name: string, tree: boolean) {
   return executable
 }
 
+/** The environment an older bound build (one that kept its binding in its environment) gives its children. */
 const inherited = () => ({
   OPENCODE_CONFIG: "/nonexistent/loop-probe-x/old.plugins/config/opencode.json",
   OPENCODE_CLI_CONFIG_CONTENT: '{"plugins":["/nonexistent/loop-probe-x/old"]}',
@@ -28,51 +29,73 @@ const inherited = () => ({
   OTHER: "kept",
 })
 
-const boundTo = (executable: string, name: string) => ({
-  OPENCODE_CONFIG: path.join(directoryOf(executable), "opencode.json"),
-  OPENCODE_CLI_CONFIG_CONTENT: JSON.stringify({ plugins: [`/${name}/tui`] }),
-  OPENCODE_ADJACENT_CONFIG: directoryOf(executable),
+const own = { OPENCODE_CONFIG: "/nonexistent/loop-probe-x/mine.json", OPENCODE_CLI_CONFIG_CONTENT: "{}", OTHER: "kept" }
+
+const loadsOf = (executable: string, name: string) => ({
+  config: path.join(directoryOf(executable), "opencode.json"),
+  cli: JSON.stringify({ plugins: [`/${name}/tui`] }),
 })
 
+/** What the process loads with `env` after binding as `executable`, and the environment its children inherit. */
+function bound(executable: string, env: Record<string, string | undefined>) {
+  const binding = bind(executable, env)
+  return { loads: { config: configFile(binding, env), cli: cliConfigContent(binding, env) }, env }
+}
+
 describe("bind", () => {
-  test("a tree beside the executable sets the three keys from it, over inherited values", async () => {
+  test("a tree beside the executable is loaded over inherited values and stays out of the environment", async () => {
     const executable = await build("beside", true)
-    const env: Record<string, string | undefined> = inherited()
-    bind(executable, env)
-    expect(env).toEqual({ ...boundTo(executable, "beside"), OTHER: "kept" })
+    expect(bound(executable, inherited())).toEqual({ loads: loadsOf(executable, "beside"), env: { OTHER: "kept" } })
   })
 
-  test("no tree and no marker leaves the environment as it is, a user's own OPENCODE_CONFIG with it", async () => {
-    const executable = await build("plain", false)
-    const env: Record<string, string | undefined> = {
-      OPENCODE_CONFIG: "/nonexistent/loop-probe-x/mine.json",
-      OPENCODE_CLI_CONFIG_CONTENT: "{}",
-      OTHER: "kept",
-    }
-    bind(executable, env)
-    expect(env).toEqual({
-      OPENCODE_CONFIG: "/nonexistent/loop-probe-x/mine.json",
-      OPENCODE_CLI_CONFIG_CONTENT: "{}",
-      OTHER: "kept",
+  test("a tree beside the executable wins over a user's own keys, which stay for its children", async () => {
+    const executable = await build("beside-own", true)
+    expect(bound(executable, { ...own })).toEqual({ loads: loadsOf(executable, "beside-own"), env: own })
+  })
+
+  test("a tree with no cli.json leaves the TUI its own cli.json", async () => {
+    const executable = await build("server-only", true)
+    await fs.rm(path.join(directoryOf(executable), "cli.json"))
+    expect(bound(executable, { ...own }).loads).toEqual({
+      config: path.join(directoryOf(executable), "opencode.json"),
+      cli: undefined,
     })
   })
 
-  test("no tree with an inherited marker unsets all three keys", async () => {
-    const executable = await build("old", false)
-    const env: Record<string, string | undefined> = inherited()
-    bind(executable, env)
-    expect(env).toEqual({ OTHER: "kept" })
+  test("no tree and no marker loads and keeps a user's own keys", async () => {
+    const executable = await build("plain", false)
+    expect(bound(executable, { ...own })).toEqual({
+      loads: { config: own.OPENCODE_CONFIG, cli: own.OPENCODE_CLI_CONFIG_CONTENT },
+      env: own,
+    })
   })
 
-  test("a run from source, with bun or node as the executable, is never bound", async () => {
-    // Even with a tree beside the runtime's own path.
+  test("no tree with an inherited marker drops all three keys", async () => {
+    const executable = await build("old", false)
+    expect(bound(executable, inherited())).toEqual({
+      loads: { config: undefined, cli: undefined },
+      env: { OTHER: "kept" },
+    })
+  })
+
+  test("a run from source, with bun or node as the executable, is never bound and drops an inherited binding", async () => {
+    // Even with a tree beside the runtime's own path: a source run started from an older installed build's shell
+    // loads its own plugins, not the installed build's.
     for (const runtime of ["bun", "node", "bun.exe"]) {
       const executable = path.join(dir, "source", runtime)
       await fs.mkdir(directoryOf(executable), { recursive: true })
-      const env: Record<string, string | undefined> = inherited()
-      bind(executable, env)
-      expect(env).toEqual(inherited())
+      expect(bound(executable, inherited())).toEqual({
+        loads: { config: undefined, cli: undefined },
+        env: { OTHER: "kept" },
+      })
     }
+  })
+
+  test("a run from source loads and keeps a user's own keys (no marker)", () => {
+    expect(bound(path.join(dir, "source", "bun"), { ...own })).toEqual({
+      loads: { config: own.OPENCODE_CONFIG, cli: own.OPENCODE_CLI_CONFIG_CONTENT },
+      env: own,
+    })
   })
 })
 
@@ -95,15 +118,15 @@ describe("a compiled build moving onto another", () => {
     if (code !== 0) throw new Error(`compile failed: ${stderr}`)
   }, 60_000)
 
-  /** Copies the compiled stub to `name`'s path and runs the chain `first → ...rest`, one report per build. */
-  async function chain(executables: ReadonlyArray<string>) {
+  /** Copies the compiled stub to each path and runs the chain `first → ...rest` from `start`, one report per build. */
+  async function chain(executables: ReadonlyArray<string>, start: Record<string, string> = {}) {
     for (const executable of executables) await fs.copyFile(stub, executable)
-    const env = { ...process.env }
+    const env: Record<string, string | undefined> = { ...process.env }
     for (const key of KEYS) delete env[key]
     // Outside the package, whose bunfig a compiled build would read.
     const proc = Bun.spawn([...executables], {
       cwd: dir,
-      env,
+      env: { ...env, ...start },
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
@@ -121,22 +144,28 @@ describe("a compiled build moving onto another", () => {
     return stdout
       .trim()
       .split("\n")
-      .map((line) => JSON.parse(line) as Record<string, string>)
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
   }
 
-  test("build N execs build N+1 carrying N's keys, and N+1 ends with its own", async () => {
+  test("build N loads its tree with none of it in its environment, and N+1 loads its own", async () => {
     const n = await build("n", true)
     const next = await build("next", true)
     const [first, second] = await chain([n, next])
-    expect(first).toEqual({ build: n, ...boundTo(n, "n") })
-    expect(second).toEqual({ build: next, ...boundTo(next, "next") })
+    expect(first).toEqual({ build: n, loads: loadsOf(n, "n"), env: {} })
+    expect(second).toEqual({ build: next, loads: loadsOf(next, "next"), env: {} })
   }, 30_000)
 
-  test("a bound build moving back onto a build with no tree leaves it none of the bound keys", async () => {
+  test("started from an older bound build's shell, a build drops that binding and loads its own", async () => {
+    const n = await build("n3", true)
+    const [first] = await chain([n], { ...inherited(), OTHER: "kept" })
+    expect(first).toEqual({ build: n, loads: loadsOf(n, "n3"), env: {} })
+  }, 30_000)
+
+  test("a bound build moving back onto a build with no tree leaves it nothing bound", async () => {
     const n = await build("n2", true)
     const old = await build("old2", false)
     const [first, second] = await chain([n, old])
-    expect(first).toEqual({ build: n, ...boundTo(n, "n2") })
-    expect(second).toEqual({ build: old })
+    expect(first).toEqual({ build: n, loads: loadsOf(n, "n2"), env: {} })
+    expect(second).toEqual({ build: old, loads: { config: undefined, cli: undefined }, env: {} })
   }, 30_000)
 })

@@ -20,6 +20,7 @@ import { RemoteTunnel } from "./services/remote-tunnel"
 import { WebUi } from "./services/web-ui"
 import { databasePath } from "./database-path"
 import { selfCommand } from "./util/process"
+import { configFile } from "./adjacent-config"
 
 export type Mode = "default" | "service" | "stdio"
 
@@ -131,7 +132,7 @@ const processEffect = Effect.fnUntraced(function* (options: Options) {
               truthy(process.env.OPENCODE_DISABLE_CLAUDE_CODE) ||
               truthy(process.env.OPENCODE_DISABLE_CLAUDE_CODE_SKILLS)
             ),
-            file: process.env.OPENCODE_CONFIG,
+            file: configFile(),
             content: process.env.OPENCODE_CONFIG_CONTENT,
           },
           instructions: {
