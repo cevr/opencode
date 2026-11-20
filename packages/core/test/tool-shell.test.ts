@@ -2015,7 +2015,9 @@ describe("ShellTool", () => {
             expect((yield* shell.wait(id)).status).toBe("timeout")
             // The end notice carries the final handle.
             expect((yield* Fiber.join(admitted)).valueOrUndefined?.data.item.payload).toMatchObject({
-              text: expect.stringContaining(`${shellID} · timed out, killed`),
+              text: expect.stringMatching(
+                new RegExp(`^<background-result kind="shell" [^>]*>\\n${shellID} · timed out, killed[\\s\\S]*\\n</background-result>$`),
+              ),
               description: idleCommand,
               metadata: {
                 source: "shell",
@@ -2052,7 +2054,13 @@ describe("ShellTool", () => {
             )
             const shellID = settled.metadata?.shellID
             expect(typeof shellID).toBe("string")
-            expect((yield* Fiber.join(admitted)).valueOrUndefined?.data.item.payload).toMatchObject({
+            const payload = (yield* Fiber.join(admitted)).valueOrUndefined?.data.item.payload
+            // The end notice comes in one <background-result> block around the final handle.
+            expect(payload?.text).toStartWith(
+              `<background-result kind="shell" id="${shellID}" state="completed" command="${bodyExitCommand}">\n`,
+            )
+            expect(payload?.text).toEndWith("\n</background-result>")
+            expect(payload).toMatchObject({
               text: expect.stringMatching(new RegExp(`${shellID} · exited 7 · .*\\nbody`)),
               description: bodyExitCommand,
               metadata: {
