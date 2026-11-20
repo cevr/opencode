@@ -115,6 +115,45 @@ it.live("interrupts pending watcher setup when the loader scope closes during mo
   }),
 )
 
+// A compiled build is a fixed copy of its plugins: it opens no watch on their module files. On macOS each file watch
+// rebuilds Bun's one FSEventStream at start and again at stop (oven-sh/bun#43870), ~90 of them with 18 local plugins.
+it.live("a build opens no watch for a local plugin's module files", () =>
+  Effect.gen(function* () {
+    const directory = yield* tmpdirScoped()
+    yield* Effect.promise(() => writeTwoFilePlugin(directory.path, "fixed"))
+    const modules = yield* PluginModule.make({ watch: false })
+    expect(yield* modules.load({ type: "add", target: directory.path, options: {} })).toMatchObject({ id: "fixed" })
+    expect(yield* (yield* Watcher.Test).subscriptions()).toEqual([])
+  }).pipe(Effect.provide(Watcher.testLayer)),
+)
+
+it.live("a run from source watches each module file of a local plugin and reloads it on an edit", () =>
+  Effect.gen(function* () {
+    const directory = yield* tmpdirScoped()
+    yield* Effect.promise(() => writeTwoFilePlugin(directory.path, "before"))
+    const watcher = yield* Watcher.Test
+    // The tests run from source (`bun`), so the default is the dev path.
+    const modules = yield* PluginModule.make()
+    const operation = { type: "add" as const, target: directory.path, options: {} }
+    expect(yield* modules.load(operation)).toMatchObject({ id: "before" })
+    const files = (yield* watcher.subscriptions()).filter((input) => input.type === "file")
+    expect(files.map((input) => path.basename(input.path)).toSorted()).toEqual(["helper.ts", "index.ts"])
+    const changed = yield* modules
+      .changes()
+      .pipe(Stream.runHead, Effect.timeout("5 seconds"), Effect.forkScoped({ startImmediately: true }))
+    const helper = files.find((input) => path.basename(input.path) === "helper.ts")!.path
+    yield* Effect.promise(() => Bun.write(helper, 'export default { id: "after", async setup() {} }'))
+    yield* watcher.emit({ path: helper, type: "update" })
+    yield* Fiber.join(changed)
+    expect(yield* modules.load(operation)).toMatchObject({ id: "after" })
+  }).pipe(Effect.provide(Watcher.testLayer)),
+)
+
+async function writeTwoFilePlugin(directory: string, id: string) {
+  await Bun.write(path.join(directory, "index.ts"), 'export { default } from "./helper.ts"')
+  await Bun.write(path.join(directory, "helper.ts"), `export default { id: ${JSON.stringify(id)}, async setup() {} }`)
+}
+
 it.live("loads plugins and their transitive dependencies against the host's Effect and @opencode/plugin instances", () =>
   Effect.gen(function* () {
     const directory = yield* tmpdirScoped()

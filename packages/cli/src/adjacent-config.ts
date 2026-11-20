@@ -8,10 +8,11 @@
 // binds again from its own executable. Builds before this one put the binding in their environment, marked by
 // `OPENCODE_ADJACENT_CONFIG`; such an inherited binding is dropped here, in a compiled build and a run from source
 // alike, and a user's own `OPENCODE_CONFIG` (no marker) stays. A run from source (`bun` or `node` as the executable) is
-// never bound. Imported first by the CLI for its side effect; it imports nothing else of OpenCode, so no module reads
-// the environment before it.
+// never bound. Imported first by the CLI for its side effect; it imports nothing else of OpenCode but the pure
+// `SourceRun` rule, so no module reads the environment before it.
 import { readFileSync, statSync } from "node:fs"
 import path from "node:path"
+import { SourceRun } from "@opencode/util/source-run"
 
 /** The keys an older bound build left in its environment, all or none; `OPENCODE_ADJACENT_CONFIG` marks them. */
 export const KEYS = ["OPENCODE_CONFIG", "OPENCODE_CLI_CONFIG_CONTENT", "OPENCODE_ADJACENT_CONFIG"] as const
@@ -21,8 +22,6 @@ export const directoryOf = (execPath: string) => path.join(`${execPath}.plugins`
 
 /** A build's own binding: the tree's `opencode.json`, and the text of its `cli.json` when there is one. */
 export type Binding = { readonly config: string; readonly cli: string | undefined }
-
-const RUNTIMES = new Set(["bun", "node", "nodejs"])
 
 const isDirectory = (dir: string) => {
   try {
@@ -43,7 +42,7 @@ const textOf = (file: string) => {
 /** Drops an inherited binding from `env` and returns the executable at `execPath`'s own, if it has one. */
 export function bind(execPath: string, env: Record<string, string | undefined>): Binding | undefined {
   if (env.OPENCODE_ADJACENT_CONFIG !== undefined) for (const key of KEYS) delete env[key]
-  if (RUNTIMES.has(path.basename(execPath, path.extname(execPath)).toLowerCase())) return undefined
+  if (SourceRun.fromSource(execPath)) return undefined
   const dir = directoryOf(execPath)
   if (!isDirectory(dir)) return undefined
   return { config: path.join(dir, "opencode.json"), cli: textOf(path.join(dir, "cli.json")) }

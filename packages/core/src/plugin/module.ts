@@ -6,6 +6,7 @@ import { GuiBundle, type Source } from "@opencode/schema/plugin"
 import { createPluginSources } from "@opencode/plugin/source"
 import { Hash } from "@opencode/util/hash"
 import { Npm } from "@opencode/util/npm"
+import { SourceRun } from "@opencode/util/source-run"
 import { Deferred, Effect, FiberSet, PubSub, Schema, Stream } from "effect"
 import path from "path"
 import { readFile, stat } from "node:fs/promises"
@@ -17,15 +18,20 @@ import { Config } from "../config.js"
 import { ManagedPolicy } from "../managed-policy.js"
 import { Watcher } from "../filesystem/watcher.js"
 
-export const make = Effect.fn("PluginModule.make")(function* () {
+/**
+ * `watch`: watch each local plugin's module files and publish `changes` on an edit (hot reload). By default only a run
+ * from source watches; a compiled build is a fixed copy of its plugins and opens no watch on their files.
+ */
+export const make = Effect.fn("PluginModule.make")(function* (options?: { readonly watch?: boolean }) {
   const config = yield* Config.Service
   const watcher = yield* Watcher.Service
   const scope = yield* Effect.scope
   const runPromise = yield* FiberSet.makeRuntimePromise()
   const changes = yield* PubSub.unbounded<void>()
+  const live = options?.watch ?? SourceRun.fromSource()
   const watched = new Set<string>()
   const watch = Effect.fn("PluginModule.watch")(function* (file: string) {
-    if (watched.has(file)) return
+    if (!live || watched.has(file)) return
     watched.add(file)
     const ready = yield* Deferred.make<void>()
     const target = yield* Effect.promise(() => watchTarget(file))
