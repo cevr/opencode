@@ -10,6 +10,7 @@ import { makeLocationNode } from "@opencode/util/effect/app-node"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Bus } from "@opencode/core/bus"
 import { FSUtil } from "@opencode/util/fs-util"
+import { Teardown } from "@opencode/util/teardown"
 import { LocationWatcher } from "@opencode/core/filesystem/location-watcher"
 import { LocationWatcherPolicy } from "@opencode/core/filesystem/location-watcher-policy"
 import { Watcher } from "@opencode/core/filesystem/watcher"
@@ -255,6 +256,58 @@ describe("Watcher lifecycle", () => {
       expect(counts.unsubscribes).toBe(1)
     })
   })
+
+  // A node watch's close blocks the JS thread on Bun's FSEventStream rebuild (oven-sh/bun#43870); with a degraded
+  // fseventsd a stop spent 30 s closing them one at a time, and the shutdown deadline's timer, on the same thread, never
+  // fired. Once a signal began shutdown the process exits, which drops the watches: the closes are skipped.
+  for (const exiting of [true, false])
+    it.effect(
+      exiting
+        ? "a shutdown a signal began skips the slow close of node watches"
+        : "node watches released while the process runs still close",
+      () => {
+        const blocker = new Int32Array(new SharedArrayBuffer(4))
+        let closes = 0
+        const native: Watcher.NativeInterface = {
+          subscribe: () =>
+            Effect.sync(() => ({
+              backend: "node",
+              unsubscribe: () => {
+                closes++
+                Atomics.wait(blocker, 0, 0, 100)
+                return Promise.resolve()
+              },
+            })),
+        }
+        const stop = Effect.gen(function* () {
+          const consumers = yield* Effect.gen(function* () {
+            const watcher = yield* Watcher.Service
+            const consumers = []
+            for (const index of [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]) {
+              const updates = yield* watcher.subscribe({ path: `/nonexistent/loop-probe-x/${index}`, type: "file" })
+              consumers.push(yield* updates.pipe(Stream.runDrain, Effect.forkScoped({ startImmediately: true })))
+            }
+            yield* Effect.yieldNow
+            expect(closes).toBe(0)
+            return consumers
+          }).pipe(withNative(native))
+          // The layer's scope closed above, releasing all ten watches.
+          yield* Effect.forEach(consumers, Fiber.join)
+        })
+        return Effect.acquireUseRelease(
+          Effect.sync(() => (exiting ? Teardown.exit() : () => {})),
+          () =>
+            Effect.gen(function* () {
+              const started = Date.now()
+              yield* stop
+              expect(closes).toBe(exiting ? 0 : 10)
+              // Ten closes block the thread for 1 s; skipped, the stop takes no time at all.
+              if (exiting) expect(Date.now() - started).toBeLessThan(500)
+            }),
+          (undo) => Effect.sync(undo),
+        )
+      },
+    )
 })
 
 function provide(

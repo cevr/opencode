@@ -30,6 +30,28 @@ posix("a second signal during teardown reports and exits without waiting for the
   })
 })
 
+// A release that blocks this thread in native code (closing file watches) starves the deadline's timer; the signal marks
+// the exit before teardown starts, so such releases are skipped and the deadline fires on time.
+posix("the deadline still fires when releases would block the thread, because the signal marks the exit first", async () => {
+  const proc = Bun.spawn([process.execPath, path.join(import.meta.dir, "fixture/shutdown-watches.ts"), "200"], {
+    cwd: path.join(import.meta.dir, ".."),
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+  try {
+    expect(await readLine(proc.stdout, "SHUTDOWN_READY")).toBeDefined()
+    const start = Date.now()
+    proc.kill("SIGTERM")
+    expect(await new Response(proc.stderr).text()).toContain("shutdown did not finish within 200ms")
+    expect(await proc.exited).toBe(1)
+    // Ten blocked closes would hold it for 10 s.
+    expect(Date.now() - start).toBeLessThan(5_000)
+  } finally {
+    proc.kill("SIGKILL")
+  }
+})
+
 async function hang(
   deadline: number,
   body: (proc: Bun.Subprocess<"ignore", "pipe", "pipe">, pid: number) => Promise<void>,

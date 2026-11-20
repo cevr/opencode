@@ -6,6 +6,7 @@ import type ParcelWatcher from "@parcel/watcher"
 import { makeGlobalNode } from "@opencode/util/effect/app-node"
 import { FSUtil } from "@opencode/util/fs-util"
 import { isRecord } from "@opencode/util/record"
+import { Teardown } from "@opencode/util/teardown"
 import { Cause, Context, Effect, Layer, PubSub, RcMap, Stream } from "effect"
 import { lazy } from "../util/lazy.js"
 import { watch } from "node:fs"
@@ -98,8 +99,11 @@ export const layer = (options?: Options) =>
                 ...key,
                 publish: (update) => PubSub.publishUnsafe(pubsub, update),
               }),
+              // Once a signal began shutdown, exit drops the process's watches. A node watch's close blocks this thread
+              // on Bun's FSEventStream rebuild (oven-sh/bun#43870), one close at a time, and starves the shutdown
+              // deadline's timer; skip it. A watch released while the process runs (an evicted location) still closes.
               (subscription) =>
-                subscription
+                subscription && !(subscription.backend === "node" && Teardown.exiting())
                   ? Effect.promise(() => subscription.unsubscribe()).pipe(
                       Effect.ignoreCause,
                       Effect.andThen(Effect.logInfo("watcher stopped", { path: key.target, type: key.type })),
@@ -204,6 +208,8 @@ export const nativeLayer = Layer.succeed(
   Native.of({
     subscribe: (input) => {
       if (input.type === "file" || input.type === "entries") {
+        // A watch opened during shutdown would block this thread like a close (see the release above) for nothing.
+        if (Teardown.exiting()) return Effect.undefined
         const directory = input.type === "file" ? path.dirname(input.target) : input.target
         const names = new Set(input.type === "file" ? [path.basename(input.target)] : input.names)
         return Effect.try({

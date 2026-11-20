@@ -13,6 +13,22 @@ export function track(label: string) {
   }
 }
 
+let marked = false
+
+/**
+ * Marks that a signal began a shutdown that ends in the process's exit, which drops what the kernel holds for it (file
+ * watches, descriptors): a release may skip such work rather than wait on it. Returns the undo, for tests.
+ */
+export function exit() {
+  marked = true
+  return () => {
+    marked = false
+  }
+}
+
+/** Whether a signal began the shutdown (`exit`). */
+export const exiting = () => marked
+
 /** Pending work, oldest first, with how long each has been pending. */
 export function pending(now = Date.now()) {
   return Array.from(entries, (entry) => ({ label: entry.label, ms: now - entry.since }))

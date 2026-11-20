@@ -32,6 +32,9 @@ export const install = Effect.fnUntraced(function* (input: Duration.Input = DEAD
       process.exit(1)
     }
     started = true
+    // The process exits at the end of this shutdown: releases may skip what exit drops anyway (the file watches, whose
+    // one-by-one close waits on fseventsd on this thread and would starve the deadline below).
+    Teardown.exit()
     // Before teardown starts: a parent that kills this process after its grace (the standalone server's, 3 s) would
     // otherwise take the file log's last batch with it.
     Logging.writeThroughFromNow()
