@@ -2412,6 +2412,56 @@ describe("ShellTool", () => {
       { timeout: 15_000 },
     )
 
+    // The owner's default: a call with no timeout moves to the background at 2 minutes.
+    it.effect(
+      "moves a foreground command with no timeout to the background at 2 minutes",
+      () =>
+        Effect.acquireUseRelease(
+          Effect.promise(() => tmpdir()),
+          (tmp) => {
+            reset()
+            return withSession(tmp.path, (registry) =>
+              Effect.gen(function* () {
+                const shell = yield* Shell.Service
+                const scope = yield* Scope.Scope
+                const waiting = yield* executeTool(
+                  registry,
+                  call({ command: `printf 'ready\\n'; ${idleCommand}` }, "call-default-limit"),
+                ).pipe(Effect.forkIn(scope, { startImmediately: true }))
+
+                const started = (remaining = 2_000): Effect.Effect<ShellInfo, Error> =>
+                  Effect.gen(function* () {
+                    const running = (yield* shell.list()).find((info) => info.metadata.sessionID === sessionID)
+                    if (running && (yield* shell.output(running.id)).output.includes("ready")) return running
+                    if (remaining <= 0) return yield* Effect.fail(new Error("Timed out waiting for the shell"))
+                    yield* Effect.promise(() => Bun.sleep(5))
+                    return yield* started(remaining - 1)
+                  }).pipe(Effect.orDie)
+                const info = yield* started()
+
+                yield* TestClock.adjust(Duration.millis(119_999))
+                yield* Effect.promise(() => Bun.sleep(50))
+                expect(waiting.pollUnsafe()).toBeUndefined()
+
+                yield* TestClock.adjust(Duration.millis(1))
+                const settled = yield* Fiber.join(waiting)
+                expect(settled.metadata).toMatchObject({ id: info.id, state: "running", backgrounded: "limit" })
+                expect(settled.content?.[0]).toEqual({
+                  type: "text",
+                  text: expect.stringMatching(
+                    new RegExp(`^${info.id} · running · \\d.* s · moved to the background at its 2 min limit$`),
+                  ),
+                })
+                expect((yield* shell.get(info.id)).status).toBe("running")
+                yield* shell.remove(info.id)
+              }),
+            )
+          },
+          (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]().then(() => undefined)),
+        ),
+      { timeout: 15_000 },
+    )
+
     it.live(
       "a command that ends before its limit returns its handle already exited",
       () =>
