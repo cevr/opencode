@@ -1,5 +1,4 @@
 import { expect, spyOn, test } from "bun:test"
-import * as fs from "node:fs"
 import { createRequire } from "node:module"
 import path from "node:path"
 import { mkdir, rename, symlink } from "node:fs/promises"
@@ -120,7 +119,8 @@ test("a missing package dependency reloads when it is installed", async () => {
 // (the tests' own default, `bun`) watches both and hears an edit.
 for (const live of [false, true])
   test(`${live ? "a run from source" : "a build"} ${live ? "watches" : "opens no watch on"} a local plugin's root and modules`, async () => {
-    const watches = spyOn(fs, "watch")
+    // The module namespace: the watcher's named import of `watch` reads through it.
+    const watches = spyOn(await import("node:fs"), "watch")
     let changes = 0
     const watcher = createSourceWatcher(() => {
       changes++

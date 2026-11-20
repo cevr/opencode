@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { SourceRun } from "./source-run"
+import { SourceRun } from "./source-run.js"
 
 test("a JavaScript runtime runs from source; any other executable is a build", () => {
   for (const runtime of ["/usr/local/bin/bun", "/usr/bin/node", "/opt/nodejs", "/opt/bun/Bun.exe", "bun"])
