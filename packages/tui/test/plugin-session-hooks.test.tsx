@@ -355,6 +355,59 @@ test("a plugin draws over the transcript's top row, follows the scroll and revea
   await app.waitForFrame((frame) => firstRow(frame).includes("top=message-5@0") && firstRow(frame).includes("target=0"))
 })
 
+test("the overlay's reveal of a message older than the loaded pages loads back to it and shows it", async () => {
+  // Forty prompts, newest first; the session opens on the newest twenty, the rest is one page further back.
+  const history = Array.from({ length: 40 }, (_, index) => ({
+    type: "user",
+    id: `message-${index}`,
+    text: `Prompt ${index}`,
+    time: { created: index },
+  })).toReversed()
+  const pages: string[] = []
+  const fixture = await copyPlugin("transcript-overlay")
+  try {
+    await using app = await createAppFixture({
+      width: 100,
+      height: 30,
+      config: { animations: false, tabs: { enabled: false }, plugins: [fixture.directory] },
+      args: { sessionID: session.id },
+      fetch: (url) => {
+        if (url.pathname === "/api/session") return json({ data: [session], cursor: {} })
+        if (url.pathname === `/api/session/${session.id}`) return json({ data: session })
+        if (url.pathname === `/api/session/${session.id}/message`) {
+          const older = url.searchParams.get("cursor") === "older"
+          pages.push(older ? "older" : "newest")
+          return older
+            ? json({ data: history.slice(20), cursor: {} })
+            : json({ data: history.slice(0, 20), cursor: { next: "older" } })
+        }
+        if (/^\/api\/session\/[^/]+\/(inbox|permission)$/.test(url.pathname)) return json({ data: [] })
+        return undefined
+      },
+    })
+    await app.ready
+    await app.waitForFrame((frame) => frame.includes("Prompt 39") && frame.includes("Overlay away=false"))
+    const firstRow = (frame: string) => frame.split("\n").find((line) => line.includes("Overlay")) ?? ""
+    const overlayIndex = () =>
+      app
+        .captureCharFrame()
+        .split("\n")
+        .findIndex((line) => line.includes("Overlay"))
+    for (const _ of Array.from({ length: 3 })) await app.mockMouse.scroll(10, 10, "up")
+    await app.waitForFrame((frame) => frame.includes("Overlay away=true"))
+    // message-5 is in no page read yet.
+    expect(pages).toEqual(["newest"])
+    expect(app.captureCharFrame()).not.toContain("Prompt 5\n")
+
+    await app.mockMouse.click(10, overlayIndex())
+    // The click read the older page and put message-5's first row at the viewport's top.
+    await app.waitForFrame((frame) => firstRow(frame).includes("top=message-5@0") && firstRow(frame).includes("target=0"))
+    expect(pages).toEqual(["newest", "older"])
+  } finally {
+    await fixture[Symbol.asyncDispose]()
+  }
+})
+
 test("a plugin claims compactions in place of the host's rule and summary", async () => {
   const usage = { input: 170_000, output: 6_000, reasoning: 0, cache: { read: 1_000, write: 0 } }
   // Newest first, as the server pages them.

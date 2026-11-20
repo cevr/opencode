@@ -1863,7 +1863,8 @@ export function Session(props: {
                     sessionID: route.sessionID,
                     away: awayFromBottom(),
                     messages: messageRows(),
-                    reveal: jumpToMessage,
+                    // A message older than the loaded pages is read back to first, as the map's jump does.
+                    reveal: (messageID: string) => jumpToTurn(messageID),
                   }}
                 />
               </box>

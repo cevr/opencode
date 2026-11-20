@@ -189,7 +189,12 @@ export interface TranscriptOverlayInput {
    * mounted are absent. Measured after each scroll and layout settles.
    */
   readonly messages: readonly { readonly messageID: string; readonly row: number }[]
-  /** Scrolls the transcript so the message's first row is the viewport's top row, as far as the transcript allows. */
+  /**
+   * Scrolls the transcript so the message's first row is the viewport's top row, as far as the
+   * transcript allows. A message older than the pages loaded is read back to first (the transcript's
+   * top says earlier messages are loading meanwhile); a message the session does not hold ends at
+   * the session's start.
+   */
   readonly reveal: (messageID: string) => void
 }
 
