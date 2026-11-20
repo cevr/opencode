@@ -1,6 +1,7 @@
 import path from "path"
 import { existsSync, type FSWatcher } from "fs"
 import { lstat, realpath, stat } from "fs/promises"
+import { SourceRun } from "@opencode/util/source-run"
 import { safeWatch } from "../util/watch"
 
 // Watch plugin sources for changes. Files are watched through their parent
@@ -14,7 +15,11 @@ import { safeWatch } from "../util/watch"
 // spurious onChange); all die with dispose(). Missing retryable targets are
 // polled until they can be armed without relying on a racy chain of ancestor
 // watches.
-export function createSourceWatcher(onChange: () => void) {
+//
+// A plugin's own source (its local root and each module it loads) is watched through `source`, and only in a run from
+// source (`live`): a compiled build is a fixed copy of its plugins and opens no watch on them (on macOS each folder
+// watch rebuilds Bun's one FSEventStream, oven-sh/bun#43870). `add` and `wait` (discovery directories) always watch.
+export function createSourceWatcher(onChange: () => void, live = SourceRun.fromSource()) {
   const watchers = new Map<string, FSWatcher>()
   const watched = new Map<string, Set<string> | null>()
   const missing = new Set<string>()
@@ -102,6 +107,7 @@ export function createSourceWatcher(onChange: () => void) {
   return {
     add: (target: string) => add(target, false),
     wait: (target: string) => add(target, true),
+    source: (target: string, retry = true) => (live ? add(target, retry) : Promise.resolve()),
     dispose,
   }
 }

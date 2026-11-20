@@ -345,7 +345,7 @@ export function PluginProvider(props: ParentProps<{ packages: PackageSource; dir
     clearTimeout(pending)
     watcher.dispose()
   }
-  const sources = createPluginSources(watcher.wait)
+  const sources = createPluginSources(watcher.source)
   onCleanup(stopWatching)
 
   // Rebuild the plugin generation as resolve → compare → swap, mirroring the
@@ -421,7 +421,7 @@ export function PluginProvider(props: ParentProps<{ packages: PackageSource; dir
       )
         continue
       // Watch even when the resolve below fails so fixing a broken plugin reloads it.
-      if (local) await watcher.add(fileURLToPath(local))
+      if (local) await watcher.source(fileURLToPath(local), false)
       const previous = Object.values(store.registrations).find((registration) => registration.target === target)
       const memo = local ? undefined : npmFailures.get(target)
       const resolved = memo

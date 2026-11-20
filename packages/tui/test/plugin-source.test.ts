@@ -1,4 +1,5 @@
-import { expect, test } from "bun:test"
+import { expect, spyOn, test } from "bun:test"
+import * as fs from "node:fs"
 import { createRequire } from "node:module"
 import path from "node:path"
 import { mkdir, rename, symlink } from "node:fs/promises"
@@ -114,6 +115,34 @@ test("a missing package dependency reloads when it is installed", async () => {
   expect(changes).toBeGreaterThan(count)
   expect((await sources.read(entry.href)).module).toMatchObject({ default: "installed" })
 })
+
+// A compiled build is a fixed copy of its plugins: no watch on a local root or the modules it loads. A run from source
+// (the tests' own default, `bun`) watches both and hears an edit.
+for (const live of [false, true])
+  test(`${live ? "a run from source" : "a build"} ${live ? "watches" : "opens no watch on"} a local plugin's root and modules`, async () => {
+    const watches = spyOn(fs, "watch")
+    let changes = 0
+    const watcher = createSourceWatcher(() => {
+      changes++
+    }, live)
+    using _watcher = { [Symbol.dispose]: () => (watcher.dispose(), watches.mockRestore()) }
+    await using sources = await fixture(watcher.source)
+    const root = new URL("plugin/", sources.url)
+    const entry = new URL("tui.ts", root)
+    const helper = new URL("lib/helper.ts", root)
+    await Bun.write(entry, 'export { value as default } from "./lib/helper.ts"')
+    await Bun.write(helper, 'export const value = "before"')
+    await watcher.source(path.dirname(fileURLToPath(entry)), false)
+    expect((await sources.read(entry.href)).module).toMatchObject({ default: "before" })
+    expect(watches.mock.calls.map(([target]) => path.relative(fileURLToPath(sources.url), String(target))).toSorted()).toEqual(
+      live ? ["plugin", "plugin/lib"] : [],
+    )
+    await Bun.write(helper, 'export const value = "after"')
+    const deadline = Date.now() + (live ? 3000 : 300)
+    while (Date.now() < deadline && changes === 0) await Bun.sleep(10)
+    expect(changes > 0).toBe(live)
+    expect((await sources.read(entry.href)).module).toMatchObject({ default: "after" })
+  })
 
 test("real watchers reload edits in, and relinks of, a workspace package", async () => {
   let changes = 0
