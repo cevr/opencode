@@ -1095,7 +1095,7 @@ function App() {
         name: "provider.connect",
         title: "Connect an integration",
         suggested: !connected(),
-        slash: { name: "connect" },
+        slash: { name: "connect", aliases: ["login", "auth"] },
         run: () => {
           dialog.replace(() => (
             <DialogIntegration
