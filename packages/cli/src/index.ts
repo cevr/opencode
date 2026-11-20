@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 
+import "./adjacent-config"
 import "./boot-start"
 import { BootTrace } from "@opencode/util/boot-trace"
 import { ensurePluginRuntime } from "@opencode/plugin/runtime"
