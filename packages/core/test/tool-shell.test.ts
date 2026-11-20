@@ -2055,11 +2055,12 @@ describe("ShellTool", () => {
             const shellID = settled.metadata?.shellID
             expect(typeof shellID).toBe("string")
             const payload = (yield* Fiber.join(admitted)).valueOrUndefined?.data.item.payload
+            const text = payload && "text" in payload ? payload.text : undefined
             // The end notice comes in one <background-result> block around the final handle.
-            expect(payload?.text).toStartWith(
+            expect(text).toStartWith(
               `<background-result kind="shell" id="${shellID}" state="completed" command="${bodyExitCommand}">\n`,
             )
-            expect(payload?.text).toEndWith("\n</background-result>")
+            expect(text).toEndWith("\n</background-result>")
             expect(payload).toMatchObject({
               text: expect.stringMatching(new RegExp(`${shellID} · exited 7 · .*\\nbody`)),
               description: bodyExitCommand,
