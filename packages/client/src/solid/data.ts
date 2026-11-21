@@ -2188,9 +2188,10 @@ export function createData(config: CreateDataInput) {
           }
           const cursor = store.session.messageCursor[sessionID]
           if (!cursor || signal?.aborted) return
-          setStore("session", "messageLoading", sessionID, true)
           const until = options?.until
+          // Before the loading flag: a return after it left the session loading for good.
           if (until && messageIndex.get(sessionID)?.has(until)) return
+          setStore("session", "messageLoading", sessionID, true)
           const request = (async () => {
             const fetched: SessionMessageInfo[] = []
             let next: string | undefined = cursor
