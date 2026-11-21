@@ -1,6 +1,6 @@
 export * as KV from "./kv.js"
 
-import { and, asc, eq, gt, gte, lt } from "drizzle-orm"
+import { and, asc, eq, gt, gte, lt, sql } from "drizzle-orm"
 import { Context, Effect, Layer, Schema } from "effect"
 import { Database } from "./database/database.js"
 import { makeGlobalNode } from "@opencode/util/effect/app-node"
@@ -27,6 +27,13 @@ export interface ScanResult {
 export interface Interface {
   readonly get: (key: string) => Effect.Effect<Value | undefined>
   readonly set: (key: string, value: Value) => Effect.Effect<void>
+  /**
+   * Write `value` only if the stored value is the one the caller read, in one statement (atomic across connections
+   * and processes under SQLite's write lock); whether it was written. `rev` names what was read: the stored value's
+   * numeric `rev` field (a stored value without one counts as 0), or `undefined` for a key that was absent, so the
+   * write is an insert only if it still is. The caller keeps `rev` in `value` and raises it on each write.
+   */
+  readonly setIf: (key: string, value: Value, rev?: number) => Effect.Effect<boolean>
   readonly remove: (key: string) => Effect.Effect<void>
   readonly scan: (options: ScanOptions) => Effect.Effect<ScanResult>
 }
@@ -53,6 +60,26 @@ const layer = Layer.effect(
           .onConflictDoUpdate({ target: KVTable.key, set: { value, time_updated: Date.now() } })
           .run()
           .pipe(Effect.orDie)
+      }),
+      setIf: Effect.fn("KV.setIf")(function* (key, value, rev) {
+        if (rev === undefined) {
+          const inserted = yield* db
+            .insert(KVTable)
+            .values({ key, value })
+            .onConflictDoNothing({ target: KVTable.key })
+            .returning({ key: KVTable.key })
+            .all()
+            .pipe(Effect.orDie)
+          return inserted.length === 1
+        }
+        const updated = yield* db
+          .update(KVTable)
+          .set({ value, time_updated: Date.now() })
+          .where(and(eq(KVTable.key, key), sql`coalesce(json_extract(${KVTable.value}, '$.rev'), 0) = ${rev}`))
+          .returning({ key: KVTable.key })
+          .all()
+          .pipe(Effect.orDie)
+        return updated.length === 1
       }),
       remove: Effect.fn("KV.remove")(function* (key) {
         yield* db.delete(KVTable).where(eq(KVTable.key, key)).run().pipe(Effect.orDie)

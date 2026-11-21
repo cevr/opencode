@@ -61,6 +61,7 @@ const run = Effect.fnUntraced(function* (seed?: Goal.State) {
       storage: {
         get: (key) => Effect.sync(() => stored.get(key)),
         set: (key, value) => Effect.sync(() => void stored.set(key, value)),
+        setIf: () => Effect.die("unused storage.setIf"),
         remove: (key) => Effect.sync(() => void stored.delete(key)),
         scan: (options) =>
           Effect.sync(() => ({
