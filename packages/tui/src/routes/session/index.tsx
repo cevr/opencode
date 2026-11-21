@@ -487,6 +487,8 @@ export function Session(props: {
   let sent = false
   let restored = false
   let scroll: ScrollBoxRenderable
+  /** The scroll box is mounted: `scroll` is set (a plain variable, so effects read this). */
+  const [scrollMounted, setScrollMounted] = createSignal(false)
   // The box of the session.transcript.start slot: it stays above rows prepended from history, so it is never their pin.
   let transcriptStart: BoxRenderable | undefined
   createEffect(() => {
@@ -594,6 +596,20 @@ export function Session(props: {
     })
     return true
   }
+  // A transcript that fits the screen once its rows sync reads the older page once. The server gives a `next` cursor
+  // with every page that holds messages, the oldest too, so only a read past the oldest one says nothing is older;
+  // a transcript that fits never scrolls, so no scroll asks, and its top stayed "more to load" for good instead of
+  // showing the session's start. A longer one reads older history only as the reader scrolls up.
+  // It waits for both the rows and the scroll box: the first read can settle before the box is mounted, and a
+  // read gated on the box alone was skipped then.
+  let fitRead = false
+  createEffect(() => {
+    if (fitRead || !rowsSynced() || !scrollMounted()) return
+    fitRead = true
+    afterLayout(() => {
+      if (hidden() === 0 && scroll.scrollHeight <= scroll.viewport.height) prependHistory()
+    })
+  })
   // A reader scrolling up within a few viewports of the top of what is mounted asks for the older page then,
   // not at the top, so the server answers while they still read the rows above them.
   const prefetchHistory = () => {
@@ -1796,6 +1812,7 @@ export function Session(props: {
                   scroll = r
                   props.scrollRef?.(r)
                   scroll.verticalScrollBar.on("change", updateAwayFromBottom)
+                  setScrollMounted(true)
                 }}
                 viewportOptions={{
                   paddingRight: showScrollbar() ? 1 : 0,
@@ -1825,8 +1842,12 @@ export function Session(props: {
                 }}
               >
                 <box ref={(node: BoxRenderable) => (transcriptStart = node)} flexShrink={0}>
-                  {/* The session's start only once its first message is in view; until then the rows above load. */}
-                  <Show when={transcriptBeginning()} fallback={<EarlierMessages />}>
+                  {/* The session's start only once its first message is in view; until then the rows above, which
+                      spin only while an older page is being read, so a read that fails leaves no spinner behind. */}
+                  <Show
+                    when={transcriptBeginning()}
+                    fallback={<EarlierMessages loading={data.session.message.loading(route.sessionID)} />}
+                  >
                     <Slot path="session.transcript.start" input={{ sessionID: route.sessionID }} />
                   </Show>
                 </box>
@@ -2657,13 +2678,19 @@ function CompactionMessage(props: { message: Extract<SessionMessageInfo, { type:
   )
 }
 
-/** The transcript's top while older messages are still to load: shown in place of the session's start. */
-function EarlierMessages() {
+/**
+ * The transcript's top while older messages are still to load: shown in place of the session's start, the same
+ * height either way so the rows below never move. It spins only while an older page is being read; otherwise (none
+ * asked yet, or the last read failed) it says a scroll up loads them.
+ */
+function EarlierMessages(props: { loading: boolean }) {
   const theme = useTheme()
   const gutter = useRowGutter()
   return (
     <box id="session-earlier-messages" paddingLeft={gutter()} paddingBottom={1} flexShrink={0}>
-      <Spinner color={theme.text.muted}>Loading earlier messages…</Spinner>
+      <Show when={props.loading} fallback={<text fg={theme.text.muted}>Earlier messages · scroll up to load</text>}>
+        <Spinner color={theme.text.muted}>Loading earlier messages…</Spinner>
+      </Show>
     </box>
   )
 }

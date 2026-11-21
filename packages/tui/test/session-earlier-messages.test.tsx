@@ -16,7 +16,7 @@ const session = {
   time: { created: 0, updated: 0 },
 }
 const id = (turn: number, role: number) => `msg_${String(turn).padStart(6, "0")}_${role}`
-const messages: SessionMessageInfo[] = Array.from({ length: 40 }, (_, turn) => [
+const history = (turns: number): SessionMessageInfo[] => Array.from({ length: turns }, (_, turn) => [
   { type: "user" as const, id: id(turn, 0), text: `History prompt ${turn}`, time: { created: turn * 10 } },
   {
     type: "assistant" as const,
@@ -31,8 +31,15 @@ const messages: SessionMessageInfo[] = Array.from({ length: 40 }, (_, turn) => [
   },
 ]).flat()
 
-/** The session open at its newest message, every older page held by the server until `release`. */
-async function open() {
+/**
+ * The session (`turns` long) open at its newest message, every older page held by the server until `release` (or,
+ * with `failOlder`, answered with a server error). The server pages as the real one does: every page that holds
+ * messages carries a `next` cursor, the oldest page too; only a page with none has no `next`.
+ */
+async function open(options: { turns?: number; failOlder?: boolean } = {}) {
+  const turns = options.turns ?? 40
+  const messages = history(turns)
+  const last = turns - 1
   const release = Promise.withResolvers<void>()
   const requested = Promise.withResolvers<void>()
   // Where the reader was when the server saw the older page's request.
@@ -53,18 +60,20 @@ async function open() {
         if (cursor) {
           at.top ??= at.scroll?.scrollTop
           requested.resolve()
+          if (options.failOlder) return json({ name: "UnknownError", data: { message: "older page failed" } }, { status: 500 })
           await release.promise
         }
-        return json({ data: messages.slice(start, end).toReversed(), cursor: start ? { next: String(start) } : {} })
+        const data = messages.slice(start, end).toReversed()
+        return json({ data, cursor: data.length > 0 ? { next: String(start) } : {} })
       }
       if (/^\/api\/session\/[^/]+\/(inbox|permission)$/.test(url.pathname)) return json({ data: [] })
     },
   })
   await app.ready
-  await waitForHighlightedFrame(app, (frame) => frame.includes("History answer 39"))
+  await waitForHighlightedFrame(app, (frame) => frame.includes(`History answer ${last}`))
   await app.waitForVisualIdle({ quietFrames: 3 })
   const find = (node: Renderable): ScrollBoxRenderable | undefined =>
-    node instanceof ScrollBoxRenderable && node.getRenderable(id(39, 0))
+    node instanceof ScrollBoxRenderable && node.getRenderable(id(last, 0))
       ? node
       : node.getChildren().map(find).find(Boolean)
   const scroll = find(app.renderer.root)
@@ -92,6 +101,14 @@ async function open() {
       release.resolve()
       await app[Symbol.asyncDispose]()
     },
+  }
+}
+
+/** Frames until `ready` holds or 5 s of wall time pass (a loaded host answers the fixture's reads late). */
+async function settled(app: { renderOnce: () => Promise<void>; captureCharFrame: () => string }, ready: (frame: string) => boolean) {
+  for (const end = Date.now() + 5_000; Date.now() < end && !ready(app.captureCharFrame()); ) {
+    await app.renderOnce()
+    await Bun.sleep(16)
   }
 }
 
@@ -130,4 +147,41 @@ test("scrolling up asks for the older page while loaded rows are still above the
   expect(view.asked()).toBe(true)
   // Asked while a viewport of loaded rows was still above the reader, not at the top.
   expect(view.askedAt()).toBeGreaterThan(scroll.viewport.height)
+}, 30_000)
+// A session shorter than a page fits its first read, though that page carries a `next` cursor (the server gives one
+// with every page that holds messages): the read past it finds nothing, and its top is the session's start, never a
+// spinner left for good.
+test("a short session at rest shows its start, not a loading row, once its history read settles", async () => {
+  await using view = await open({ turns: 2 })
+  const { app } = view
+  view.release()
+  await settled(app, (frame) => frame.includes("Transcript start claimed"))
+  await app.waitForVisualIdle({ quietFrames: 3 })
+  const shown = app.captureCharFrame()
+  expect(shown).toContain("History prompt 0")
+  expect(shown).not.toContain("Loading earlier messages")
+  expect(shown).toContain("Transcript start claimed")
+}, 30_000)
+
+// A long session opened at its newest message reads nothing older until the reader scrolls toward the top.
+test("a long session at its newest message reads no older page and shows no loading row", async () => {
+  await using view = await open()
+  const { app } = view
+  await app.waitForVisualIdle({ quietFrames: 3 })
+  expect(view.asked()).toBe(false)
+  expect(app.captureCharFrame()).not.toContain("Loading earlier messages")
+}, 30_000)
+
+// The spinner stands for a read in flight: an older page that fails ends it, and the row says a scroll up retries.
+test("a failed read of the older page ends the loading spinner", async () => {
+  await using view = await open({ failOlder: true })
+  const { app, scroll, up } = view
+  await up(() => view.asked() && scroll.scrollTop === 0)
+  expect(view.asked()).toBe(true)
+  await settled(app, (frame) => !frame.includes("Loading earlier messages"))
+  await app.waitForVisualIdle({ quietFrames: 3 })
+  const shown = app.captureCharFrame()
+  expect(shown).not.toContain("Loading earlier messages")
+  // The row stands (the rows below do not move); it says a scroll up loads them again.
+  expect(shown).toContain("Earlier messages · scroll up to load")
 }, 30_000)
