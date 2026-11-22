@@ -478,7 +478,6 @@ export const Plugin = {
     const agents = yield* Agent.Service
     const jobs = yield* Job.Service
     const access = yield* FileAccess.Service
-    const environment = yield* Environment.Service
     const workingDirectory = yield* Environment.workingDirectory
     const shell = yield* Shell.Service
     const shellSelect = yield* ShellSelect.Service
@@ -578,7 +577,10 @@ export const Plugin = {
           ? requested.target
           : yield* access.resolve({
               path: invocation.cwd,
-              base: requested.target.environment.id === environment.id ? workingDirectory : requested.target,
+              base:
+                requested.target.environment.id === workingDirectory.environment.id
+                  ? workingDirectory
+                  : requested.target,
               kind: "directory",
             })
       invocation.cwd = target.absolute
@@ -587,7 +589,6 @@ export const Plugin = {
         command: invocation.command,
         program: invocation.shell,
         target,
-        local: target.environment.id === environment.id,
         rules: Effect.gen(function* () {
           const session = yield* sessions.get(context.sessionID)
           const agent = yield* agents.resolve(context.agent)
