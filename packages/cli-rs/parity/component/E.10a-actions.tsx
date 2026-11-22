@@ -1,5 +1,5 @@
 /** @jsxImportSource @opentui/solid */
-// P-COMP fixtures for the session action dialogs: the timeline (packages/tui/src/routes/session/dialog-timeline.tsx),
+// P-COMP fixtures for the session action dialogs: the timeline (upstream's dialog-timeline.tsx; not in the fork),
 // fork (dialog-fork.tsx), rename (component/dialog-session-rename.tsx), and export options
 // (ui/dialog-export-options.tsx). crates/tui/tests/all/actions.rs (`dialogs_match_typescript`) mounts the Rust TUI over
 // the same session and messages (`turns()` there; keep both in step), hides the screen behind the dialog, and
@@ -22,7 +22,6 @@ import { TuiAppProvider } from "../../../tui/src/context/runtime"
 import { StorageProvider } from "../../../tui/src/context/storage"
 import { ThemeProvider } from "../../../tui/src/context/theme"
 import { DialogFork } from "../../../tui/src/routes/session/dialog-fork"
-import { DialogTimeline } from "../../../tui/src/routes/session/dialog-timeline"
 import { DialogProvider, useDialog } from "../../../tui/src/ui/dialog"
 import { DialogExportOptions } from "../../../tui/src/ui/dialog-export-options"
 import { DialogExportResult } from "../../../tui/src/ui/dialog-export-result"
@@ -113,11 +112,8 @@ async function render(fixture: string, open: () => JSX.Element, ready: (frame: s
 
 type Act = Parameters<typeof renderComponent>[0]["act"]
 
-await render(
-  "E.10a/timeline",
-  () => <DialogTimeline sessionID="ses_a" onMove={() => {}} />,
-  (frame) => frame.includes("Read the parser"),
-)
+// E.10a/timeline is not rendered here: the fork's TUI replaced the timeline dialog with the transcript map
+// (c2ccb14095), so parity/fixtures/E.10a/timeline.json stays as upstream rendered it.
 await render(
   "E.10a/fork",
   () => <DialogFork sessionID="ses_a" onMove={() => {}} />,
