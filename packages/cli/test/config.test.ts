@@ -463,6 +463,31 @@ test("serializes migration and updates across processes", async () => {
   }
 })
 
+// Two TUIs (two panes) saving different settings at the same time: each save reads the file under its
+// lock, so neither loses the other's field, whichever order the lock grants them in.
+test("two processes saving different fields at once keep both fields", async () => {
+  await using directory = await tmpdir()
+  const file = path.join(directory.path, "cli.json")
+  const go = path.join(directory.path, "go")
+  const worker = path.join(import.meta.dir, "fixture/config-fields.ts")
+  const spawn = (field: string) =>
+    Bun.spawn([process.execPath, worker, field, directory.path, go, "20"], { stdout: "ignore", stderr: "pipe" })
+  const theme = spawn("theme")
+  const scope = spawn("scope")
+  try {
+    await Bun.write(go, "")
+    const codes = await Promise.all([theme.exited, scope.exited])
+    expect(await new Response(theme.stderr).text()).toBe("")
+    expect(await new Response(scope.stderr).text()).toBe("")
+    expect(codes).toEqual([0, 0])
+    expect(await Bun.file(file).json()).toMatchObject({ theme: { name: "theme-20" }, tabs: { scope: "cwd" } })
+  } finally {
+    theme.kill()
+    scope.kill()
+    await Promise.all([theme.exited, scope.exited])
+  }
+}, 30_000)
+
 test("config reads remain interruptible while waiting for the file lock", async () => {
   await using directory = await tmpdir()
   const file = path.join(directory.path, "cli.json")
