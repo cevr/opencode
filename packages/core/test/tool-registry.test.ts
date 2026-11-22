@@ -625,6 +625,23 @@ describe("Tool", () => {
     }),
   )
 
+  it.effect("gives the program expression for a Code Mode tool's path or registry ID", () =>
+    Effect.gen(function* () {
+      const service = yield* Tool.Service
+      yield* transform(service, { echo: make(), "kebab-echo": make() }, { namespace: "acme.tools" })
+      yield* transform(service, { direct: make() }, { codemode: false })
+      const snapshot = yield* service.snapshot()
+      expect(snapshot.codeModeExpression?.("acme.tools.echo")).toBe("tools.acme.tools.echo")
+      expect(snapshot.codeModeExpression?.("acme_tools_echo")).toBe("tools.acme.tools.echo")
+      expect(snapshot.codeModeExpression?.("acme.tools.kebab-echo")).toBe('tools.acme.tools["kebab-echo"]')
+      for (const name of ["direct", "execute", "missing", "tools.acme.tools.echo"])
+        expect(snapshot.codeModeExpression?.(name)).toBeUndefined()
+      // A tool this request doesn't offer has no expression.
+      const denied = yield* service.snapshot([{ action: "acme_tools_echo", resource: "*", effect: "deny" }])
+      expect(denied.codeModeExpression?.("acme.tools.echo")).toBeUndefined()
+    }),
+  )
+
   it.effect("logs invalid tool definitions without dropping healthy tools", () => {
     const output: unknown[] = []
     const logger = Logger.map(Logger.formatStructured, (entry) => {
@@ -1738,6 +1755,9 @@ describe("Tool runtime", () => {
       const snapshot = yield* service.snapshot()
       // A named tool the agent lacks is left out; the rest stay behind the runtime.
       expect(snapshot.definitions.map((tool) => tool.name)).toEqual(["kernel", "echo"])
+      // Upstream 2ae1910140 rewrites a top-level call of a Code Mode tool into an `execute` program; a runtime offers
+      // no `execute`, so its calls (the runtime's, its direct tools', or one of a tool behind it) are never rewritten.
+      expect(snapshot.codeModeExpression).toBeUndefined()
       expect((yield* snapshot.execute(call("echo"))).output).toEqual({ text: "echo" })
       expect((yield* snapshot.execute(call("kernel"))).output).toEqual({ text: 'constant,echo | {"text":"inner"}' })
       expect(
