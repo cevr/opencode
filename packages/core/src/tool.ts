@@ -3,7 +3,7 @@ export { CallID, Content, Error, FileContent, TextContent } from "@opencode/sche
 export type { Context, Info, Metadata, Namespace, Options, Result, Runtime, RuntimeTool } from "@opencode/schema/tool"
 
 import { ToolDefinition, type ToolCall } from "@opencode/ai/effect"
-import type { CodeMode } from "@opencode/codemode"
+import { toolExpression, type CodeMode } from "@opencode/codemode"
 import { Tool } from "@opencode/schema/tool"
 import { isRecord } from "@opencode/util/record"
 import { Context, Effect, Layer, Ref, Result, Schema, SchemaIssue, Types } from "effect"
@@ -114,6 +114,11 @@ export interface Snapshot {
     /** Surviving request definitions, keyed by the names advertised after session context hooks. */
     readonly definitions?: ReadonlyMap<string, ToolDefinition>
   }) => Effect.Effect<NormalizedResult, Tool.Error>
+  /**
+   * The expression a Code Mode program calls a tool by (`tools.opencode.session.search`), when `name` is the path or
+   * registry ID of one of this snapshot's Code Mode tools.
+   */
+  readonly codeModeExpression?: (name: string) => string | undefined
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Tool") {}
@@ -455,10 +460,18 @@ const layer = Layer.effect(
                   }
                   catalogs.set(key, entry)
                 }
-                return { tool, catalog: entry.value, definition: entry.definition }
+                return { tool, inventory, catalog: entry.value, definition: entry.definition }
               })()
           return {
-            ...(codemode === undefined ? {} : { codeModeCatalog: codemode.catalog }),
+            ...(codemode === undefined
+              ? {}
+              : {
+                  codeModeCatalog: codemode.catalog,
+                  codeModeExpression: (name: string) => {
+                    const found = CodeModeTool.find(codemode.inventory, name)
+                    return found && toolExpression(CodeModeTool.qualifiedName(found.registration))
+                  },
+                }),
             definitions: [
               ...Array.from(direct)
                 .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
@@ -478,7 +491,9 @@ const layer = Layer.effect(
               if (name === "execute" && codemode) {
                 const run = (ctx: Tool.Context) => executeTool(codemode.tool, name, event.input, ctx)
                 const background = yield* CodeModeJob.Current
-                return yield* background ? background(context, run) : run(context)
+                return yield* background
+                  ? background(context, run, full ? executeOptions(event.input) : undefined)
+                  : run(context)
               }
               const tool = direct.get(name)
               if (tool) return yield* executeTool(tool, name, event.input, context)
@@ -639,3 +654,13 @@ export const node = makeLocationNode({
   layer,
   deps: [PluginHooks.node, Image.node, Permission.node, Flag.node],
 })
+
+// Only read once the input has the shape the full_codemode schema accepts; the tool still validates it when it runs.
+const executeOptions = (input: unknown): CodeModeJob.Options | undefined => {
+  if (typeof input !== "object" || input === null) return undefined
+  const { timeout, background } = input as Record<string, unknown>
+  return {
+    ...(typeof timeout === "number" && Number.isInteger(timeout) && timeout > 0 ? { timeout } : {}),
+    ...(background === true ? { background } : {}),
+  }
+}
