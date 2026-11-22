@@ -2368,41 +2368,124 @@ describe("RestartWake: recovered shell notices wake their owner", () => {
     kv.scan({ prefix: MARK }).pipe(Effect.map((page) => page.entries.map((entry) => entry.key))),
   )
 
-  for (const crash of ["after its notice, before completing its row", "after completing its row"] as const)
+  // The sweep's own writes, cut short: the first boot's real sweep stops for good right after one of them (the server
+  // died there, before any wake), and an independent boot on the resulting store must wake the owner once. Nothing
+  // here writes the mark or the notice for the sweep.
+  for (const crash of ["after writing its mark", "after completing its row"] as const)
     it.effect(`wakes the owner once when the sweep died ${crash}, before its wake`, () =>
       Effect.gen(function* () {
         const database = yield* Database.Service
         const jobs = yield* Job.Service
         const kv = yield* KV.Service
-        const sessions = yield* Session.Service
         const store = yield* SessionStore.Service
         const sessionID = Session.ID.make("ses_restart_wake_crash")
         yield* seedSessions(database, [sessionID])
         yield* seedBackground(jobs, sessionID, [{ id: "sh_crash", shellID: "sh_crash", command: "sleep 60" }])
-        const background = (yield* jobs.pendingBackground)[0]
-        if (!background) return yield* Effect.die("background record missing")
-        // What the dead sweep wrote before it died: the mark, the notice, maybe the row's completion. No wake ran.
-        yield* kv.set(MARK + background.notificationID, sessionID)
-        yield* sessions.synthetic({ id: background.notificationID, ...shellNotice(sessionID, "sh_crash") })
-        if (crash === "after completing its row") yield* jobs.completeBackground(background.notificationID)
+
+        const died = yield* Deferred.make<void>()
+        const dead = Deferred.succeed(died, undefined).pipe(Effect.andThen(Effect.never))
+        const firstScope = yield* Scope.make()
+        const firstJobs = yield* Job.make.pipe(Effect.provideService(Scope.Scope, firstScope))
+        const firstDrains: Session.ID[] = []
+        const first = yield* buildExecution(
+          firstScope,
+          ({ sessionID }) => Effect.sync(() => void firstDrains.push(sessionID)),
+          undefined,
+          {
+            ...firstJobs,
+            completeBackground: (id) =>
+              firstJobs
+                .completeBackground(id)
+                .pipe(Effect.andThen(crash === "after completing its row" ? dead : Effect.void)),
+          },
+          undefined,
+          undefined,
+          {
+            ...kv,
+            set: (key, value) =>
+              kv
+                .set(key, value)
+                .pipe(Effect.andThen(crash === "after writing its mark" && key.startsWith(MARK) ? dead : Effect.void)),
+          },
+        )
+        yield* Context.get(first, SessionRestart.Service).resumeSuspendedSessions.pipe(Effect.forkIn(firstScope))
+        yield* Deferred.await(died)
+        expect(yield* marks).toHaveLength(1)
+        expect(yield* SessionInbox.list(database.db, sessionID)).toHaveLength(
+          crash === "after writing its mark" ? 0 : 1,
+        )
 
         const drained: Session.ID[] = []
-        const first = yield* boot(drained)
-        yield* first.execution.awaitIdle(sessionID)
+        const second = yield* boot(drained)
+        yield* second.execution.awaitIdle(sessionID)
+        expect(firstDrains).toEqual([])
         expect(drained).toEqual([sessionID])
         expect(yield* SessionInbox.list(database.db, sessionID)).toEqual([])
         expect(yield* shellNotices(store, sessionID)).toHaveLength(1)
-        expect(yield* first.jobs.pendingBackground).toEqual([])
-        yield* Scope.close(first.scope, Exit.void)
+        expect(yield* second.jobs.pendingBackground).toEqual([])
+        yield* Scope.close(second.scope, Exit.void)
 
-        // A second restart: the notice was delivered, so nothing wakes and the mark is cleared.
-        const second = yield* boot(drained)
-        yield* second.execution.awaitIdle(sessionID)
+        // A third boot: the notice was delivered, so nothing wakes and the mark is cleared.
+        const third = yield* boot(drained)
+        yield* third.execution.awaitIdle(sessionID)
         expect(drained).toEqual([sessionID])
         expect(yield* marks).toEqual([])
         expect(yield* shellNotices(store, sessionID)).toHaveLength(1)
-        yield* Scope.close(second.scope, Exit.void)
+        yield* Scope.close(third.scope, Exit.void)
+        yield* Scope.close(firstScope, Exit.void)
       }),
+    )
+
+  // B1 (verifier 1122u): work the new server gives the owner while the sweep runs takes its last inbox look before
+  // the recovered notice lands, and is still busy when the sweep ends. The owed wake coalesces into that busy period.
+  for (const tookIt of [false, true])
+    it.effect(
+      `delivers a notice admitted ${tookIt ? "before" : "after"} a busy owner's last inbox check once, with ${tookIt ? "no extra" : "one more"} delivering drain`,
+      () =>
+        Effect.gen(function* () {
+          const database = yield* Database.Service
+          const bus = yield* Bus.Service
+          const jobs = yield* Job.Service
+          const store = yield* SessionStore.Service
+          const sessionID = Session.ID.make("ses_restart_wake_busy")
+          yield* seedSessions(database, [sessionID])
+          yield* seedBackground(jobs, sessionID, [{ id: "sh_busy", shellID: "sh_busy", command: "sleep 60" }])
+          const scope = yield* Scope.make()
+          const restarted = yield* Job.make.pipe(Effect.provideService(Scope.Scope, scope))
+          const checked = yield* Deferred.make<void>()
+          const settle = yield* Deferred.make<void>()
+          const promoted: number[] = []
+          const context = yield* buildExecution(
+            scope,
+            ({ sessionID }) =>
+              Effect.gen(function* () {
+                const first = promoted.length === 0
+                // The turn's inbox check; the first turn may wait for the notice before it.
+                if (first && tookIt) yield* Deferred.await(settle)
+                const before = (yield* SessionInbox.list(database.db, sessionID)).length
+                yield* SessionInbox.promote(database.db, bus, sessionID, "steer")
+                promoted.push(before)
+                if (first && !tookIt) {
+                  yield* Deferred.succeed(checked, undefined)
+                  yield* Deferred.await(settle)
+                }
+              }),
+            undefined,
+            restarted,
+          )
+          const execution = Context.get(context, SessionExecution.Service)
+          yield* Context.get(context, Session.Service).synthetic({ sessionID, text: "new work" })
+          if (!tookIt) yield* Deferred.await(checked)
+          yield* Context.get(context, SessionRestart.Service).resumeSuspendedSessions
+          expect(yield* execution.isActive(sessionID)).toBe(true)
+          yield* Deferred.succeed(settle, undefined)
+          yield* execution.awaitIdle(sessionID)
+          expect(yield* SessionInbox.list(database.db, sessionID)).toEqual([])
+          expect(yield* shellNotices(store, sessionID)).toHaveLength(1)
+          // Each drain's count of items it took: the work, then the notice; or both at once and an empty drain.
+          expect(promoted).toEqual(tookIt ? [2, 0] : [1, 1])
+          yield* Scope.close(scope, Exit.void)
+        }),
     )
 
   it.effect("never wakes for a notice delivered before the server died, even with its row left behind", () =>

@@ -81,8 +81,13 @@ const cancelled = (input: { readonly shellID: string; readonly startedAt?: numbe
 /**
  * Wakes the owners of marked notices still in their inbox, through the same doorbell as any prompt
  * (`SessionExecution.wake`), and clears the marks of notices a turn already took or whose owner is owed nothing: gone,
- * archived, reverted, stopped, already running (its turn takes the notice as a steer item), or `skip` (claimed turns
- * this sweep did not resume, such as one past its restart budget).
+ * archived, reverted, stopped, or `skip` (claimed at boot: resumed after the notice was admitted, so its first drain
+ * takes it, or past its restart budget).
+ *
+ * An owner that is busy now (work the new server gave it while the sweep ran) is woken too: busy is no proof the
+ * notice reaches it, since its turn may already be past its last inbox check. The wake coalesces into the busy period
+ * (`SessionRunCoordinator.wake`), so one more drain runs before it settles: it delivers the notice if the turn missed
+ * it, and ends without a model call if the turn took it. The mark stays until a later sweep sees the notice gone.
  */
 export const wakeOwed = Effect.fnUntraced(function* (input: {
   readonly kv: KV.Interface
@@ -103,7 +108,6 @@ export const wakeOwed = Effect.fnUntraced(function* (input: {
         if ((yield* SessionInbox.find(input.db, notificationID)) === undefined) return false
         const owner = yield* input.store.get(sessionID)
         if (!owner || owner.revert || owner.time.archived || input.skip.has(sessionID)) return false
-        if (yield* input.execution.isActive(sessionID)) return false
         return !(yield* input.execution.stopped(sessionID))
       })
       if (owed) yield* input.execution.wake(sessionID)
