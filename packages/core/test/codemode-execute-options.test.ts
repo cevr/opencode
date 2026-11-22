@@ -129,6 +129,20 @@ describe("execute timeout and background", () => {
     }),
   )
 
+  it.effect("with no timeout, a foreground script blocks for 2 minutes before moving to the background", () =>
+    Effect.gen(function* () {
+      const h = yield* harness
+      const fiber = yield* h.run(context("ses_default"), script(3 * 60 * 1_000)).pipe(Effect.forkChild)
+      yield* Deferred.await(h.blocking)
+      yield* TestClock.adjust(2 * 60 * 1_000 - 1)
+      expect(fiber.pollUnsafe()).toBeUndefined()
+      yield* TestClock.adjust("1 millis")
+      const result = yield* Fiber.join(fiber)
+      expect(result.metadata?.jobID).toBeDefined()
+      expect((yield* h.jobs.get(String(result.metadata?.jobID)))?.status).toBe("running")
+    }),
+  )
+
   it.live("a foreground script that finishes within its timeout returns its result", () =>
     Effect.gen(function* () {
       const h = yield* harness
