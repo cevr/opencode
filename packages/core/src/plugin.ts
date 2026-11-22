@@ -4,10 +4,28 @@ export { Event, GuiBundle, ID, Info, Source, State } from "@opencode/schema/plug
 import { readFile } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
 import { Plugin } from "@opencode/schema/plugin"
+import { CrossSpawnSpawner } from "@opencode/util/cross-spawn-spawner"
 import { Node } from "@opencode/util/effect/app-node"
+import { filesystem, path } from "@opencode/util/effect/app-node-platform"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import type { PersistentPty } from "./persistent-pty.js"
-import { Cause, Clock, Context, Effect, Exit, Latch, Layer, Logger, Queue, References, Scope, Semaphore } from "effect"
+import {
+  Cause,
+  Clock,
+  Context,
+  Effect,
+  Exit,
+  FileSystem,
+  Latch,
+  Layer,
+  Logger,
+  Path,
+  Queue,
+  References,
+  Scope,
+  Semaphore,
+} from "effect"
+import { ChildProcessSpawner } from "effect/process"
 import { Bus } from "./bus.js"
 import { PluginHost } from "./plugin/host.js"
 import { type Failure, type Generation, Service } from "./plugin/service.js"
@@ -59,6 +77,13 @@ const layer = Layer.effect(
       return { code, revision: gui.revision, options: gui.options } satisfies Plugin.GuiBundle
     })
     const hostContext = yield* Effect.context<Effect.Services<ReturnType<typeof PluginHost.make>>>()
+    // The host's platform services, whichever implementation the graph provides (an embedder's replacement included):
+    // the only host services a plugin's effect sees besides its scope. The rest of the host's context stays private.
+    const platform = Context.pick(
+      FileSystem.FileSystem,
+      Path.Path,
+      ChildProcessSpawner.ChildProcessSpawner,
+    )(yield* Effect.context<FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner>())
     const load = Effect.fnUntraced(function* (plugin: Generation) {
       const activation: Activation = { plugin, scope: yield* Scope.fork(scope) }
       const inherit = yield* State.inherit()
@@ -81,7 +106,8 @@ const layer = Layer.effect(
         grouped,
         inherit,
         Effect.updateContext((context: Context.Context<never>) =>
-          Context.make(Scope.Scope, activation.scope).pipe(
+          platform.pipe(
+            Context.add(Scope.Scope, activation.scope),
             Context.add(Logger.CurrentLoggers, Context.get(context, Logger.CurrentLoggers)),
             Context.add(References.MinimumLogLevel, Context.get(context, References.MinimumLogLevel)),
             // A plugin keeps time with its host: a simulated or test clock reaches its timers too.
@@ -318,5 +344,5 @@ export const node: LayerNode.Provider<Service, PersistentPty.UnavailableError, t
   Node.makeLocationNode({
     service: Service,
     layer,
-    deps: [PluginHost.requirements],
+    deps: [PluginHost.requirements, filesystem, path, CrossSpawnSpawner.node],
   })

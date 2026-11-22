@@ -1,6 +1,6 @@
 export * as InstancePlugins from "./instance.js"
 
-import type { Plugin } from "@opencode/plugin/effect/plugin"
+import type { Environment, Plugin } from "@opencode/plugin/effect/plugin"
 import { Context, Layer } from "effect"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
 import type { Generation } from "../plugin.js"
@@ -16,7 +16,7 @@ import type { Generation } from "../plugin.js"
  * Config plugin operations may disable instance plugins by id, matching
  * `SdkPlugins` behavior.
  */
-export type List = readonly Plugin[]
+export type List = readonly Plugin<Environment>[]
 
 export interface Interface {
   readonly all: () => readonly Generation[]

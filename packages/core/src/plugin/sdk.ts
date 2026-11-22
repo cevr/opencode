@@ -1,6 +1,6 @@
 export * as SdkPlugins from "./sdk.js"
 
-import type { Plugin } from "@opencode/plugin/effect/plugin"
+import type { Environment, Plugin } from "@opencode/plugin/effect/plugin"
 import { Context, Effect, Layer } from "effect"
 import { makeGlobalNode } from "@opencode/util/effect/app-node"
 import { Bus } from "../bus.js"
@@ -19,7 +19,7 @@ export const Updated = Bus.ephemeral({ type: "sdk.plugin.updated", schema: {} })
  * every Location in one host sees the same registrations.
  */
 export interface Interface {
-  readonly register: (plugin: Plugin) => Effect.Effect<void>
+  readonly register: (plugin: Plugin<Environment>) => Effect.Effect<void>
   readonly all: () => readonly Generation[]
 }
 

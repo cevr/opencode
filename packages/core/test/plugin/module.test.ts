@@ -518,6 +518,66 @@ it.live("loads a GUI-only package under its package name without running it, and
   }),
 )
 
+it.live("loads a local plugin that requires the host's platform beside unchanged Scope-only and Promise plugins", () =>
+  Effect.gen(function* () {
+    const directory = yield* tmpdirScoped()
+    const stopped = path.join(directory.path, "stopped")
+    yield* Effect.promise(() =>
+      writeFiles(directory.path, {
+        "platform/input.txt": "platform input",
+        // No node_modules: `effect` and `@opencode/plugin` are the host's own, and so are the services it requires.
+        "platform/index.ts": `import { Plugin } from "@opencode/plugin/effect"
+import { Effect, FileSystem, Path } from "effect"
+import { ChildProcess, ChildProcessSpawner } from "effect/process"
+
+export default Plugin.define({
+  id: "platform-fixture",
+  effect: () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const paths = yield* Path.Path
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+      const text = yield* fs.readFileString(paths.join(import.meta.dir, "input.txt"))
+      const output = yield* spawner.string(ChildProcess.make(process.execPath, ["-e", "process.stdout.write('child')"]))
+      if (text !== "platform input" || output !== "child") return yield* Effect.die("platform services misbehaved")
+    }).pipe(Effect.orDie),
+})`,
+        "scoped/index.ts": `import { Plugin } from "@opencode/plugin/effect"
+import { Effect } from "effect"
+
+export default Plugin.define({
+  id: "scoped-fixture",
+  effect: () => Effect.addFinalizer(() => Effect.promise(() => Bun.write(${JSON.stringify(stopped)}, "stopped"))),
+})`,
+        "promise/index.ts": 'export default { id: "promise-fixture", async setup() {} }',
+      }),
+    )
+    const modules = yield* PluginModule.make()
+    const plugins = yield* Plugin.Service
+    const definitions = yield* Effect.forEach(["platform", "scoped", "promise"], (name) =>
+      modules
+        .load({ type: "add", target: path.join(directory.path, name), options: {} })
+        .pipe(
+          Effect.flatMap((loaded) =>
+            "pending" in loaded || "blocked" in loaded
+              ? Effect.die(new Error(`${name} was not loaded`))
+              : Effect.succeed(loaded),
+          ),
+        ),
+    )
+
+    yield* plugins.activate(definitions)
+    expect(yield* plugins.list()).toMatchObject([
+      { id: "platform-fixture", state: { status: "active" } },
+      { id: "scoped-fixture", state: { status: "active" } },
+      { id: "promise-fixture", state: { status: "active" } },
+    ])
+
+    yield* plugins.activate([])
+    expect(yield* Effect.promise(() => Bun.file(stopped).text())).toBe("stopped")
+  }),
+)
+
 for (const target of ["policy-fixture@1.2.3", "@scope/policy-fixture@1.2.3"]) {
   it.live(`blocks versioned package ${target} before npm resolution or installation`, () =>
     Effect.gen(function* () {

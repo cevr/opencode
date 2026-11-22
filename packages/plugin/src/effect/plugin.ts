@@ -1,6 +1,7 @@
 import type { CredentialApi, ExperimentalApi, ExperimentalGenerateApi, PluginApi } from "@opencode/client/effect/api"
 import type { Location } from "@opencode/schema/location"
-import type { Effect, Scope } from "effect"
+import type { Effect, FileSystem, Path, Scope } from "effect"
+import type { ChildProcessSpawner } from "effect/process"
 import type { PluginOptions } from "../options.js"
 import type { App } from "../app.js"
 import type { AgentDomain } from "./agent.js"
@@ -58,6 +59,13 @@ export interface Context {
   readonly websearch: WebSearchDomain
   readonly worktree: WorktreeDomain
 }
+
+/**
+ * The services a loaded plugin's `effect` may require: its activation scope, and the host's own file system, path and
+ * child-process spawner. A plugin declares them by yielding their tags from `effect`; it ships no implementation.
+ * Callbacks whose types require no services (hooks, tools, transforms) capture what they need while `effect` runs.
+ */
+export type Environment = Scope.Scope | FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
 
 export interface Plugin<R = Scope.Scope> {
   readonly id: string

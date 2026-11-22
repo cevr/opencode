@@ -3,7 +3,7 @@ export * as Plugin from "./service.js"
 // The service tag lives apart from the layer so Session entry points can wait on activation without
 // importing the plugin host, which itself depends on Session.
 import { Plugin } from "@opencode/schema/plugin"
-import type { Plugin as PluginDefinition } from "@opencode/plugin/effect/plugin"
+import type { Environment, Plugin as PluginDefinition } from "@opencode/plugin/effect/plugin"
 import { Context, type Effect, type Exit } from "effect"
 
 export interface Interface {
@@ -20,7 +20,7 @@ export interface Interface {
 
 export type Failure = Plugin.Info & { readonly state: Extract<Plugin.State, { readonly status: "failed" }> }
 
-export type Generation = PluginDefinition & {
+export type Generation = PluginDefinition<Environment> & {
   readonly revision: string
   readonly source?: Plugin.Source
   readonly features?: Plugin.Features

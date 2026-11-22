@@ -1,6 +1,6 @@
 export * as PluginModule from "./module.js"
 
-import type { Plugin } from "@opencode/plugin/effect/plugin"
+import type { Environment, Plugin } from "@opencode/plugin/effect/plugin"
 import { Host } from "@opencode/plugin/host"
 import { GuiBundle, type Source } from "@opencode/schema/plugin"
 import { createPluginSources } from "@opencode/plugin/source"
@@ -88,7 +88,9 @@ const Module = Schema.Struct({
   default: Schema.Union([
     Schema.Struct({
       id: Schema.String,
-      effect: Schema.declare<Plugin["effect"]>((input): input is Plugin["effect"] => typeof input === "function"),
+      effect: Schema.declare<Plugin<Environment>["effect"]>(
+        (input): input is Plugin<Environment>["effect"] => typeof input === "function",
+      ),
     }),
     Schema.Struct({
       id: Schema.String,

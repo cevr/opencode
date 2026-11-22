@@ -2,7 +2,8 @@ import { expect } from "bun:test"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "path"
-import { Clock, Deferred, Effect, Fiber, Logger, Stream } from "effect"
+import { Clock, Deferred, Effect, Fiber, FileSystem, Layer, Logger, Path, Stream } from "effect"
+import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { TestClock } from "effect/testing"
 import { Command } from "@opencode/core/command"
 import { Bus } from "@opencode/core/bus"
@@ -19,9 +20,13 @@ import { PluginModule } from "@opencode/core/plugin/module"
 import { Session } from "@opencode/core/session"
 import { SessionSchema } from "@opencode/core/session/schema"
 import { Watcher } from "@opencode/core/filesystem/watcher"
+import { InstancePlugins } from "@opencode/core/plugin/instance"
+import { define, type Environment, type Plugin as PluginDefinition } from "@opencode/plugin/effect/plugin"
 import { fromPromise } from "@opencode/plugin/promise/adapter"
+import { LayerNodePlatform } from "@opencode/util/effect/app-node-platform"
+import { tmpdirScoped } from "./fixture/tmpdir"
 import { testEffect } from "./lib/effect"
-import { PluginTestLayer } from "./plugin/fixture"
+import { makePluginTestLayer, PluginTestLayer } from "./plugin/fixture"
 
 const it = testEffect(PluginTestLayer)
 
@@ -790,5 +795,123 @@ it.effect("unknown event type warnings name the subscribing plugin", () =>
     ])
 
     expect(warnings).toEqual([["ignoring unknown event types", { pluginID: "probe", types: ["test.unknown"] }]])
+  }),
+)
+
+it.live("provides the host's file system, path and process spawner to a plugin's effect", () =>
+  Effect.gen(function* () {
+    const plugins = yield* Plugin.Service
+    const tmp = yield* tmpdirScoped()
+    yield* Effect.promise(() => writeFile(path.join(tmp.path, "input.txt"), "platform input\n"))
+    const seen = yield* Deferred.make<readonly [string, string]>()
+    const plugin = define({
+      id: "platform",
+      effect: () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem
+          const paths = yield* Path.Path
+          const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+          const text = yield* fs.readFileString(paths.join(tmp.path, "input.txt")).pipe(Effect.orDie)
+          const output = yield* spawner.string(ChildProcess.make("printf", ["spawned"])).pipe(Effect.orDie)
+          yield* Deferred.succeed(seen, [text, output])
+        }),
+    })
+    // An external definition is accepted at the typed boundary as a plugin of the host's environment.
+    const accepted: PluginDefinition<Environment> = plugin
+    yield* plugins.activate([{ ...accepted, revision: "1" }])
+
+    expect(yield* plugins.list()).toMatchObject([{ id: "platform", state: { status: "active" } }])
+    expect(yield* Deferred.await(seen)).toEqual(["platform input\n", "spawned"])
+  }),
+)
+
+it.live("closes a plugin's platform resources when it reloads or unloads", () =>
+  Effect.gen(function* () {
+    const plugins = yield* Plugin.Service
+    const pids: number[] = []
+    const plugin = (revision: string): Plugin.Generation => ({
+      id: "spawner",
+      revision,
+      effect: () =>
+        Effect.gen(function* () {
+          const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+          // Spawned in the activation's scope, so the host ends it with the activation.
+          const handle = yield* spawner.spawn(ChildProcess.make("sleep", ["30"])).pipe(Effect.orDie)
+          pids.push(handle.pid)
+        }),
+    })
+    const running = (pid: number) => {
+      try {
+        process.kill(pid, 0)
+        return true
+      } catch {
+        return false
+      }
+    }
+
+    yield* plugins.activate([plugin("1")])
+    expect(pids.map(running)).toEqual([true])
+
+    yield* plugins.activate([plugin("2")])
+    expect(pids.map(running)).toEqual([false, true])
+
+    yield* plugins.activate([])
+    expect(pids.map(running)).toEqual([false, false])
+  }),
+)
+
+it.effect("gives a plugin no host service beyond its scope and platform", () =>
+  Effect.gen(function* () {
+    const plugins = yield* Plugin.Service
+    const custom = define({
+      id: "custom",
+      effect: () =>
+        Effect.gen(function* () {
+          yield* Bus.Service
+        }),
+    })
+    // @ts-expect-error a plugin requiring an arbitrary service is rejected at the typed host boundary
+    const rejected: PluginDefinition<Environment> = custom
+    // @ts-expect-error instance plugins cross the same boundary
+    InstancePlugins.bound([custom])
+    yield* plugins.activate([
+      { ...rejected, revision: "1" },
+      {
+        id: "location",
+        revision: "1",
+        // @ts-expect-error Location-scoped services stay out of reach too, so nothing of a Location leaks into a plugin
+        effect: () => Effect.asVoid(Location.Service),
+      },
+      { id: "healthy", revision: "1", effect: () => Effect.void },
+    ])
+
+    const states = Object.fromEntries((yield* plugins.list()).map((plugin) => [plugin.id, plugin.state]))
+    expect(states).toMatchObject({
+      custom: { status: "failed", error: expect.stringContaining("Service not found: @opencode/Bus") },
+      location: { status: "failed", error: expect.stringContaining("Service not found: @opencode/Location") },
+      healthy: { status: "active" },
+    })
+  }),
+)
+
+const replacedPath = Path.Path.of({ ...Effect.runSync(Effect.provide(Path.Path, Path.layer)) })
+const replaced = testEffect(
+  makePluginTestLayer(undefined, undefined, [LayerNodePlatform.path.replace(Layer.succeed(Path.Path, replacedPath))]),
+)
+
+replaced.effect("hands a plugin the embedder's replacement platform service", () =>
+  Effect.gen(function* () {
+    const plugins = yield* Plugin.Service
+    const seen = yield* Deferred.make<Path.Path>()
+    yield* plugins.activate([
+      {
+        id: "replaced",
+        revision: "1",
+        effect: () => Effect.flatMap(Path.Path, (paths) => Deferred.succeed(seen, paths)),
+      },
+    ])
+
+    expect(yield* plugins.list()).toMatchObject([{ id: "replaced", state: { status: "active" } }])
+    expect(yield* Deferred.await(seen)).toBe(replacedPath)
   }),
 )
