@@ -35,6 +35,7 @@ const errors: Array<Promise<string>> = []
 let failure: unknown
 try {
   await fs.mkdir(path.join(root, ".opencode", "plugins"), { recursive: true })
+  await installPlatformPlugin()
   spawnService()
   spawnService()
   const registration = await waitForRegistration()
@@ -55,6 +56,7 @@ try {
   })
   if (tokenOpenApi.status !== 200) throw new Error("Compiled application rejected query authentication")
   await verifyWebUi(info.url)
+  await verifyPlatformPlugin(info.url, headers)
   if ((await pluginIDs(info.url, headers)).includes("smoke")) throw new Error("Smoke plugin existed before creation")
   const plugin = path.join(root, ".opencode", "plugins", "smoke.ts")
   await fs.writeFile(plugin, pluginSource())
@@ -185,6 +187,12 @@ function pluginSource() {
 }
 
 async function pluginIDs(url: string, headers: HeadersInit) {
+  return (await plugins(url, headers)).flatMap((plugin) =>
+    typeof plugin === "object" && plugin !== null && "id" in plugin && typeof plugin.id === "string" ? [plugin.id] : [],
+  )
+}
+
+async function plugins(url: string, headers: HeadersInit) {
   const endpoint = new URL("/api/plugin", url)
   endpoint.searchParams.set("location[directory]", root)
   const response = await fetch(endpoint, { headers, signal: AbortSignal.timeout(5_000) })
@@ -192,9 +200,33 @@ async function pluginIDs(url: string, headers: HeadersInit) {
   if (typeof body !== "object" || body === null || !("data" in body) || !Array.isArray(body.data)) {
     throw new Error("Compiled service returned an invalid plugin list")
   }
-  return body.data.flatMap((plugin) =>
-    typeof plugin === "object" && plugin !== null && "id" in plugin && typeof plugin.id === "string" ? [plugin.id] : [],
-  )
+  const data: unknown[] = body.data
+  return data
+}
+
+// A configured local plugin with no node_modules that requires the host's file system, path and process spawner. Only a
+// compiled build proves its imports resolve to the host's own Effect instance, whose services the plugin then receives.
+async function installPlatformPlugin() {
+  const plugin = path.join(root, "platform-probe")
+  await fs.cp(path.join(import.meta.dir, "..", "test", "fixture", "plugin-platform"), plugin, { recursive: true })
+  // The plugin checks a fixed digest of these bytes; a Windows checkout may have converted the fixture's line ending.
+  await fs.writeFile(path.join(plugin, "input.txt"), "platform probe input\n")
+  await fs.mkdir(path.join(root, "config", "opencode"), { recursive: true })
+  await fs.writeFile(path.join(root, "config", "opencode", "opencode.json"), JSON.stringify({ plugins: [plugin] }))
+}
+
+async function verifyPlatformPlugin(url: string, headers: HeadersInit) {
+  const deadline = Date.now() + 10_000
+  while (Date.now() < deadline) {
+    const probe = (await plugins(url, headers)).find(
+      (plugin): plugin is { state: { status: string; error?: string } } =>
+        typeof plugin === "object" && plugin !== null && "id" in plugin && plugin.id === "platform-probe",
+    )
+    if (probe?.state.status === "active") return
+    if (probe) throw new Error(`Compiled service failed the platform plugin: ${probe.state.error}`)
+    await Bun.sleep(25)
+  }
+  throw new Error("Compiled service did not load the platform plugin")
 }
 
 async function waitForPlugin(url: string, headers: HeadersInit, plugin: string) {
