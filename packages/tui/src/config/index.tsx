@@ -376,11 +376,21 @@ export function ConfigProvider(props: {
   const [config, setConfig] = createStore(props.config)
   const host = props.service
   const apply = (info: Info) => setConfig(reconcile(resolve(info, props.options ?? { terminalSuspend: true })))
-  const update = async (update: (draft: any) => void) => {
-    if (!host) throw new Error("Config updates are not available")
-    const info = await host.update(update)
-    apply(info)
-    return info
+  // Updates run one after another in call order: each reads the file as the one before left it, so
+  // the last call is the one on disk. Run at once, they would race for the file's lock, which grants
+  // in no particular order, and an earlier update could land last. A failed update rejects its own
+  // caller and the next one still runs.
+  let queue: Promise<unknown> = Promise.resolve()
+  const update = (update: (draft: any) => void) => {
+    if (!host) return Promise.reject(new Error("Config updates are not available"))
+    const next = queue
+      .then(() => host.update(update))
+      .then((info) => {
+        apply(info)
+        return info
+      })
+    queue = next.catch(() => {})
+    return next
   }
   let reload = Promise.resolve()
   const watcher = host?.path
