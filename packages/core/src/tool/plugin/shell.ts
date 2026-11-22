@@ -141,39 +141,46 @@ type Backgrounded = typeof Backgrounded.Type
 const State = Schema.Literals(["running", "exited", "killed"])
 type State = typeof State.Type
 
-const stateFields = {
+// Field order is the order a result is written in (upstream 5756d59a68): small fields first and the large ones
+// (`output`, a listed `command`) last, so a result cut to the tool output limit keeps its state.
+const idFields = {
   id: Schema.String,
   state: State,
   exitCode: Schema.optionalKey(Schema.Number),
   signal: Schema.optionalKey(Schema.String),
+}
+const runFields = {
   pid: Schema.optionalKey(NonNegativeInt),
   timedOut: Schema.optionalKey(Schema.Boolean),
   runtimeMs: Schema.Number.annotate({ description: "Milliseconds it ran, or has run so far" }),
 }
 
 export const Handle = Schema.Struct({
-  ...stateFields,
-  output: Schema.String,
-  next: Schema.Number.annotate({ description: "The byte offset to pass as `offset` to read on from" }),
-  truncated: Schema.Boolean.annotate({ description: "Output before what `output` shows was left out" }),
-  backgrounded: Schema.optionalKey(Backgrounded),
-  // Upstream dcb24c74dc: Code Mode sees only the structured output, so it carries the reason too.
+  ...idFields,
+  // Upstream dcb24c74dc: Code Mode sees only the structured output, so it carries the reason too. Beside the exit
+  // code and signal it stands in for, as upstream's result has it.
   killed: Schema.optionalKey(Schema.String).annotate({
     description:
       "Why the command ended without an exit code, when the reason is known: the machine's worker restarted or lost the process, or the local process daemon stopped",
   }),
+  ...runFields,
+  backgrounded: Schema.optionalKey(Backgrounded),
+  next: Schema.Number.annotate({ description: "The byte offset to pass as `offset` to read on from" }),
+  truncated: Schema.Boolean.annotate({ description: "Output before what `output` shows was left out" }),
+  output: Schema.String,
 })
 export type Handle = typeof Handle.Type
 
 const ListOutput = Schema.Struct({
   shells: Schema.Array(
     Schema.Struct({
-      ...stateFields,
+      ...idFields,
+      ...runFields,
       size: Schema.Number.annotate({ description: "Bytes of output it wrote" }),
-      description: Schema.String,
-      command: Schema.String,
       started: Schema.Number.annotate({ description: "Unix milliseconds" }),
       background: Schema.Boolean,
+      description: Schema.String,
+      command: Schema.String,
     }),
   ),
 })
