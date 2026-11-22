@@ -1030,8 +1030,10 @@ on.effect("reports the machine's own sentence when its worker restarts mid-comma
       expect(content).toContain("partial")
       // Code Mode sees only the structured output, which now carries the same reason.
       expect(result).toMatchObject({
-        output: { exitCode: null, killed: "gpu's worker restarted, the process was lost" },
+        output: { killed: "gpu's worker restarted, the process was lost" },
       })
+      // The fork's shell handle leaves out an exit code it does not have, where upstream's result says null.
+      expect(result.output).not.toHaveProperty("exitCode")
     }).pipe(Effect.provide(graph(tools)))
   }),
 )
@@ -1060,8 +1062,10 @@ on.effect("reports a process a machine forgot mid-command as no longer there", (
       expect(content).toContain("gpu's worker no longer has the process")
       // Code Mode sees only the structured output, which now carries the same reason.
       expect(result).toMatchObject({
-        output: { exitCode: null, killed: "gpu's worker no longer has the process" },
+        output: { killed: "gpu's worker no longer has the process" },
       })
+      // The fork's shell handle leaves out an exit code it does not have, where upstream's result says null.
+      expect(result.output).not.toHaveProperty("exitCode")
     }).pipe(Effect.provide(graph(tools)))
   }),
 )
