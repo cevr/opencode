@@ -7,7 +7,7 @@ import { isolatedEnv } from "./fixture/environment"
 // Background shell commands across a service restart, with real processes: a service from source, a scripted
 // OpenAI-compatible model that starts the commands, then the CLI's own restart (what an install runs) or a signal.
 // A command handed over keeps running under the new server, stays listed, and ends with the notice a finished
-// background command gets, which wakes its session; one the restart stops still tells its session so.
+// background command gets, which wakes its session; one the restart stops tells its session so, and wakes it too.
 
 const entry = path.join(import.meta.dir, "../src/index.ts")
 const serviceTest = process.platform === "win32" ? test.skip : test
@@ -153,7 +153,7 @@ serviceTest(
 )
 
 serviceTest(
-  "a background shell command stopped by a signal-begun restart leaves its session a cancelled notice for its next turn",
+  "a background shell command stopped by a signal-begun restart wakes its idle session once with a cancelled notice",
   async () => {
     await using home = await serviceHome()
     await using model = scriptedModel(jobs(home))
@@ -171,31 +171,32 @@ serviceTest(
     const after = await ready(home)
     expect(after.pid).not.toBe(before.pid)
 
-    // The new server queues the cancelled notice in the session's inbox without waking it (`SessionRestart`'s
-    // `resume: false`: a restart notice does not revive an idle owner); its next turn carries it.
-    type Inbox = {
-      data: ReadonlyArray<{
-        type: string
-        delivery: string
-        payload: { text: string; metadata: object }
-      }>
+    // Fork (RestartWake, packages/core/src/session/execution/restart-wake.ts): the new server wakes the idle session
+    // with the cancelled notice, as the command's own end would have; nothing reran the command.
+    const woken = await until(async () => model.asked.find((asked) => asked.last.includes(NOTICE)), 60_000)
+    expect(woken.last).toMatch(
+      /^<background-result kind="shell" id="(sh_\w+)" state="cancelled" command="[^\n]*echo bg-finished-A">\n\1 · cancelled · started [^\n]+ before this notice\nCommand cancelled because the server restarted [^\n]*Nothing was rerun[^\n]*\n<\/background-result>$/,
+    )
+    const listed = (await api(after, home, "GET", `/api/session/${session}/message?type=synthetic&limit=20`)) as {
+      data: ReadonlyArray<{ text: string; metadata: object }>
     }
-    const queued = await until(async () => {
-      const inbox = (await api(after, home, "GET", `/api/session/${session}/inbox`)) as Inbox
-      return inbox.data.find((item) => item.type === "synthetic" && item.payload.text.includes(NOTICE))
-    }, 60_000)
-    expect(queued.delivery).toBe("steer")
-    expect(queued.payload.text).toMatch(/^<background-result kind="shell" id="sh_\w+" state="cancelled" command="/)
-    expect(queued.payload.metadata).toMatchObject({
+    expect(listed.data.find((item) => item.text === woken.last)?.metadata).toMatchObject({
       source: "shell",
       state: "cancelled",
     })
-    expect(model.asked.some((asked) => asked.last.includes(NOTICE))).toBe(false)
-    await prompt(after, home, session, "what happened")
-    const next = await until(async () => model.asked.find((asked) => asked.last.includes("what happened")))
-    const notice = next.history.find((message) => message.includes(NOTICE))
-    expect(notice).toContain('state="cancelled"')
-    expect(notice).toContain("Command cancelled because the server restarted")
+    const inbox = (await api(after, home, "GET", `/api/session/${session}/inbox`)) as { data: ReadonlyArray<unknown> }
+    expect(inbox.data).toEqual([])
+    expect(alive(pid)).toBe(false)
+    await expect(fs.readFile(home.done("A"), "utf8")).rejects.toThrow()
+
+    // Once: a second signal-begun restart wakes nobody.
+    const asked = model.asked.length
+    signal(after.pid, "SIGTERM")
+    await until(async () => (alive(after.pid) ? undefined : true), 60_000)
+    await cli(home, "service", "start")
+    await ready(home)
+    await Bun.sleep(2_000)
+    expect(model.asked.slice(asked).filter((request) => request.last.includes(NOTICE))).toEqual([])
   },
   120_000,
 )
