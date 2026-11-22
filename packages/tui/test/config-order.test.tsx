@@ -72,7 +72,7 @@ test("updates fired at once are saved in call order: the last call wins on disk 
         ),
       )
       const disk = (await Bun.file(file).json()).theme?.name
-      const store = config().data.theme.name
+      const store = config().data.theme?.name
       if (disk !== "opencode-classic" || store !== "opencode-classic") lost.push({ seed, disk, store })
     } finally {
       app.renderer.destroy()
@@ -93,7 +93,7 @@ test("a failed save rejects its own caller once and the updates after it still r
     const results = await Promise.allSettled([set("first"), set("bad"), set("last")])
     expect(results.map((each) => each.status)).toEqual(["fulfilled", "rejected", "fulfilled"])
     expect((await Bun.file(file).json()).theme.name).toBe("last")
-    expect(config().data.theme.name).toBe("last")
+    expect(config().data.theme?.name).toBe("last")
   } finally {
     app.renderer.destroy()
   }
