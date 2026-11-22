@@ -1755,6 +1755,9 @@ describe("Tool runtime", () => {
       const snapshot = yield* service.snapshot()
       // A named tool the agent lacks is left out; the rest stay behind the runtime.
       expect(snapshot.definitions.map((tool) => tool.name)).toEqual(["kernel", "echo"])
+      // Upstream 2ae1910140 rewrites a top-level call of a Code Mode tool into an `execute` program; a runtime offers
+      // no `execute`, so its calls (the runtime's, its direct tools', or one of a tool behind it) are never rewritten.
+      expect(snapshot.codeModeExpression).toBeUndefined()
       expect((yield* snapshot.execute(call("echo"))).output).toEqual({ text: "echo" })
       expect((yield* snapshot.execute(call("kernel"))).output).toEqual({ text: 'constant,echo | {"text":"inner"}' })
       expect(
