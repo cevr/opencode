@@ -96,6 +96,53 @@ effect: (ctx) =>
   }),
 ```
 
+### Platform services
+
+Besides its scope, the `effect` may require the server's own file system, path and child-process services:
+`FileSystem.FileSystem` and `Path.Path` from `effect`, and `ChildProcessSpawner.ChildProcessSpawner` from
+`effect/process`. Yield their tags; the server provides its implementation, so a plugin ships no platform package and
+imports no Node builtin. `Plugin.Environment` names this set. A plugin that requires any other service fails to load.
+
+```ts
+import { Plugin } from "@opencode/plugin/effect"
+import { Effect, FileSystem, Path, Schema } from "effect"
+import { ChildProcess, ChildProcessSpawner } from "effect/process"
+
+export default Plugin.define({
+  id: "notes",
+  effect: (ctx) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const path = yield* Path.Path
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+      const notes = path.join(ctx.location.directory, "NOTES.md")
+      const branch = ChildProcess.make("git", ["branch", "--show-current"], { cwd: ctx.location.directory })
+      // Hooks, tools and transforms take callbacks that require no services: use what the effect captured.
+      yield* ctx.tool.transform((editor) =>
+        editor.add({
+          name: "notes",
+          description: "Read the project's notes and the current branch",
+          input: Schema.Struct({}),
+          output: Schema.Struct({ notes: Schema.String, branch: Schema.String }),
+          execute: () =>
+            Effect.all({
+              notes: fs.readFileString(notes),
+              branch: spawner.string(branch),
+            }).pipe(
+              Effect.orDie,
+              Effect.map((output) => ({ output, content: output.notes })),
+            ),
+        }),
+      )
+    }),
+})
+```
+
+Child processes and files opened in the plugin's scope close when it reloads or unloads. Services the server does not
+provide, such as `Digest.Digest` from `effect/crypto`, are the plugin's to provide, for example with
+`Effect.provide(Digest.layerWebCrypto)`. Scoped fibers forked from the `effect` inherit these services; an Effect run in
+a fresh runtime (`Effect.runPromise`) does not, so capture the services in the `effect` and provide them explicitly.
+
 ### Context
 
 The context exposes the Effect client for the connected OpenCode server plus plugin-only transforms, hooks, storage,
@@ -145,11 +192,15 @@ interface Context {
   readonly worktree: WorktreeDomain
 }
 
+type Environment = Scope.Scope | FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
+
 interface Plugin<R = Scope.Scope> {
   readonly id: string
   readonly effect: (context: Context) => Effect.Effect<void, never, R>
 }
 ```
+
+`Plugin.define` infers `R` from the `effect`; the server accepts any plugin whose `R` is within `Plugin.Environment`.
 
 ### Options
 
