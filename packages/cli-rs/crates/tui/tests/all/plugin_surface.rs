@@ -199,7 +199,7 @@ impl Model for Surfaces {
             let work = reconcile::work();
             apply(&harness, *command);
             let calls: Vec<Call> = board(|board| board.calls[seen..].to_vec());
-            let on_route = matches!(harness.tui.route(), Route::Plugin { .. });
+            let on_route = matches!(&*harness.tui.route(), Route::Plugin { .. });
             match command {
                 Command::Open => {
                     // A new mount, unless the route showed already and the TUI mounted it again: a new one either way.
@@ -1296,7 +1296,7 @@ fn each_change_of_the_hosts_state_after_a_view_calls_one() {
     settle(&harness);
     assert_eq!(views() - before, 1, "a settings write");
     let before = views();
-    harness.tui.local.sync(&opencode_store::Changes::everything());
+    harness.tui.local.sync(&opencode_store::Changes::everything(&harness.tui.data));
     settle(&harness);
     assert_eq!(views() - before, 1, "a local change");
 }

@@ -89,7 +89,7 @@ pub struct Tui {
     /// Inbox items with a pending action in flight ([`crate::routes::session::queued::mutate`]).
     pub(crate) pending_actions: RefCell<std::collections::HashSet<String>>,
     files: Option<Files>,
-    route: RefCell<Route>,
+    route: RefCell<Rc<Route>>,
     /// The routes shown before the plugin routes on screen, the latest last: where the reserved chord goes back to.
     before_plugin: RefCell<Vec<Route>>,
     view: RefCell<Option<Box<dyn RouteView>>>,
@@ -98,6 +98,8 @@ pub struct Tui {
     /// Defer the theme remount until the pending key sequence ends.
     restyle: Cell<bool>,
     seen: Cell<u64>,
+    /// The store's changes this sync took, kept for their buffers.
+    dirty: Cell<opencode_store::Dirty>,
     /// [`Tui::hold_sync`].
     held: Cell<bool>,
     followers: RefCell<Vec<Follower>>,
@@ -125,7 +127,8 @@ struct DataChanged;
 struct StatusChanged(events::State);
 
 impl Tui {
-    pub fn route(&self) -> Route {
+    /// The route on screen. Shared, so reading it every frame copies nothing.
+    pub fn route(&self) -> Rc<Route> {
         self.route.borrow().clone()
     }
 
@@ -185,7 +188,7 @@ impl Tui {
     /// mounts it again, which only a theme or plugin change wants.
     pub fn show_session(&self, id: SessionID) {
         let route = Route::Session { id };
-        if self.view.borrow().is_some() && self.route() == route {
+        if self.view.borrow().is_some() && *self.route() == route {
             return;
         }
         self.navigate(route);
@@ -194,7 +197,7 @@ impl Tui {
     pub fn navigate(&self, route: Route) {
         // Going home from home to another location is a navigation, not a remount.
         let remount =
-            self.view.borrow().is_some() && self.route() == route && !crate::features::location::pending(self);
+            self.view.borrow().is_some() && *self.route() == route && !crate::features::location::pending(self);
         // Mounting may move the focus (a docked panel, a pending permission); an open dialog keeps it.
         let dialog = self.dialogs.is_open().then(|| self.app.focused());
         let complete = remount
@@ -212,9 +215,11 @@ impl Tui {
             drop(old);
             None
         };
-        let before = self.route.replace(route.clone());
+        let before = self.route.replace(Rc::new(route.clone()));
         match &route {
-            Route::Plugin { .. } if before != route => self.before_plugin.borrow_mut().push(before),
+            Route::Plugin { .. } if *before != route => {
+                self.before_plugin.borrow_mut().push(Rc::unwrap_or_clone(before))
+            }
             Route::Plugin { .. } => {}
             _ => self.before_plugin.borrow_mut().clear(),
         }
@@ -227,7 +232,7 @@ impl Tui {
         let view = routes::mount(self, &route);
         drop(old);
         self.frame.main().add(&view.root());
-        view.sync(self, &opencode_store::Changes::everything());
+        view.sync(self, &opencode_store::Changes::everything(&self.data));
         crate::frame::mount_app(self, remount);
         // A remount under an open dialog (a theme change, a plugin toggled in `/plugins`) must not take the dialog's
         // focus; the new view takes it once the dialog closes, as the old one would have.
@@ -292,34 +297,43 @@ impl Tui {
         if self.held.get() {
             return;
         }
-        let (revision, changes) = self.data.changes_since(self.seen.get());
-        self.seen.set(revision);
+        // Taken out of its cell, so a sync that runs inside this one takes its own.
+        let mut dirty = self.dirty.take();
+        self.seen.set(self.data.take_changes(&mut dirty));
         crate::features::events::deltas(self);
-        if changes.is_empty() {
-            return;
+        let changes = Changes::new(&dirty, &self.data);
+        if !changes.is_empty() {
+            self.sync_changes(&changes);
         }
+        self.dirty.set(dirty);
+    }
+
+    fn sync_changes(&self, changes: &Changes) {
         if let Some(view) = self.view.borrow().as_ref() {
-            view.sync(self, &changes);
+            view.sync(self, changes);
         }
         let followers = self.followers.borrow().clone();
         for follower in followers {
             // One closed by an earlier one is skipped; one whose target is gone is dropped.
             let open = self.followers.borrow().iter().any(|open| Rc::ptr_eq(open, &follower));
-            if open && !follower(self, &changes) {
+            if open && !follower(self, changes) {
                 self.followers.borrow_mut().retain(|open| !Rc::ptr_eq(open, &follower));
             }
         }
         // After the view, whose new text records the labels it draws.
-        crate::features::session_links::sync(self, &changes);
-        crate::frame::sync_app(self, &changes);
-        crate::features::title::sync(self, &changes);
-        crate::features::events::sync(self, &changes);
+        crate::features::session_links::sync(self, changes);
+        crate::frame::sync_app(self, changes);
+        crate::features::title::sync(self, changes);
+        crate::features::events::sync(self, changes);
         crate::plugins::host::sync(self);
-        self.local.sync(&changes);
-        crate::tabs::sync(self, &changes);
+        self.local.sync(changes);
+        crate::tabs::sync(self, changes);
         crate::frame::refresh(self);
-        crate::frame::observe_markers(self);
-        crate::features::attention::program_status::sync(self);
+        crate::frame::observe_markers(self, changes);
+        // The status records read the sessions' titles and families, their status and inbox, and what waits on the user.
+        if changes.any(Touched::INFO | Touched::STATUS | Touched::PENDING | Touched::PERMISSIONS | Touched::FORMS) {
+            crate::features::attention::program_status::sync(self);
+        }
     }
 
     /// Sync `target` after the route view on each store flush, until the disposer runs or the target drops.
@@ -339,18 +353,18 @@ impl Tui {
     /// Syncs the route view with everything, after state outside the store changed.
     pub(crate) fn resync(&self) {
         if let Some(view) = self.view.borrow().as_ref() {
-            view.sync(self, &opencode_store::Changes::everything());
+            view.sync(self, &opencode_store::Changes::everything(&self.data));
         }
-        crate::frame::sync_app(self, &opencode_store::Changes::everything());
+        crate::frame::sync_app(self, &opencode_store::Changes::everything(&self.data));
         self.app.request_redraw();
     }
 
     /// Refresh the route for a view change outside the store.
     pub(crate) fn sync_view(&self) {
         if let Some(view) = self.view.borrow().as_ref() {
-            view.sync(self, &opencode_store::Changes::default());
+            view.sync(self, &opencode_store::Changes::nothing(&self.data));
         }
-        crate::frame::sync_app(self, &opencode_store::Changes::default());
+        crate::frame::sync_app(self, &opencode_store::Changes::nothing(&self.data));
         self.app.request_redraw();
     }
 
@@ -388,7 +402,7 @@ impl Tui {
         self.dialogs.set_theme(theme.clone());
         self.toasts.set_theme(theme);
         // Remounting the diff viewer resets focus; defer it until the pending key sequence ends.
-        if matches!(self.route(), Route::Plugin { .. }) && self.keymap.keymap().has_pending_sequence() {
+        if matches!(&*self.route(), Route::Plugin { .. }) && self.keymap.keymap().has_pending_sequence() {
             self.restyle.set(true);
             return;
         }
@@ -409,7 +423,7 @@ impl Tui {
             return;
         }
         let prompt = self.textarea.borrow().as_ref().is_some_and(|textarea| is_focused(&self.app, textarea));
-        self.navigate(self.route());
+        self.navigate(Route::clone(&self.route()));
         let textarea = self.textarea.borrow().clone();
         if let Some(textarea) = textarea.filter(|_| prompt && !self.dialogs.is_open()) {
             self.app.focus(&textarea);
@@ -541,12 +555,13 @@ pub fn mount_with(app: &App, deps: Deps, args: Args) -> Rc<Tui> {
         composer: Default::default(),
         pending_actions: RefCell::default(),
         files,
-        route: RefCell::new(Route::Home),
+        route: RefCell::new(Rc::new(Route::Home)),
         before_plugin: RefCell::default(),
         view: RefCell::new(None),
         painted: Live::new(page),
         restyle: Cell::new(false),
         seen: Cell::new(0),
+        dirty: Cell::default(),
         held: Cell::new(false),
         followers: RefCell::default(),
         connection: RefCell::new(None),
@@ -683,7 +698,7 @@ fn close_plugin_surface(tui: &Tui) -> bool {
         return true;
     }
     // The reserved chord returns focus from a plugin field to the composer without clearing its draft or exiting.
-    if tui.router.surface_focused(tui) && !matches!(tui.route(), Route::Plugin { .. }) {
+    if tui.router.surface_focused(tui) && !matches!(&*tui.route(), Route::Plugin { .. }) {
         opencode_plugin::Host::focus_composer(tui);
         if opencode_plugin::Host::composer_focused(tui) {
             // The plugins' layers stop holding at the composer too, until the focus moves again.
@@ -691,14 +706,14 @@ fn close_plugin_surface(tui: &Tui) -> bool {
             return true;
         }
     }
-    if !matches!(tui.route(), Route::Plugin { .. }) {
+    if !matches!(&*tui.route(), Route::Plugin { .. }) {
         return false;
     }
     let back = tui.before_plugin.borrow_mut().pop().unwrap_or(Route::Home);
     // Preserve the back stack when returning to a plugin route.
     let rest = std::mem::take(&mut *tui.before_plugin.borrow_mut());
     tui.navigate(back);
-    if matches!(tui.route(), Route::Plugin { .. }) {
+    if matches!(&*tui.route(), Route::Plugin { .. }) {
         *tui.before_plugin.borrow_mut() = rest;
     }
     true
@@ -750,13 +765,13 @@ fn install_keys(tui: &Rc<Tui>) {
             .title("Switch session")
             .group("Session")
             .palette()
-            .suggested(Condition::when(bind!(tui, |tui| tui.data.read(|state| !state.sessions().is_empty()))))
+            .suggested(Condition::when(bind!(tui, |tui| tui.data.read(|state| state.has_sessions()))))
             .slash(slash("sessions", &["resume", "continue"])),
         command("session.new", |tui| crate::features::clear::clear(tui, false))
             .title("New session")
             .group("Session")
             .palette()
-            .suggested(Condition::when(bind!(tui, |tui| matches!(*tui.route.borrow(), Route::Session { .. }))))
+            .suggested(Condition::when(bind!(tui, |tui| matches!(**tui.route.borrow(), Route::Session { .. }))))
             .slash(slash("new", &[])),
         command("open.menu", crate::dialogs::open::show)
             .title("Open session or project")
@@ -768,8 +783,8 @@ fn install_keys(tui: &Rc<Tui>) {
             let run: palette::Run = Rc::new(bind!(tui, |tui, id: &str| {
                 let slash =
                     tui.keymap.commands().into_iter().any(|command| command.id == id && command.slash.is_some());
-                let session = match tui.route() {
-                    Route::Session { id } if slash => Some(id),
+                let session = match &*tui.route() {
+                    Route::Session { id } if slash => Some(id.clone()),
                     _ => None,
                 };
                 let id = id.to_owned();

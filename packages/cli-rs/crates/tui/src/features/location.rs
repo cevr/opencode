@@ -11,7 +11,7 @@ const DELAY: Duration = Duration::from_millis(500);
 
 #[derive(Default)]
 pub struct LocationState {
-    reference: RefCell<Option<Location>>,
+    pub(crate) reference: RefCell<Option<Location>>,
     error: RefCell<Option<Location>>,
     generation: Cell<u64>,
     home: RefCell<Option<Location>>,
@@ -86,22 +86,22 @@ pub fn session(tui: &Tui, id: &SessionID) {
 
 pub(crate) fn reconnected(tui: &Tui) {
     sync(tui, current(tui));
-    if let Route::Session { id } = tui.route() {
-        session(tui, &id);
+    if let Route::Session { id } = &*tui.route() {
+        session(tui, id);
     }
 }
 
 /// Upload the open session's environment when its connection becomes ready.
 pub(crate) fn connected_again(tui: &Tui) {
     tui.location.uploaded.borrow_mut().take();
-    if let Route::Session { id } = tui.route() {
-        session(tui, &id);
+    if let Route::Session { id } = &*tui.route() {
+        session(tui, id);
     }
 }
 
 pub(crate) fn set(tui: &Tui, location: Location) {
     *tui.location.reference.borrow_mut() = Some(location.clone());
-    tui.local.sync(&opencode_store::Changes::default());
+    tui.local.sync(&opencode_store::Changes::nothing(&tui.data));
     crate::client_mcp::sync(tui);
     if connected(tui) {
         sync(tui, Some(location));

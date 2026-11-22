@@ -216,7 +216,7 @@ impl Prompt {
     }
 
     pub fn sync(&self, tui: &Tui, changes: &Changes) {
-        if changes.location(&self.inner.location(tui)) {
+        if changes.any_location() && changes.location(&self.inner.location(tui)) {
             self.inner.read_catalog(tui);
             if let Some(complete) = self.inner.autocomplete.get() {
                 complete.sync();
@@ -226,11 +226,11 @@ impl Prompt {
             self.inner.footer_slots.borrow().1.iter().for_each(|slot| slot.sync(tui, changed));
         });
         let Some(session) = &self.inner.session else { return };
-        if changes.session(session) {
+        if changes.has(session, Touched::INFO) {
             self.inner.follow_directory(tui);
         }
-        if changes.session(session) || changes.status(session) {
-            if changes.status(session) && !self.inner.running(tui) {
+        if changes.has(session, Touched::INFO | Touched::STATUS) {
+            if changes.has(session, Touched::STATUS) && !self.inner.running(tui) {
                 self.inner.interrupt.set(0);
             }
             self.inner.refresh(tui);
@@ -582,13 +582,12 @@ impl Inner {
     }
 
     pub(crate) fn location(&self, tui: &Tui) -> Location {
-        Location::new(self.session_info(tui).map_or_else(
-            || {
-                crate::features::location::current(tui)
-                    .map_or_else(|| tui.directory.clone(), |location| location.directory)
-            },
-            |session| session.location.directory.0,
-        ))
+        let session = self.session.as_ref().and_then(|id| {
+            tui.data.read(|state| state.session(id).map(|session| session.location.directory.0.clone()))
+        });
+        Location::new(session.unwrap_or_else(|| {
+            crate::features::location::current(tui).map_or_else(|| tui.directory.clone(), |location| location.directory)
+        }))
     }
 
     /// Reads the catalogs again after a home `/cd`.
@@ -769,7 +768,7 @@ impl Inner {
     /// Repaints after a change outside the store, the terminal size or the settings, which the footer slots read too.
     fn relayout(&self, tui: &Tui) {
         self.refresh(tui);
-        crate::plugins::host::changed(tui, &Changes::everything(), |changed| {
+        crate::plugins::host::changed(tui, &Changes::everything(&tui.data), |changed| {
             self.footer_slots.borrow().1.iter().for_each(|slot| slot.sync(tui, changed));
         });
     }

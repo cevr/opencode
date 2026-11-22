@@ -11,6 +11,7 @@ use opencode_api::transport::BoxFuture;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
+use crate::changes::Touched;
 use crate::location::{Catalog, Location};
 use crate::sessions::Outcome;
 use crate::state::{Data, Error, SessionStatus, State};
@@ -32,8 +33,8 @@ pub(crate) enum Follow {
     Rehydrate,
     /// Catalogs of a location, read together (already invalidated).
     Catalogs(Vec<Catalog>, Location),
-    /// A catalog read once a burst of events under the key goes quiet (already invalidated).
-    Settle(String, Catalog, Location),
+    /// A catalog read once a burst of events that ask for it goes quiet (already invalidated).
+    Settle(Catalog, Location),
     /// The web search providers of a location.
     Websearch(Location),
     /// The running jobs of a synced tree (already invalidated).
@@ -57,14 +58,12 @@ impl Data {
         for follow in follows {
             self.follow(follow);
         }
-        // Each other event of a type someone listens to.
-        let mut listened = None;
-        for event in events {
-            if is_delta(event) {
-                continue;
-            }
-            let listened = listened.get_or_insert_with(|| opencode_util::lock(&self.inner.listened));
-            if listened.contains_key(event.tag()) {
+        // Each other event of a type someone listens to: of its kind, and of its name for a named kind.
+        for event in events.iter().filter(|event| !is_delta(event)) {
+            let kind = event.kind();
+            if self.inner.listened[kind as usize].load(std::sync::atomic::Ordering::SeqCst) > 0
+                && (!kind.named() || opencode_util::lock(&self.inner.named).contains_key(event.tag()))
+            {
                 // No receiver is not an error: views subscribe when they need to.
                 let _ = self.inner.signals.send(std::sync::Arc::new(event.clone()));
             }
@@ -91,7 +90,7 @@ impl Data {
                 self.refresh(|data| data.project_sync());
             }
             Follow::Catalogs(catalogs, location) => self.refresh_catalogs(catalogs, location),
-            Follow::Settle(key, catalog, location) => self.settle(key, catalog, location),
+            Follow::Settle(catalog, location) => self.settle(catalog, location),
             Follow::Websearch(location) => self.refresh(move |data| data.websearch_refresh(Some(&location))),
             Follow::Jobs(root) => self.refresh(move |data| data.job_sync(&root)),
         }
@@ -127,24 +126,26 @@ impl Data {
                         None => snapshot.remove(&id),
                     };
                 }
-                let changed: Vec<SessionID> = state
-                    .active
-                    .keys()
-                    .chain(snapshot.keys())
-                    .filter(|id| state.active.get(*id) != snapshot.get(*id))
-                    .cloned()
-                    .collect();
-                for id in &changed {
-                    state.log.status(id);
+                for (key, session) in state.sessions.entries_mut() {
+                    let status = snapshot.remove(&session.id);
+                    if session.status != status {
+                        session.status = status;
+                        state.log.touch(session, key, Touched::STATUS);
+                    }
                 }
-                state.active = snapshot;
+                // What is left names sessions the store holds nothing of.
+                for (id, status) in snapshot {
+                    let key = state.sessions.entry(&id);
+                    state.sessions[key].status = Some(status);
+                    state.touch_key(key, Touched::STATUS);
+                }
                 // Sessions created before this connection never delivered `session.created`;
                 // without their info a running child never joins its root's family.
                 state
-                    .active
+                    .sessions
                     .iter()
-                    .filter(|(id, status)| **status == SessionStatus::Running && !state.info.contains_key(*id))
-                    .map(|(id, _)| id.clone())
+                    .filter(|session| session.status == Some(SessionStatus::Running) && session.info.is_none())
+                    .map(|session| session.id.clone())
                     .collect()
             });
             for id in unknown {
@@ -159,7 +160,7 @@ impl Data {
     pub fn set_online(&self, online: bool) {
         let was = self.inner.online.swap(online, Ordering::SeqCst);
         if was && !online {
-            self.write(|state| state.syncs.invalidate_prefix(""));
+            self.write(State::invalidate_all);
         }
     }
 }
@@ -175,13 +176,13 @@ impl State {
                 // coalesced (`resync`, a queue-full drop): what the old stream left cached is
                 // stale, and every view must look again.
                 if self.connected {
-                    self.syncs.invalidate_prefix("");
+                    self.invalidate_all();
                 } else {
                     // The first stream opens after the route reads, and the server does not replay what it sent
                     // before the subscription: a catalog read in that window can have missed the update that
                     // followed it, and a model list is empty until its providers settle. Only the catalogs are
                     // invalidated, since nothing else can be stale without a disconnect; the views look again.
-                    self.syncs.invalidate_prefix("location.");
+                    self.invalidate_catalogs();
                 }
                 self.log.everything();
                 self.connected = true;
@@ -213,7 +214,7 @@ impl State {
                     let keys: Vec<&str> = event.data.delta.keys().map(String::as_str).collect();
                     let row = SessionMessageSystem {
                         id: crate::messages::from_event(&event.id),
-                        r#type: "system".into(),
+                        r#type: tag::System,
                         text: text.clone(),
                         description: Some(format!("Instructions updated: {}", keys.join(", "))),
                         metadata: event.metadata.clone(),
@@ -225,7 +226,7 @@ impl State {
             V2Event::SessionSynthetic(event) => {
                 let row = SessionMessageSynthetic {
                     id: crate::messages::from_event(&event.id),
-                    r#type: "synthetic".into(),
+                    r#type: tag::Synthetic,
                     text: event.data.text.clone(),
                     description: event.data.description.clone(),
                     metadata: event.data.metadata.clone(),
