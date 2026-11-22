@@ -6,11 +6,13 @@ export * as RestartWake from "./restart-wake.js"
 // recovered tool job keeps upstream's behavior.
 
 import { eq } from "drizzle-orm"
-import { Effect } from "effect"
+import { Clock, Effect } from "effect"
 import { duration } from "@opencode/util/duration"
 import type { Database } from "../../database/database.js"
+import type { Job } from "../../job.js"
 import { JobTable } from "../../job/sql.js"
 import type { KV } from "../../kv.js"
+import { ShellResult } from "../../shell/result.js"
 import type { SessionExecution } from "../execution.js"
 import { SessionInbox } from "../inbox.js"
 import type { SessionMessage } from "../message.js"
@@ -28,22 +30,42 @@ const MARK = "session.restart-wake:"
 
 type DB = Database.Interface["db"]
 
-/** When the job of a recovered notice started, read from its row before the row is completed. */
-export const startedAt = Effect.fnUntraced(function* (db: DB, notificationID: SessionMessage.ID) {
+/**
+ * For a shell job the restart recovers with no command left to watch: marks its notice as owed a wake (a cancel or a
+ * stop is owed none), and gives the notice of a command the restart stopped, or undefined for upstream's own notice
+ * of one that ended before it.
+ */
+export const recover = Effect.fnUntraced(function* (
+  kv: KV.Interface,
+  db: DB,
+  background: Job.Background,
+  recovery: Extract<Job.Recovery, { kind: "shell" }>,
+) {
+  if (background.status === "cancelled") return undefined
+  // Read before the row is completed: when the command started.
   const row = yield* db
     .select({ started: JobTable.time_created })
     .from(JobTable)
-    .where(eq(JobTable.notification_id, notificationID))
+    .where(eq(JobTable.notification_id, background.notificationID))
     .get()
     .pipe(Effect.orDie)
-  return row?.started
+  const now = yield* Clock.currentTimeMillis
+  yield* kv.set(MARK + background.notificationID, recovery.sessionID)
+  if (background.status !== "running") return undefined
+  return {
+    description: recovery.command,
+    ...ShellResult.notification({
+      jobID: background.id,
+      shellID: recovery.shellID,
+      command: recovery.command,
+      state: "cancelled",
+      text: cancelled({ shellID: recovery.shellID, startedAt: row?.started, now }),
+    }),
+  }
 })
 
-export const mark = (kv: KV.Interface, notificationID: SessionMessage.ID, sessionID: SessionSchema.ID) =>
-  kv.set(MARK + notificationID, sessionID)
-
 /** The body of the notice of a background command the restart stopped. */
-export const cancelled = (input: { readonly shellID: string; readonly startedAt?: number; readonly now: number }) =>
+const cancelled = (input: { readonly shellID: string; readonly startedAt?: number; readonly now: number }) =>
   [
     [
       input.shellID,

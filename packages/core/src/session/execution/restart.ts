@@ -1,6 +1,6 @@
 export * as SessionRestart from "./restart.js"
 
-import { Cause, Clock, Context, Effect, Layer, Option, Schema } from "effect"
+import { Cause, Context, Effect, Layer, Option, Schema } from "effect"
 import { isReadonlyArrayNonEmpty } from "effect/Array"
 import { makeGlobalNode } from "@opencode/util/effect/app-node"
 import { Shell as ShellSchema } from "@opencode/schema/shell"
@@ -288,29 +288,9 @@ export const layer = (options?: Options) =>
           shell && Schema.is(ShellSchema.ID)(recovery.shellID)
             ? yield* shell.get(recovery.shellID).pipe(Effect.option)
             : Option.none()
-        if (!shell || Option.isNone(info)) {
+        if (!shell || Option.isNone(info))
           // Fork (RestartWake): its end notice, or the restart's cancellation of it, wakes the idle owner once.
-          if (background.status === "cancelled") return yield* recoverToolJob(background, recovery)
-          const startedAt = yield* RestartWake.startedAt(db, background.notificationID)
-          const now = yield* Clock.currentTimeMillis
-          yield* RestartWake.mark(kv, background.notificationID, recovery.sessionID)
-          return yield* recoverToolJob(
-            background,
-            recovery,
-            background.status !== "running"
-              ? undefined
-              : {
-                  description: recovery.command,
-                  ...ShellResult.notification({
-                    jobID: background.id,
-                    shellID: recovery.shellID,
-                    command: recovery.command,
-                    state: "cancelled",
-                    text: RestartWake.cancelled({ shellID: recovery.shellID, startedAt, now }),
-                  }),
-                },
-          )
-        }
+          return yield* recoverToolJob(background, recovery, yield* RestartWake.recover(kv, db, background, recovery))
         reattached.add(info.value.id)
         yield* ShellTool.reattach({
           shell,
