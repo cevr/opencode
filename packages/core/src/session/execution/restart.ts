@@ -468,7 +468,7 @@ export const layer = (options?: Options) =>
             Effect.gen(function* () {
               state.defer = false
               yield* Effect.forEach(wakes, (sessionID) => Effect.ignoreCause(wake(sessionID)), { discard: true })
-              yield* Effect.ignoreCause(RestartWake.wakeOwed({ kv, db, store, execution, skip: claimed }))
+              yield* Effect.ignoreCause(RestartWake.wakeOwed({ kv, db, store, execution, skip: claimed, scope }))
               suspended.clear()
             }),
           )

@@ -2437,10 +2437,10 @@ describe("RestartWake: recovered shell notices wake their owner", () => {
     )
 
   // B1 (verifier 1122u): work the new server gives the owner while the sweep runs takes its last inbox look before
-  // the recovered notice lands, and is still busy when the sweep ends. The owed wake coalesces into that busy period.
+  // the recovered notice lands, and is still busy when the sweep ends. The owed notice is followed to the owner's idle.
   for (const tookIt of [false, true])
     it.effect(
-      `delivers a notice admitted ${tookIt ? "before" : "after"} a busy owner's last inbox check once, with ${tookIt ? "no extra" : "one more"} delivering drain`,
+      `delivers a notice admitted ${tookIt ? "before" : "after"} a busy owner's last inbox check once, ${tookIt ? "with no drain after" : "in a turn of its own once idle"}`,
       () =>
         Effect.gen(function* () {
           const database = yield* Database.Service
@@ -2479,11 +2479,18 @@ describe("RestartWake: recovered shell notices wake their owner", () => {
           yield* Context.get(context, SessionRestart.Service).resumeSuspendedSessions
           expect(yield* execution.isActive(sessionID)).toBe(true)
           yield* Deferred.succeed(settle, undefined)
+          // The owed notice is followed: once the owner is idle with it undelivered, it is woken for it.
+          for (let turn = 0; turn < 1_000 && (yield* marks).length > 0; turn++) {
+            yield* execution.awaitIdle(sessionID)
+            yield* Effect.yieldNow
+          }
           yield* execution.awaitIdle(sessionID)
+          expect(yield* marks).toEqual([])
           expect(yield* SessionInbox.list(database.db, sessionID)).toEqual([])
           expect(yield* shellNotices(store, sessionID)).toHaveLength(1)
-          // Each drain's count of items it took: the work, then the notice; or both at once and an empty drain.
-          expect(promoted).toEqual(tookIt ? [2, 0] : [1, 1])
+          // Each drain's count of items it took: the work, then the notice in a turn of its own once idle; or both at
+          // once, and no drain after.
+          expect(promoted).toEqual(tookIt ? [2] : [1, 1])
           yield* Scope.close(scope, Exit.void)
         }),
     )
