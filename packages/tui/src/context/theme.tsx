@@ -99,6 +99,9 @@ type Themes = {
   lock(): void
   unlock(): void
   setMode(mode?: "dark" | "light", persist?: boolean): boolean
+  /** Shows `theme` in this TUI and saves nothing, as a list previews what it would pick. */
+  preview(theme: string): boolean
+  /** Shows `theme` and saves it as the owner's theme. */
   set(theme: string): boolean
   afterPaint(): void
   onError(handler: ThemeErrorHandler): () => void
@@ -346,11 +349,16 @@ const themeContext = createSimpleContext({
         pin(requested, persist)
         return true
       },
-      set(requested: string) {
+      preview(requested: string) {
         if (!has(requested)) return false
         const theme = alias(requested)
         setStore("active", theme)
         if (theme === "system") refreshPalette()
+        return true
+      },
+      set(requested: string) {
+        if (!service.preview(requested)) return false
+        const theme = alias(requested)
         void configState
           .update((draft) => {
             draft.theme = { ...draft.theme, name: theme }
