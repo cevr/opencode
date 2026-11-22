@@ -793,7 +793,7 @@ describe("SessionExecution lifecycle", () => {
 })
 
 describe("SessionRestart background recovery", () => {
-  it.effect("keeps shell owners idle until a user prompt delivers recovered notices exactly once", () =>
+  it.effect("wakes idle shell owners with recovered notices exactly once", () =>
     Effect.gen(function* () {
       const database = yield* Database.Service
       const store = yield* SessionStore.Service
@@ -827,22 +827,8 @@ describe("SessionRestart background recovery", () => {
       )
       const restart = Context.get(context, SessionRestart.Service)
       const execution = Context.get(context, SessionExecution.Service)
+      // Fork (RestartWake): each idle owner, the subagent child too, is woken with its notice, once.
       yield* restart.resumeSuspendedSessions
-      yield* Effect.forEach([parent, child], execution.awaitIdle, { discard: true })
-
-      expect(drained).toEqual([])
-      expect(yield* SessionInbox.list(database.db, parent)).toHaveLength(1)
-      expect(yield* SessionInbox.list(database.db, child)).toHaveLength(1)
-      expect(yield* restarted.pendingBackground).toEqual([])
-      yield* restart.resumeSuspendedSessions
-      expect(drained).toEqual([])
-      expect(yield* SessionInbox.list(database.db, parent)).toHaveLength(1)
-      expect(yield* SessionInbox.list(database.db, child)).toHaveLength(1)
-
-      yield* seedInbox(database, parent, ["steer"])
-      yield* seedInbox(database, child, ["steer"])
-      yield* execution.wake(parent)
-      yield* execution.wake(child)
       yield* Effect.forEach([parent, child], execution.awaitIdle, { discard: true })
       expect(drained.toSorted()).toEqual([parent, child].toSorted())
       expect((yield* store.context(parent)).filter((message) => message.type === "synthetic")).toMatchObject([
@@ -1294,7 +1280,8 @@ describe("SessionRestart background recovery", () => {
       yield* Context.get(context, SessionRestart.Service).resumeSuspendedSessions
       yield* Context.get(context, SessionExecution.Service).awaitIdle(sessionID)
 
-      expect(drained).toEqual([])
+      // Fork (RestartWake): the end notice the dead server owed wakes its owner, as it would have.
+      expect(drained).toEqual([sessionID])
       const inbox = yield* SessionInbox.list(database.db, sessionID)
       expect(inbox).toMatchObject([
         {
@@ -2341,6 +2328,253 @@ describe("SessionExecution interrupt continuation", () => {
 
       // The queued prompt is next in line; the compaction behind it waits its turn.
       expect(drains).toEqual([])
+    }),
+  )
+})
+
+// Fork feature (shell-restart-wake): a shell's end notice a restart recovers wakes its idle owner, exactly once.
+describe("RestartWake: recovered shell notices wake their owner", () => {
+  const MARK = "session.restart-wake:"
+  const shellNotice = (sessionID: Session.ID, shellID: string) => ({
+    sessionID,
+    text: "Command cancelled because the server restarted",
+    metadata: { source: "shell", shellID, state: "cancelled" },
+    resume: false,
+  })
+  // A server after the restart: its own job registry over the same database, its drains recorded (and promoting the
+  // Session's steer items, as a turn does), its sweep run.
+  const boot = (drained: Session.ID[], drain?: (sessionID: Session.ID) => Effect.Effect<void>) =>
+    Effect.gen(function* () {
+      const database = yield* Database.Service
+      const bus = yield* Bus.Service
+      const scope = yield* Scope.make()
+      const restarted = yield* Job.make.pipe(Effect.provideService(Scope.Scope, scope))
+      const context = yield* buildExecution(
+        scope,
+        ({ sessionID }) =>
+          Effect.sync(() => void drained.push(sessionID)).pipe(
+            Effect.andThen(SessionInbox.promote(database.db, bus, sessionID, "steer")),
+            Effect.andThen(drain?.(sessionID) ?? Effect.void),
+            Effect.asVoid,
+          ),
+        undefined,
+        restarted,
+      )
+      const execution = Context.get(context, SessionExecution.Service)
+      yield* Context.get(context, SessionRestart.Service).resumeSuspendedSessions
+      return { scope, execution, jobs: restarted }
+    })
+  const marks = KV.Service.use((kv) =>
+    kv.scan({ prefix: MARK }).pipe(Effect.map((page) => page.entries.map((entry) => entry.key))),
+  )
+
+  for (const crash of ["after its notice, before completing its row", "after completing its row"] as const)
+    it.effect(`wakes the owner once when the sweep died ${crash}, before its wake`, () =>
+      Effect.gen(function* () {
+        const database = yield* Database.Service
+        const jobs = yield* Job.Service
+        const kv = yield* KV.Service
+        const sessions = yield* Session.Service
+        const store = yield* SessionStore.Service
+        const sessionID = Session.ID.make("ses_restart_wake_crash")
+        yield* seedSessions(database, [sessionID])
+        yield* seedBackground(jobs, sessionID, [{ id: "sh_crash", shellID: "sh_crash", command: "sleep 60" }])
+        const background = (yield* jobs.pendingBackground)[0]
+        if (!background) return yield* Effect.die("background record missing")
+        // What the dead sweep wrote before it died: the mark, the notice, maybe the row's completion. No wake ran.
+        yield* kv.set(MARK + background.notificationID, sessionID)
+        yield* sessions.synthetic({ id: background.notificationID, ...shellNotice(sessionID, "sh_crash") })
+        if (crash === "after completing its row") yield* jobs.completeBackground(background.notificationID)
+
+        const drained: Session.ID[] = []
+        const first = yield* boot(drained)
+        yield* first.execution.awaitIdle(sessionID)
+        expect(drained).toEqual([sessionID])
+        expect(yield* SessionInbox.list(database.db, sessionID)).toEqual([])
+        expect(yield* shellNotices(store, sessionID)).toHaveLength(1)
+        expect(yield* first.jobs.pendingBackground).toEqual([])
+        yield* Scope.close(first.scope, Exit.void)
+
+        // A second restart: the notice was delivered, so nothing wakes and the mark is cleared.
+        const second = yield* boot(drained)
+        yield* second.execution.awaitIdle(sessionID)
+        expect(drained).toEqual([sessionID])
+        expect(yield* marks).toEqual([])
+        expect(yield* shellNotices(store, sessionID)).toHaveLength(1)
+        yield* Scope.close(second.scope, Exit.void)
+      }),
+    )
+
+  it.effect("never wakes for a notice delivered before the server died, even with its row left behind", () =>
+    Effect.gen(function* () {
+      const database = yield* Database.Service
+      const bus = yield* Bus.Service
+      const jobs = yield* Job.Service
+      const sessions = yield* Session.Service
+      const store = yield* SessionStore.Service
+      const sessionID = Session.ID.make("ses_restart_wake_delivered")
+      yield* seedSessions(database, [sessionID])
+      // The command ended and its live end notice was delivered (a turn took it), then the server died before the
+      // row was completed.
+      const complete = yield* Deferred.make<string>()
+      yield* jobs.start({
+        id: "sh_delivered",
+        type: "shell",
+        recovery: { kind: "shell", sessionID, shellID: "sh_delivered", command: "echo done" },
+        run: Deferred.await(complete),
+      })
+      yield* jobs.background("sh_delivered")
+      yield* Deferred.succeed(complete, "done")
+      yield* jobs.wait({ id: "sh_delivered" })
+      const background = (yield* jobs.pendingBackground)[0]
+      if (!background) return yield* Effect.die("background record missing")
+      yield* sessions.synthetic({ id: background.notificationID, ...shellNotice(sessionID, "sh_delivered") })
+      yield* SessionInbox.promote(database.db, bus, sessionID, "steer")
+
+      const drained: Session.ID[] = []
+      const restarted = yield* boot(drained)
+      yield* restarted.execution.awaitIdle(sessionID)
+      expect(drained).toEqual([])
+      expect(yield* restarted.jobs.pendingBackground).toEqual([])
+      expect(yield* marks).toEqual([])
+      expect(yield* shellNotices(store, sessionID)).toHaveLength(1)
+      yield* Scope.close(restarted.scope, Exit.void)
+    }),
+  )
+
+  it.effect("a restart during the woken turn resumes that turn and does not wake for the shell again", () =>
+    Effect.gen(function* () {
+      const database = yield* Database.Service
+      const jobs = yield* Job.Service
+      const store = yield* SessionStore.Service
+      const sessionID = Session.ID.make("ses_restart_wake_twice")
+      yield* seedSessions(database, [sessionID])
+      yield* seedBackground(jobs, sessionID, [{ id: "sh_twice", shellID: "sh_twice", command: "sleep 60" }])
+
+      // The woken turn takes the notice, then the server dies under it (teardown keeps its claim).
+      const drained: Session.ID[] = []
+      const drains = (count: number) =>
+        Effect.gen(function* () {
+          while (drained.length < count) yield* Effect.yieldNow
+        }).pipe(Effect.timeout("5 seconds"))
+      const first = yield* boot(drained, () => Effect.never)
+      yield* drains(1)
+      yield* Scope.close(first.scope, Exit.void)
+      expect(yield* claims(database)).toEqual({ [sessionID]: true })
+
+      const second = yield* boot(drained)
+      // The resumed turn starts from the sweep's own fiber.
+      yield* drains(2)
+      yield* second.execution.awaitIdle(sessionID)
+      // One wake, one resume of the turn it started; one shell notice.
+      expect(drained).toEqual([sessionID, sessionID])
+      expect(yield* shellNotices(store, sessionID)).toHaveLength(1)
+      expect(
+        (yield* store.context(sessionID)).filter(
+          (message) => message.type === "synthetic" && message.metadata?.notice === "restart",
+        ),
+      ).toHaveLength(1)
+      expect(yield* claims(database)).toEqual({ [sessionID]: false })
+      expect(yield* marks).toEqual([])
+      yield* Scope.close(second.scope, Exit.void)
+    }),
+  )
+
+  it.effect("does not wake an archived, stopped or deleted owner, and clears their marks", () =>
+    Effect.gen(function* () {
+      const database = yield* Database.Service
+      const jobs = yield* Job.Service
+      const kv = yield* KV.Service
+      const archived = Session.ID.make("ses_restart_wake_archived")
+      const stopped = Session.ID.make("ses_restart_wake_stopped")
+      const deleted = Session.ID.make("ses_restart_wake_deleted")
+      yield* seedSessions(database, [archived, stopped, deleted])
+      for (const sessionID of [archived, stopped, deleted])
+        yield* seedBackground(jobs, sessionID, [
+          { id: `sh_${sessionID}`, shellID: `sh_${sessionID}`, command: "sleep 60" },
+        ])
+      yield* database.db
+        .update(SessionTable)
+        .set({ time_archived: Date.now() })
+        .where(eq(SessionTable.id, archived))
+        .run()
+        .pipe(Effect.orDie)
+      yield* kv.set("session.stopped:" + stopped, true)
+      yield* database.db.delete(SessionTable).where(eq(SessionTable.id, deleted)).run().pipe(Effect.orDie)
+
+      const drained: Session.ID[] = []
+      const restarted = yield* boot(drained)
+      yield* Effect.forEach([archived, stopped], restarted.execution.awaitIdle, { discard: true })
+      expect(drained).toEqual([])
+      expect(yield* restarted.jobs.pendingBackground).toEqual([])
+      expect(yield* marks).toEqual([])
+      // The archived and stopped owners still hold their notice for their next turn.
+      expect(yield* SessionInbox.list(database.db, archived)).toHaveLength(1)
+      expect(yield* SessionInbox.list(database.db, stopped)).toHaveLength(1)
+      yield* Scope.close(restarted.scope, Exit.void)
+    }),
+  )
+
+  it.effect("leaves every other recovered tool job's owner idle (upstream's resume: false)", () =>
+    Effect.gen(function* () {
+      const database = yield* Database.Service
+      const jobs = yield* Job.Service
+      const image = Session.ID.make("ses_restart_wake_image")
+      const video = Session.ID.make("ses_restart_wake_video")
+      const codemode = Session.ID.make("ses_restart_wake_codemode")
+      const shell = Session.ID.make("ses_restart_wake_shell")
+      yield* seedSessions(database, [image, video, codemode, shell])
+      const running = (id: string, type: string, recovery: Job.Recovery) =>
+        jobs.start({ id, type, recovery, run: Effect.never }).pipe(Effect.andThen(jobs.background(id)))
+      yield* running("image_lost", "experimental_image_generate", {
+        kind: "image",
+        sessionID: image,
+        path: "/tmp/lost.png",
+        model: "test/painter",
+      })
+      // The harness's Locations have no video service, so a running video is reported as lost too.
+      yield* running("video_lost", "experimental_video_generate", {
+        kind: "video",
+        sessionID: video,
+        path: "/tmp/lost.mp4",
+        videoID: VideoID.create(),
+      })
+      yield* running("codemode_lost", "codemode", { kind: "codemode", sessionID: codemode, jobID: "codemode_lost" })
+      yield* seedBackground(jobs, shell, [{ id: "sh_lost", shellID: "sh_lost", command: "sleep 60" }])
+
+      const drained: Session.ID[] = []
+      const restarted = yield* boot(drained)
+      yield* Effect.forEach([image, video, codemode, shell], restarted.execution.awaitIdle, { discard: true })
+      expect(drained).toEqual([shell])
+      for (const sessionID of [image, video, codemode])
+        expect(yield* SessionInbox.list(database.db, sessionID)).toMatchObject([
+          { type: "synthetic", payload: { text: expect.stringContaining('state="cancelled"') } },
+        ])
+      expect(yield* restarted.jobs.pendingBackground).toEqual([])
+      yield* Scope.close(restarted.scope, Exit.void)
+    }),
+  )
+
+  it.effect("tells the agent what happened: the handle, when it started, and that nothing reran", () =>
+    Effect.gen(function* () {
+      const database = yield* Database.Service
+      const jobs = yield* Job.Service
+      const store = yield* SessionStore.Service
+      const sessionID = Session.ID.make("ses_restart_wake_text")
+      yield* seedSessions(database, [sessionID])
+      yield* seedBackground(jobs, sessionID, [{ id: "sh_text", shellID: "sh_text", command: "make build" }])
+
+      const drained: Session.ID[] = []
+      const restarted = yield* boot(drained)
+      yield* restarted.execution.awaitIdle(sessionID)
+      expect(
+        (yield* shellNotices(store, sessionID)).map((message) => (message.type === "synthetic" ? message.text : "")),
+      ).toEqual([
+        expect.stringMatching(
+          /^<background-result kind="shell" id="sh_text" state="cancelled" command="make build">\nsh_text · cancelled · started \S+ before this notice\nCommand cancelled because the server restarted \(a reboot, a crash or a service stop\), partway through; how long it ran before that is not known\. Nothing was rerun: check what it left behind, and run it again if it is still needed\.\n<\/background-result>$/,
+        ),
+      ])
+      yield* Scope.close(restarted.scope, Exit.void)
     }),
   )
 })

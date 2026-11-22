@@ -1,6 +1,6 @@
 export * as SessionRestart from "./restart.js"
 
-import { Cause, Context, Effect, Layer, Option, Schema } from "effect"
+import { Cause, Clock, Context, Effect, Layer, Option, Schema } from "effect"
 import { isReadonlyArrayNonEmpty } from "effect/Array"
 import { makeGlobalNode } from "@opencode/util/effect/app-node"
 import { Shell as ShellSchema } from "@opencode/schema/shell"
@@ -11,6 +11,7 @@ import { Database } from "../../database/database.js"
 import { Environment } from "../../environment/index.js"
 import { Instance } from "../../instance/service.js"
 import { Job } from "../../job.js"
+import { KV } from "../../kv.js"
 import { CodeModeJob } from "../../codemode/job.js"
 import { Session } from "../../session.js"
 import { Shell } from "../../shell.js"
@@ -26,6 +27,7 @@ import { ImageNotice } from "../../image/notice.js"
 import { ShellResult } from "../../shell/result.js"
 import { SubagentCompletion } from "../subagent-completion.js"
 import { SubagentJob } from "../subagent-job.js"
+import { RestartWake } from "./restart-wake.js"
 
 const CONTINUE_AFTER_SERVER_RESTART =
   "The server restarted while you were working. Continue from where you left off without repeating completed work."
@@ -90,6 +92,7 @@ export const layer = (options?: Options) =>
       const sessions = yield* Session.Service
       const instances = yield* Instance.Service
       const db = (yield* Database.Service).db
+      const kv = yield* KV.Service
       const scope = yield* Effect.scope
       const maxAttempts = options?.maxAttempts ?? DEFAULT_MAX_ATTEMPTS
 
@@ -183,12 +186,13 @@ export const layer = (options?: Options) =>
       const recoverToolJob = Effect.fnUntraced(function* (
         background: Job.Background,
         recovery: Exclude<Job.Recovery, { kind: "subagent" }>,
+        message = restartMessage(background, recovery),
       ) {
         const delivered = yield* sessions
           .synthetic({
             id: background.notificationID,
             sessionID: recovery.sessionID,
-            ...restartMessage(background, recovery),
+            ...message,
             // Restart notices must not revive idle owners of long-lived background tools.
             // Interrupted executions resume separately after their notices are admitted.
             resume: false,
@@ -284,7 +288,29 @@ export const layer = (options?: Options) =>
           shell && Schema.is(ShellSchema.ID)(recovery.shellID)
             ? yield* shell.get(recovery.shellID).pipe(Effect.option)
             : Option.none()
-        if (!shell || Option.isNone(info)) return yield* recoverToolJob(background, recovery)
+        if (!shell || Option.isNone(info)) {
+          // Fork (RestartWake): its end notice, or the restart's cancellation of it, wakes the idle owner once.
+          if (background.status === "cancelled") return yield* recoverToolJob(background, recovery)
+          const startedAt = yield* RestartWake.startedAt(db, background.notificationID)
+          const now = yield* Clock.currentTimeMillis
+          yield* RestartWake.mark(kv, background.notificationID, recovery.sessionID)
+          return yield* recoverToolJob(
+            background,
+            recovery,
+            background.status !== "running"
+              ? undefined
+              : {
+                  description: recovery.command,
+                  ...ShellResult.notification({
+                    jobID: background.id,
+                    shellID: recovery.shellID,
+                    command: recovery.command,
+                    state: "cancelled",
+                    text: RestartWake.cancelled({ shellID: recovery.shellID, startedAt, now }),
+                  }),
+                },
+          )
+        }
         reattached.add(info.value.id)
         yield* ShellTool.reattach({
           shell,
@@ -454,12 +480,15 @@ export const layer = (options?: Options) =>
           const suspended = new Set(
             [...(yield* store.listSuspended()), ...children].filter((sessionID) => !active.has(sessionID)),
           )
+          // Fork (RestartWake): a claimed turn takes its notices as steer items when resumed, and one not resumed is owed none.
+          const claimed: ReadonlySet<SessionSchema.ID> = new Set(suspended)
           const state = { defer: true }
           const wakes = new Set<SessionSchema.ID>()
           yield* Effect.addFinalizer(() =>
             Effect.gen(function* () {
               state.defer = false
               yield* Effect.forEach(wakes, (sessionID) => Effect.ignoreCause(wake(sessionID)), { discard: true })
+              yield* Effect.ignoreCause(RestartWake.wakeOwed({ kv, db, store, execution, skip: claimed }))
               suspended.clear()
             }),
           )
@@ -564,6 +593,7 @@ export const node = makeGlobalNode({
     Session.node,
     Instance.node,
     Database.node,
+    KV.node,
     Shell.daemonNode,
   ],
 })
