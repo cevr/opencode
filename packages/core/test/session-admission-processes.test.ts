@@ -58,8 +58,15 @@ async function setup() {
 }
 
 /** Starts one process; `done` answers its outcome. */
-function start(file: string, control: string, sessionID: string, actor: "command" | "archive", step = "none") {
-  const child = Bun.spawn(["bun", worker, file, control, sessionID, actor, step], {
+function start(
+  file: string,
+  control: string,
+  sessionID: string,
+  actor: "command" | "archive",
+  step = "none",
+  name = "pick",
+) {
+  const child = Bun.spawn(["bun", worker, file, control, sessionID, actor, step, name], {
     stdout: "pipe",
     stderr: "pipe",
     cwd: import.meta.dir,
@@ -102,17 +109,45 @@ describe("two processes over one database: an archive and a plugin's command", (
     await run.dispose()
   }, 120_000)
 
-  for (const step of ["selected", "prepare"] as const)
-    test(`archive while the command is stopped at ${step}: refused, rows byte-identical, nothing selected`, async () => {
+  // `/pick` also selects plan, whose reminder (a plugin's synthetic) is itself refused inside the transaction; `/m2`
+  // selects a model only, so the admission's own check inside the transaction is all that refuses it.
+  for (const name of ["pick", "m2"] as const)
+    for (const step of ["selected", "prepare"] as const)
+      test(`/${name}: archive while the command is stopped at ${step}: refused, rows byte-identical, nothing selected`, async () => {
+        const run = await setup()
+        const command = start(run.file, run.control, run.session.id, "command", step, name)
+        await reached(run.control, step)
+        expect((await start(run.file, run.control, run.session.id, "archive").done).outcome).toBe("archived")
+        const archived = await run.rows()
+        go(run.control, step)
+        expect((await command.done).outcome).toBe("refused")
+        expect(await run.rows()).toBe(archived)
+        const info = await run.info()
+        expect([String(info.agent), String(info.model?.id)]).toEqual(["build", "m"])
+        await run.dispose()
+      }, 120_000)
+
+  for (const name of ["pick", "m2"] as const)
+    test(`/${name} past its early check, its transaction waiting on the archive's: refused once that commits`, async () => {
       const run = await setup()
-      const command = start(run.file, run.control, run.session.id, "command", step)
-      await reached(run.control, step)
-      expect((await start(run.file, run.control, run.session.id, "archive").done).outcome).toBe("archived")
+      // The command reads the session (not archived) and stops in its prompt's hook, past its early check.
+      const command = start(run.file, run.control, run.session.id, "command", "prepare", name)
+      await reached(run.control, "prepare")
+      // The archive stops inside its transaction, holding SQLite's write lock (a process that must write cannot even
+      // start while it does: measured, the command's process never reached its hook when started after this).
+      const archive = start(run.file, run.control, run.session.id, "archive", "inside")
+      await reached(run.control, "inside")
+      go(run.control, "prepare")
+      // Its admitting transaction cannot begin while the archive's holds SQLite's write lock.
+      await Bun.sleep(1000)
+      expect(command.finished()).toBe(false)
+      go(run.control, "inside")
+      expect((await archive.done).outcome).toBe("archived")
       const archived = await run.rows()
-      go(run.control, step)
       expect((await command.done).outcome).toBe("refused")
       expect(await run.rows()).toBe(archived)
-      expect(String((await run.info()).agent)).toBe("build")
+      const info = await run.info()
+      expect([String(info.agent), String(info.model?.id)]).toEqual(["build", "m"])
       await run.dispose()
     }, 120_000)
 
@@ -146,7 +181,7 @@ describe("two processes over one database: an archive and a plugin's command", (
     await run.dispose()
   }, 120_000)
 
-  test("the command while the archive is inside its transaction: it waits, then is refused, rows byte-identical", async () => {
+  test("the command started while the archive is inside its transaction: refused, rows byte-identical", async () => {
     const run = await setup()
     const archive = start(run.file, run.control, run.session.id, "archive", "inside")
     await reached(run.control, "inside")

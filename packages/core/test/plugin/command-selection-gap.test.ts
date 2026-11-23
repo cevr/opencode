@@ -81,23 +81,29 @@ describe("the gap between a command's selection and its prompt", () => {
     }),
   )
 
-  it.live("archived while the prompt is prepared (its hook): refused, rows byte-identical, no reminder row", () =>
-    Effect.gen(function* () {
-      const session = yield* project()
-      const sessions = yield* Session.Service
-      const { db } = yield* Database.Service
-      const rows = yield* Deferred.make<string>()
-      // The local plugin's prompt hook runs the archive (fixture: globalThis.__onPrompt).
-      ;(globalThis as { __onPrompt?: () => Promise<void> }).__onPrompt = () =>
-        Effect.runPromise(archiving(sessions, db, session.id, rows))
-      const exit = yield* sessions.command({ sessionID: session.id, command: "pick", text: "x" }).pipe(Effect.exit)
-      ;(globalThis as { __onPrompt?: unknown }).__onPrompt = undefined
-      expect(Exit.isFailure(exit)).toBe(true)
-      yield* sessions.wait(session.id)
-      expect(yield* dump(db, session.id)).toBe(yield* Deferred.await(rows))
-      expect((yield* sessions.get(session.id)).agent).toBe(build)
-    }),
-  )
+  // /pick's reminder (a plugin's synthetic) is itself refused inside the transaction; /m2 selects a model only, so
+  // the admission's own check inside the transaction is all that refuses it.
+  for (const name of ["pick", "m2"])
+    it.live(
+      `/${name}: archived while the prompt is prepared (its hook): refused, rows byte-identical, nothing selected`,
+      () =>
+        Effect.gen(function* () {
+          const session = yield* project()
+          const sessions = yield* Session.Service
+          const { db } = yield* Database.Service
+          const rows = yield* Deferred.make<string>()
+          // The local plugin's prompt hook runs the archive (fixture: globalThis.__onPrompt).
+          ;(globalThis as { __onPrompt?: () => Promise<void> }).__onPrompt = () =>
+            Effect.runPromise(archiving(sessions, db, session.id, rows))
+          const exit = yield* sessions.command({ sessionID: session.id, command: name, text: "x" }).pipe(Effect.exit)
+          ;(globalThis as { __onPrompt?: unknown }).__onPrompt = undefined
+          expect(Exit.isFailure(exit)).toBe(true)
+          yield* sessions.wait(session.id)
+          expect(yield* dump(db, session.id)).toBe(yield* Deferred.await(rows))
+          const info = yield* sessions.get(session.id)
+          expect([info.agent, info.model?.id]).toEqual([build, Model.ID.make("m")])
+        }),
+    )
 
   it.live("archive attempted inside the admitting transaction waits for its commit; the prompt is admitted", () =>
     Effect.gen(function* () {

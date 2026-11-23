@@ -1,8 +1,8 @@
 // Fork feature (synthetic-archived): one OpenCode process of session-admission-processes.test.ts, over the database
 // file the other process also opens (as the CLI's standalone server and the service do). It runs one actor and can
 // stop at one named step until the test lets it go:
-//   bun admission-process.ts <db file> <control dir> <sessionID> command <step|none>
-//     a plugin's /pick (not the user's): steps `selected` (its selection pending, before its prompt), `prepare` (inside
+//   bun admission-process.ts <db file> <control dir> <sessionID> command <step|none> [pick|m2]
+//     a plugin's /pick (not the user's; /m2 selects a model only, so no Plan reminder is written): steps `selected` (its selection pending, before its prompt), `prepare` (inside
 //     the prompt's hook), `inside` (inside the admitting transaction, holding SQLite's write lock)
 //   bun admission-process.ts <db file> <control dir> <sessionID> archive <step|none>
 //     the owner's archive: step `inside` (inside the archive's transaction, holding the write lock)
@@ -19,7 +19,7 @@ import { SessionEvent } from "@opencode/core/session/event"
 import { SessionStore } from "@opencode/core/session/store"
 import { commandLayer } from "./command-selection"
 
-const [file = "", control = "", id = "", actor = "", step = "none"] = process.argv.slice(2)
+const [file = "", control = "", id = "", actor = "", step = "none", commandName = "pick"] = process.argv.slice(2)
 const sessionID = Session.ID.make(id)
 
 /** Stops here when `name` is this process's step: tells the test, waits for its go. Once. */
@@ -75,7 +75,7 @@ const command = Effect.gen(function* () {
       // `inside`: a reaction runs inside the admitting transaction, after its first write.
       yield* SessionAdmission.onSelection(() => at("inside").pipe(Effect.as(false)))
       writeFileSync(path.join(control, "command-started"), "")
-      return yield* sessions.command({ sessionID, command: "pick", text: "from process B" }).pipe(Effect.exit)
+      return yield* sessions.command({ sessionID, command: commandName, text: "from process B" }).pipe(Effect.exit)
     }),
   ).pipe(
     Effect.flatMap((exit) =>
