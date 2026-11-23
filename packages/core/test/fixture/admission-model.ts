@@ -4,9 +4,9 @@
 // the session's pending input, and the user's turn is held open (`U` … `T`) so input can arrive while it runs.
 //
 // Events, each run until its effects settle (the race inside one admission is the transaction's, tested apart):
-// - `A:<source>` admits from a source as its real caller does: `plugin` and `http` keep their input (refused by an
-//   archived session), `shell`, `job`, `media`, `subagent` hold it (resume, woken when live), `restart` holds it
-//   unwoken (resume: false, as the restart sweep admits);
+// - `A:<source>` admits from a source as its real caller does: `plugin` keeps its input (refused by an archived
+//   session); `http` (the route cannot tell its callers apart), `shell`, `job`, `media`, `subagent` hold it (resume,
+//   woken when live), `restart` holds it unwoken (resume: false, as the restart sweep admits);
 // - `K` a plugin's message inside the user's own slash command on that session (the user's), `L` one inside the user's
 //   command on the OTHER session (a plugin's), `F` one a fiber forked inside the user's command sends after the
 //   command returned (a plugin's);
@@ -82,8 +82,8 @@ export const it = testEffect(
 
 export type Event = string
 
-export const KEEPING = ["plugin", "http"] as const
-export const HOLDING = ["shell", "job", "media", "subagent", "restart"] as const
+export const KEEPING = ["plugin"] as const
+export const HOLDING = ["http", "shell", "job", "media", "subagent", "restart"] as const
 /** Every source's admission event, the user's command's and the two that must not inherit it. */
 export const ADMITS = [...KEEPING, ...HOLDING].map((source) => `A:${source}`).concat(["K", "L", "F"])
 
@@ -216,11 +216,6 @@ export const run = Effect.fnUntraced(function* (id: string, events: readonly Eve
           return yield* Fiber.join(fiber)
         })
       if (source === "plugin") return hostSynthetic({ sessionID, id: inputID, text: "a plugin's message" })
-      // The server's route (handlers/session.ts): typed, then answered 409.
-      if (source === "http")
-        return SessionAdmission.typed(
-          sessions.synthetic({ sessionID, id: inputID, text: "a client's message", source }),
-        )
       return sessions.synthetic({
         sessionID,
         id: inputID,

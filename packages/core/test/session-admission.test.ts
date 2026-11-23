@@ -55,6 +55,70 @@ const recording = Effect.gen(function* () {
   return drains
 })
 
+describe("an HTTP client's message to an archived session (ACP's turn context)", () => {
+  // As ACP's turn sends it (cli/src/acp/turn.ts submitSynthetic) through the route (source `http`).
+  const context = (sessionID: Session.ID, id: SessionMessage.ID) =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      let decision: SessionAdmission.Decision | undefined
+      yield* sessions.synthetic({
+        sessionID,
+        id,
+        text: "ACP embedded context",
+        delivery: "steer",
+        resume: false,
+        source: "http",
+        decided: (value) => Effect.sync(() => void (decision = value)),
+      })
+      return decision
+    })
+
+  it.live("context then the user's prompt: one turn, started by the prompt, taking the context once", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const execution = yield* SessionExecution.Service
+      const drains = yield* recording
+      const sessionID = yield* seed("ses_acp_prompt")
+      yield* sessions.archive(sessionID)
+      const contextID = SessionMessage.ID.create()
+      expect(yield* context(sessionID, contextID)).toBe("held")
+      yield* Effect.sleep(10)
+      expect(drains).toEqual([])
+      // The user's prompt, as ACP sends it next: admitted with no source (the user's own, upstream's admission, as
+      // Session.prompt's is) and its turn started; Session.prompt itself needs the plugin graph this harness omits.
+      const promptID = SessionMessage.ID.create()
+      yield* sessions.synthetic({ sessionID, id: promptID, text: "the user's prompt", resume: false })
+      yield* execution.resume(sessionID).pipe(Effect.ignore)
+      yield* execution.awaitIdle(sessionID)
+      const turns = drains.filter((drain) => drain.took.length > 0)
+      expect(turns).toEqual([{ sessionID, took: [contextID, promptID] }])
+      current.drain = () => Effect.void
+    }),
+  )
+
+  it.live("context with no prompt after it, then unarchive: no turn, the row waits", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const execution = yield* SessionExecution.Service
+      const { db } = yield* Database.Service
+      const drains = yield* recording
+      const sessionID = yield* seed("ses_acp_alone")
+      yield* sessions.archive(sessionID)
+      const contextID = SessionMessage.ID.create()
+      expect(yield* context(sessionID, contextID)).toBe("held")
+      // The generic route's default (`resume` omitted) holds it too: no wake.
+      const plainID = SessionMessage.ID.create()
+      yield* sessions.synthetic({ sessionID, id: plainID, text: "a script's note", source: "http" })
+      yield* sessions.unarchive(sessionID)
+      yield* Effect.sleep(20)
+      yield* execution.awaitIdle(sessionID)
+      expect(drains).toEqual([])
+      expect((yield* SessionInbox.list(db, sessionID)).map((item) => item.id)).toEqual([contextID, plainID])
+      current.drain = () => Effect.void
+    }),
+  )
+})
+
 describe("SessionAdmission's transaction", () => {
   it.live("a wake rung inside a transaction that then rolls back starts a drain that finds no input", () =>
     Effect.gen(function* () {

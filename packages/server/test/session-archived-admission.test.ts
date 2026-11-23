@@ -1,5 +1,6 @@
-// Fork feature (synthetic-archived): over HTTP, an archived session refuses a client's synthetic message with 409 (the
-// client keeps it; no row is admitted), and the user's own slash command on it is the user's prompt, admitted.
+// Fork feature (synthetic-archived): over HTTP, an archived session holds a client's synthetic message (the route
+// cannot tell its callers apart: ACP's own turn context, an SDK script) unwoken and says so (`held: true`, additive),
+// and the user's own slash command on it is the user's prompt, admitted.
 import { expect } from "bun:test"
 import { App } from "@opencode/core/app"
 import { Bus } from "@opencode/core/bus"
@@ -20,7 +21,7 @@ import { tmpdirScoped } from "../../core/test/fixture/tmpdir"
 import { it } from "../../core/test/lib/effect"
 import { createEmbeddedRoutes } from "../src/routes"
 
-it.live("an archived session answers a client's synthetic message 409 and admits the user's own /init", () =>
+it.live("an archived session holds a client's synthetic message, says so, and admits the user's own /init", () =>
   Effect.gen(function* () {
     const dir = yield* tmpdirScoped()
     const location = LocationServiceMap.canonical(Location.Ref.make({ directory: AbsolutePath.make(dir.path) }))
@@ -54,14 +55,30 @@ it.live("an archived session answers a client's synthetic message 409 and admits
     const session = yield* sessions.create({ location, title: "archived" })
     yield* sessions.archive(session.id)
 
-    const synthetic = yield* post(`/api/session/${session.id}/synthetic`, { text: "a client's notice", resume: false })
-    expect(synthetic.status).toBe(409)
-    expect(yield* Effect.promise(() => synthetic.text())).toContain("archived")
-    expect(yield* sessions.inbox(session.id)).toEqual([])
+    // As ACP's turn sends its embedded context: held (admitted, not woken), and the response says so.
+    const synthetic = yield* post(`/api/session/${session.id}/synthetic`, {
+      text: "ACP embedded context",
+      delivery: "steer",
+      resume: false,
+    })
+    expect(synthetic.status).toBe(200)
+    const body = (yield* Effect.promise(() => synthetic.json())) as { data: { type: string; held?: boolean } }
+    expect(body.data).toMatchObject({ type: "synthetic", held: true })
+    expect((yield* sessions.inbox(session.id)).map((item) => item.type)).toEqual(["synthetic"])
+
+    // A live session's answer is upstream's shape: no `held`.
+    const live = yield* sessions.create({ location, title: "live" })
+    const admitted = yield* post(`/api/session/${live.id}/synthetic`, { text: "a note", resume: false })
+    expect(admitted.status).toBe(200)
+    expect(((yield* Effect.promise(() => admitted.json())) as { data: object }).data).not.toHaveProperty("held")
+
+    // A deleted session: 404, as before.
+    yield* sessions.remove(live.id)
+    expect((yield* post(`/api/session/${live.id}/synthetic`, { text: "late", resume: false })).status).toBe(404)
 
     // The user typed /init: the built-in command's prompt is the user's, admitted into the archived session.
     const command = yield* post(`/api/session/${session.id}/command`, { name: "init", text: "" })
     expect(command.status).toBeLessThan(300)
-    expect((yield* sessions.inbox(session.id)).map((item) => item.type)).toEqual(["user"])
+    expect((yield* sessions.inbox(session.id)).map((item) => item.type)).toEqual(["synthetic", "user"])
   }),
 )
