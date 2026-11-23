@@ -962,6 +962,61 @@ it.effect("a long run without user messages keeps only the newest messages withi
   }),
 )
 
+it.effect("an agent's compaction window starts automatic compaction, and the tail it keeps stays within keep", () =>
+  Effect.gen(function* () {
+    requests = []
+    const compaction = yield* SessionCompaction.Service
+    // 60 tool steps of about 330 estimated tokens each: about 20k tokens since the only user message, past the 15k
+    // allowance. The newest step's request used 40k of input tokens: past a 50k window's ceiling (50k less the 16k
+    // reserve), far from the model's own 200k one.
+    const steps = Array.from({ length: 60 }, (_, index) =>
+      Schema.decodeUnknownSync(SessionMessage.Assistant)({
+        id: SessionMessage.ID.create(),
+        type: "assistant",
+        agent: Agent.defaultID,
+        model: { id: "summary-model", providerID: "test" },
+        content: [
+          {
+            type: "tool",
+            id: `call_window_${index}`,
+            name: "read",
+            state: { status: "completed", input: { index }, content: [{ type: "text", text: "x".repeat(1_250) }] },
+            time: { created: 0 },
+          },
+        ],
+        ...(index === 59 ? { tokens: { input: 40_000, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } } : {}),
+        time: { created: 0, completed: 0 },
+      }),
+    )
+    const messages = [textUser("Earlier question"), textUser("Run the migration"), ...steps]
+    const info = Agent.Info.default(Agent.defaultID)
+    const context = (session: Session.Info, window?: number) => ({
+      ...loaded(session, messages),
+      agent: {
+        id: Agent.defaultID,
+        info: { ...info, request: { ...info.request, settings: window === undefined ? {} : { compactionWindow: window } } },
+      },
+    })
+
+    // Without a window the same context is far from the model's ceiling.
+    const plain = yield* insertSession(Session.ID.make("ses_window_keep_plain"))
+    expect(yield* compaction.compact({ reason: "auto", context: context(plain) })).toMatchObject({ status: "skipped" })
+
+    const sessionID = Session.ID.make("ses_window_keep")
+    const session = yield* insertSession(sessionID)
+    yield* storeMessages(sessionID, messages)
+    expect(yield* compaction.compact({ reason: "auto", context: context(session, 50_000) })).toEqual({
+      status: "completed",
+    })
+    const stored = (yield* (yield* SessionStore.Service).context(sessionID))[0]
+    if (stored?.type !== "compaction" || stored.status !== "completed") return yield* Effect.die("compaction missing")
+    const recent = SessionRecentText.kept(stored)
+    expect(Token.estimate(recent)).toBeLessThanOrEqual(15_000)
+    expect(Token.estimate(recent)).toBeGreaterThan(14_000)
+    expect(recent).not.toContain("Run the migration")
+  }),
+)
+
 it.effect("compaction keeps no tail when the newest message alone exceeds keep", () =>
   Effect.gen(function* () {
     requests = []
