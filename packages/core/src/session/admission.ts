@@ -337,7 +337,12 @@ export const guard = (input: { readonly store: Store; readonly sessionID: Sessio
 /** A source that keeps its input was refused: the session is archived. Nothing was admitted. */
 export class ArchivedError extends Schema.TaggedError<ArchivedError>()("Session.ArchivedError", {
   sessionID: SessionSchema.ID,
-}) {}
+}) {
+  // What a caller that shows only a message (a command's ExecutionError) tells the user.
+  override get message() {
+    return `Session ${this.sessionID} is archived`
+  }
+}
 
 /** The defect that aborts the admitting transaction; mapped back to a typed error by `refused`. */
 export class Refused {

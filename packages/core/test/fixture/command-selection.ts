@@ -12,6 +12,7 @@ import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { LayerNodePlatform } from "@opencode/core/effect/app-node-platform"
 import { Watcher } from "@opencode/core/filesystem/watcher"
 import { Database } from "@opencode/core/database/database"
+import { Bus } from "@opencode/core/bus"
 import { Job } from "@opencode/core/job"
 import { KV } from "@opencode/core/kv"
 import { LocationServiceMap } from "@opencode/core/location-service-map"
@@ -31,26 +32,32 @@ const llm = TestLLM.testLayer({ fallback: TestLLM.text("Done", "work") })
 export const commandLayer = (replacements: LayerNode.Replacements = []) =>
   Layer.merge(
     llm,
-    AppNodeBuilder.build(LayerNode.group([Database.node, Session.node, LocationServiceMap.node, Job.node, KV.node]), [
-      Global.node.replace(tempGlobalLayer),
-      offlineModels,
-      Watcher.node.replace(Watcher.configured({ enabled: false })),
-      LayerNodePlatform.llmClient.replace(llm),
-      SessionRunnerModel.node.replace(
-        Layer.succeed(SessionRunnerModel.Service, {
-          select: (session) => Effect.fail(new SessionRunnerModel.ModelNotSelectedError({ sessionID: session.id })),
-          resolve: () =>
-            Effect.succeed(
-              SessionRunnerModel.resolved(LanguageModel.make({ id: "m", provider: "test", route: OpenAIChat.route }), {
-                capabilities: { tools: true, input: ["text"], output: ["text"] },
-                cost: [],
-                limit: { context: 200_000, output: 32_000 },
-              }),
-            ),
-        }),
-      ),
-      ...replacements,
-    ]),
+    AppNodeBuilder.build(
+      LayerNode.group([Database.node, Bus.node, Session.node, LocationServiceMap.node, Job.node, KV.node]),
+      [
+        Global.node.replace(tempGlobalLayer),
+        offlineModels,
+        Watcher.node.replace(Watcher.configured({ enabled: false })),
+        LayerNodePlatform.llmClient.replace(llm),
+        SessionRunnerModel.node.replace(
+          Layer.succeed(SessionRunnerModel.Service, {
+            select: (session) => Effect.fail(new SessionRunnerModel.ModelNotSelectedError({ sessionID: session.id })),
+            resolve: () =>
+              Effect.succeed(
+                SessionRunnerModel.resolved(
+                  LanguageModel.make({ id: "m", provider: "test", route: OpenAIChat.route }),
+                  {
+                    capabilities: { tools: true, input: ["text"], output: ["text"] },
+                    cost: [],
+                    limit: { context: 200_000, output: 32_000 },
+                  },
+                ),
+              ),
+          }),
+        ),
+        ...replacements,
+      ],
+    ),
   )
 
 /**
@@ -88,18 +95,28 @@ const plugin = `export default {
 export function project(agent = "build") {
   return Effect.gen(function* () {
     const tmp = yield* tmpdirScoped()
-    yield* Effect.promise(async () => {
-      const commands = path.join(tmp.path, ".opencode", "commands")
-      await mkdir(commands, { recursive: true })
-      await mkdir(path.join(tmp.path, ".opencode", "plugins"), { recursive: true })
-      await writeFile(path.join(commands, "pick.md"), "---\nagent: plan\nmodel: test/m2\n---\nPick $ARGUMENTS")
-      await writeFile(path.join(commands, "leave.md"), "---\nagent: build\n---\nLeave $ARGUMENTS")
-      await writeFile(path.join(commands, "m2.md"), "---\nmodel: test/m2\n---\nModel $ARGUMENTS")
-      await writeFile(path.join(tmp.path, ".opencode", "plugins", "selection.js"), plugin)
-    })
+    yield* Effect.promise(() => writeProject(tmp.path))
+    return yield* create(tmp.path, agent)
+  })
+}
+
+/** Writes the project's commands and local plugin into `directory`. */
+export async function writeProject(directory: string) {
+  const commands = path.join(directory, ".opencode", "commands")
+  await mkdir(commands, { recursive: true })
+  await mkdir(path.join(directory, ".opencode", "plugins"), { recursive: true })
+  await writeFile(path.join(commands, "pick.md"), "---\nagent: plan\nmodel: test/m2\n---\nPick $ARGUMENTS")
+  await writeFile(path.join(commands, "leave.md"), "---\nagent: build\n---\nLeave $ARGUMENTS")
+  await writeFile(path.join(commands, "m2.md"), "---\nmodel: test/m2\n---\nModel $ARGUMENTS")
+  await writeFile(path.join(directory, ".opencode", "plugins", "selection.js"), plugin)
+}
+
+/** A session in `directory` (a project written by `writeProject`). */
+export function create(directory: string, agent = "build") {
+  return Effect.gen(function* () {
     const sessions = yield* Session.Service
     return yield* sessions.create({
-      location: { directory: AbsolutePath.make(tmp.path) },
+      location: { directory: AbsolutePath.make(directory) },
       title: "Command session",
       agent: Agent.ID.make(agent),
       model: Model.Ref.make({ id: Model.ID.make("m"), providerID: Provider.ID.make("test") }),
