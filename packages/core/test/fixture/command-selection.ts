@@ -26,27 +26,9 @@ import { Global } from "@opencode/util/global"
 import { tempGlobalLayer } from "./global"
 import { offlineModels } from "./models"
 import { tmpdirScoped } from "./tmpdir"
-import { makeDurableObjectStorage } from "./durable-object-storage"
-import { sqliteLayer } from "@opencode/core/database/sqlite.workerd"
+import { database } from "./test-database"
 
 const llm = TestLLM.testLayer({ fallback: TestLLM.text("Done", "work") })
-
-/**
- * The database these tests run on. `OPENCODE_TEST_SQLITE=durable-object` runs them on the Durable Object SQLite client
- * (emulated over bun:sqlite, fixture/durable-object-storage.ts): it manages transactions natively and offers no
- * rollback callback, so a test green there needs none. A `file` is a bun:sqlite database file (two processes).
- */
-export const database = (file?: string) =>
-  file !== undefined
-    ? Database.node.replace(Database.configured({ path: file }))
-    : process.env.OPENCODE_TEST_SQLITE === "durable-object"
-      ? Database.node.replace(
-          Database.configuredClient(Layer.suspend(() => sqliteLayer({ storage: makeDurableObjectStorage() }))),
-        )
-      : Database.node.replace(Database.configured({ path: ":memory:" }))
-
-/** The database alone, on the driver `database` picks. */
-export const databaseLayer = () => AppNodeBuilder.build(Database.node, [database()])
 
 export const commandLayer = (replacements: LayerNode.Replacements = [], file?: string) =>
   Layer.merge(

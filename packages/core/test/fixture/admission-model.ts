@@ -54,6 +54,7 @@ import { EventSequenceTable, EventTable } from "@opencode/core/event/sql"
 import { KVTable } from "@opencode/core/kv/sql"
 import { SessionStore } from "@opencode/core/session/store"
 import { testEffect } from "../lib/effect"
+import { database as testDatabase } from "./test-database"
 
 /** The model's drain, swapped per ordering: the Location graph is built once. */
 export const current: { drain: (sessionID: Session.ID) => Effect.Effect<void> } = { drain: () => Effect.void }
@@ -83,7 +84,7 @@ export const it = testEffect(
       Session.node,
       SessionExecution.node,
     ]),
-    [LocationServiceMap.node.replace(locations)],
+    [testDatabase(), LocationServiceMap.node.replace(locations)],
   ),
 )
 

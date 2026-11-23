@@ -36,6 +36,7 @@ import { Skill } from "@opencode/core/skill"
 import { Config } from "@opencode/core/config"
 import { Flag } from "@opencode/core/flag"
 import { testEffect } from "./lib/effect"
+import { database } from "./fixture/test-database"
 import { dump } from "./fixture/admission-model"
 
 const wakes: Session.ID[] = []
@@ -88,6 +89,7 @@ const it = testEffect(
   AppNodeBuilder.build(
     LayerNode.group([Database.node, Bus.node, SessionProjector.node, SessionStore.node, Session.node]),
     [
+      database(),
       Bus.node.replace(Bus.configured({ persist: true })),
       SessionExecution.node.replace(execution),
       LocationServiceMap.node.replace(locations),

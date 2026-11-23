@@ -26,6 +26,7 @@ import { SessionRunner } from "@opencode/core/session/runner/index"
 import { SessionTable } from "@opencode/core/session/sql"
 import { SessionStore } from "@opencode/core/session/store"
 import { testEffect } from "./lib/effect"
+import { database as testDatabase } from "./fixture/test-database"
 
 /** Inputs each drain took, per session: a turn that ran. */
 const turns: { sessionID: Session.ID; took: string[] }[] = []
@@ -64,6 +65,7 @@ const it = testEffect(
       SessionExecution.node,
     ]),
     [
+      testDatabase(),
       SessionStore.node.replace(
         SessionStore.node.mapLayer((layer) =>
           Layer.effect(

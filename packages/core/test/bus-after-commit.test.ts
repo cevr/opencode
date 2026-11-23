@@ -15,9 +15,11 @@ import { SessionEvent } from "@opencode/schema/session-event"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { location } from "./fixture/location"
 import { testEffect } from "./lib/effect"
+import { database } from "./fixture/test-database"
 
 const it = testEffect(
   AppNodeBuilder.build(LayerNode.group([Database.node, Bus.node, Location.node]), [
+    database(),
     Location.node.replace(
       Layer.succeed(
         Location.Service,

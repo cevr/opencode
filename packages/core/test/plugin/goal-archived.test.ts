@@ -27,6 +27,7 @@ import { Global } from "@opencode/util/global"
 import { tempGlobalLayer } from "../fixture/global"
 import { offlineModels } from "../fixture/models"
 import { tmpdirScoped } from "../fixture/tmpdir"
+import { database } from "../fixture/test-database"
 import { testEffect } from "../lib/effect"
 
 const llmLayer = TestLLM.testLayer({ fallback: TestLLM.text("Working on it", "work") })
@@ -34,6 +35,7 @@ const it = testEffect(
   Layer.merge(
     llmLayer,
     AppNodeBuilder.build(LayerNode.group([Session.node, LocationServiceMap.node, Job.node, KV.node]), [
+      database(),
       Global.node.replace(tempGlobalLayer),
       offlineModels,
       Watcher.node.replace(Watcher.configured({ enabled: false })),

@@ -14,9 +14,10 @@ import { SessionAdmission } from "@opencode/core/session/admission"
 import { SessionInbox } from "@opencode/core/session/inbox"
 import { define } from "@opencode/plugin/effect/plugin"
 import { testEffect } from "../lib/effect"
-import { PluginTestLayer } from "./fixture"
+import { makePluginTestLayer } from "./fixture"
+import { database } from "../fixture/test-database"
 
-const it = testEffect(PluginTestLayer)
+const it = testEffect(makePluginTestLayer(undefined, undefined, [database()]))
 
 /** What the plugin's command saw: the result of each admission it tried, by name. */
 type Seen = Map<string, "admitted" | string>
