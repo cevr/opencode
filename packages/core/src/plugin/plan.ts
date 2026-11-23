@@ -76,9 +76,10 @@ export const Plugin = define({
     // Fork (synthetic-archived): a command's selection is written in its prompt's admitting transaction; the reminder
     // is written inside it, where this subscriber would have put it (before the prompt), and the subscriber skips it.
     yield* SessionAdmission.onSelection((event) => {
-      if (event.type !== "session.agent.selected") return Effect.void
+      if (event.type !== "session.agent.selected") return Effect.succeed(false)
       const text = switchReminder(event, enterReminder)
-      return text ? ctx.session.synthetic({ sessionID: event.data.sessionID, text, resume: false }) : Effect.void
+      if (!text) return Effect.succeed(false)
+      return ctx.session.synthetic({ sessionID: event.data.sessionID, text, resume: false }).pipe(Effect.as(true))
     })
     yield* ctx.event.subscribe({ types: ["session.created", "session.agent.selected"] }).pipe(
       Stream.runForEach((event) => {

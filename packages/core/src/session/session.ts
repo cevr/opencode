@@ -166,7 +166,7 @@ export const make = Effect.fn("Session.make")(function* () {
       published.push(
         yield* bus.publish(SessionEvent.ModelSelected, { sessionID: session.id, model, previous: session.model }),
       )
-    yield* SessionAdmission.react(published)
+    yield* SessionAdmission.react(database.db, session.location, published)
   })
   // Fork (synthetic-archived): a selection its command's execute made and no prompt carried, published when the
   // command returns, in one transaction checked under the admission's rule first: refused (archived, not the user's)

@@ -112,11 +112,12 @@ describe("the gap between a command's selection and its prompt", () => {
         Effect.gen(function* () {
           yield* SessionAdmission.onSelection(() =>
             Effect.gen(function* () {
-              if (yield* Deferred.isDone(go)) return
+              if (yield* Deferred.isDone(go)) return false
               yield* Deferred.succeed(go, undefined)
               yield* Effect.sleep(50)
               // Still waiting: the transaction holds the session.
               yield* Deferred.succeed(waited, archive.pollUnsafe() === undefined)
+              return false
             }),
           )
           const types = yield* sequence(session.id, "pick", SessionAdmission.userCommand(session.id))
@@ -142,7 +143,7 @@ describe("the gap between a command's selection and its prompt", () => {
         ]) {
           const before = yield* dump(db, session.id)
           const exit = yield* Effect.scoped(
-            SessionAdmission.onSelection(() => failure).pipe(
+            SessionAdmission.onSelection(() => failure.pipe(Effect.as(false))).pipe(
               Effect.andThen(sessions.command({ sessionID: session.id, command: "pick", text: "x" })),
               Effect.exit,
             ),
@@ -154,6 +155,54 @@ describe("the gap between a command's selection and its prompt", () => {
         yield* sessions.prompt({ sessionID: session.id, text: "next", resume: false }).pipe(Effect.timeout("5 seconds"))
         yield* sessions.archive(session.id).pipe(Effect.timeout("5 seconds"))
       }),
+  )
+
+  it.live(
+    "refused after plan's reminder ran: its in-memory mark is taken back; the same selection later writes it",
+    () =>
+      Effect.gen(function* () {
+        const session = yield* project()
+        const sessions = yield* Session.Service
+        const { db } = yield* Database.Service
+        const marks = SessionAdmission.pendingReactions()
+        const rows = yield* dump(db, session.id)
+        // plan.ts's reaction (registered first, at the plugin's load) writes its reminder for the agent's event; this
+        // one then refuses the model's, after it: the whole admission rolls back.
+        const exit = yield* Effect.scoped(
+          SessionAdmission.onSelection((event) =>
+            event.type === "session.model.selected"
+              ? Effect.fail(new SessionAdmission.ArchivedError({ sessionID: session.id }))
+              : Effect.succeed(false),
+          ).pipe(Effect.andThen(sessions.command({ sessionID: session.id, command: "pick", text: "x" })), Effect.exit),
+        )
+        expect(Exit.isFailure(exit)).toBe(true)
+        expect(yield* dump(db, session.id)).toBe(rows)
+        // Heap: the set of reacted events is what it was before the refused call.
+        expect(SessionAdmission.pendingReactions()).toEqual(marks)
+        // Admitted later in the same process: the reminder is written, in upstream's place, and its mark consumed.
+        expect(yield* sequence(session.id, "pick")).toEqual([
+          "agent-switched",
+          "model-switched",
+          "synthetic",
+          "user",
+          "assistant",
+          "idle",
+        ])
+        expect(SessionAdmission.pendingReactions()).toEqual(marks)
+      }),
+  )
+
+  it.live("two locations loaded: a selection's reminder is written once, by its own location's plan", () =>
+    Effect.gen(function* () {
+      const one = yield* project()
+      const two = yield* project()
+      const marks = SessionAdmission.pendingReactions()
+      // Both locations' plugins are loaded (each has run a command) before the selection.
+      yield* sequence(two.id, "m2")
+      yield* sequence(one.id, "m2")
+      expect(yield* sequence(one.id, "pick")).toEqual(["agent-switched", "synthetic", "user", "assistant", "idle"])
+      expect(SessionAdmission.pendingReactions()).toEqual(marks)
+    }),
   )
 
   it.live("read back inside the command, the pending selection answers before anything is written", () =>

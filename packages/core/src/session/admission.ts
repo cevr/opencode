@@ -29,7 +29,9 @@ import type { Model } from "@opencode/schema/model"
 import type { Event } from "@opencode/schema/event"
 import { UserCommand } from "@opencode/util/effect/user-command"
 import type { Database } from "../database/database.js"
+import { onRollback } from "../database/drizzle/effect-sqlite/session.js"
 import { KVTable } from "../kv/sql.js"
+import { Location } from "../location.js"
 import { NotFoundError } from "./error.js"
 import { SessionInbox } from "./inbox.js"
 import type { SessionMessage } from "./message.js"
@@ -242,37 +244,73 @@ export type SelectionEvent =
   | Event.Payload<typeof SessionEvent.AgentSelected>
   | Event.Payload<typeof SessionEvent.ModelSelected>
 
-/** What a part of OpenCode writes in reaction to a selection (plan.ts's Plan-mode reminder). */
-export type Reaction = (event: SelectionEvent) => Effect.Effect<void, unknown>
+/**
+ * What a part of OpenCode writes in reaction to a selection (plan.ts's Plan-mode reminder). Answers whether it wrote
+ * something its own subscriber to the same event would otherwise write again (then that subscriber skips the event).
+ */
+export type Reaction = (event: SelectionEvent) => Effect.Effect<boolean, unknown>
 
-const reactions = new Set<Reaction>()
+type Registered = { readonly reaction: Reaction; readonly location: Location.Ref | undefined }
+const reactions = new Set<Registered>()
 const reactedTo = new Set<string>()
 
 /**
  * Registers a reaction to a command's selection, run inside the transaction that admits it, after the selection's
  * events and before the input they are admitted with: what it writes lands where it would have had the selection been
- * its own write, and a refusal rolls it back with the rest. The registrant's subscriber to the same events skips those
- * reacted to here (`reacted`). Scoped: removed with its plugin.
+ * its own write, and a refusal rolls it back with the rest. Like a plugin's event subscriber, it hears only its own
+ * location's sessions (the ambient Location at registration; none: every session). The registrant's subscriber skips
+ * an event its reaction answered true for (`reacted`). Scoped: removed with its plugin.
  */
 export const onSelection = (reaction: Reaction) =>
-  Effect.acquireRelease(
-    Effect.sync(() => void reactions.add(reaction)),
-    () => Effect.sync(() => void reactions.delete(reaction)),
-  )
+  Effect.flatMap(Effect.serviceOption(Location.Service), (location) => {
+    const entry: Registered = {
+      reaction,
+      location: Option.isSome(location)
+        ? { directory: location.value.directory, workspaceID: location.value.workspaceID }
+        : undefined,
+    }
+    return Effect.acquireRelease(
+      Effect.sync(() => void reactions.add(entry)),
+      () => Effect.sync(() => void reactions.delete(entry)),
+    )
+  })
+
+const hears = (entry: Registered, location: Location.Ref) =>
+  entry.location === undefined ||
+  (entry.location.directory === location.directory && entry.location.workspaceID === location.workspaceID)
 
 /** Whether a reaction already ran for this event inside its admission (once: the subscriber's check consumes it). */
 export const reacted = (eventID: string) => reactedTo.delete(eventID)
+
+/** The events reacted to whose subscriber has not yet consumed the mark (a copy; for tests of the in-memory state). */
+export const pendingReactions = (): ReadonlySet<string> => new Set(reactedTo)
 
 /**
  * Runs every reaction for the events just published, in the caller's transaction. A failure aborts it: a refusal of
  * what a reaction writes (an archived session, not the user's) is the admission's refusal.
  */
-export const react = (events: ReadonlyArray<SelectionEvent>) =>
+export const react = (db: Database.Interface["db"], location: Location.Ref, events: ReadonlyArray<SelectionEvent>) =>
   Effect.forEach(
     events,
     (event) =>
-      Effect.forEach(reactions, (reaction) => reaction(event), { discard: true }).pipe(
-        Effect.andThen(Effect.sync(() => void reactedTo.add(event.id))),
+      Effect.forEach(
+        [...reactions].filter((entry) => hears(entry, event.location ?? location)),
+        (entry) => entry.reaction(event),
+      ).pipe(
+        Effect.flatMap((wrote) =>
+          wrote.some(Boolean)
+            ? // The mark is seen only by the subscriber, which hears the event only once the transaction committed;
+              // a rollback (a refusal after it) takes it back.
+              Effect.sync(() => void reactedTo.add(event.id)).pipe(
+                Effect.andThen(
+                  onRollback(
+                    db.$client,
+                    Effect.sync(() => void reactedTo.delete(event.id)),
+                  ),
+                ),
+              )
+            : Effect.void,
+        ),
         Effect.catch((error) =>
           Effect.die(error instanceof ArchivedError ? new Refused(error.sessionID, "archived") : error),
         ),
