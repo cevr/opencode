@@ -14,6 +14,7 @@ import { JobTable } from "../../job/sql.js"
 import type { KV } from "../../kv.js"
 import { ShellResult } from "../../shell/result.js"
 import type { SessionExecution } from "../execution.js"
+import { SessionAdmission } from "../admission.js"
 import { SessionInbox } from "../inbox.js"
 import type { SessionMessage } from "../message.js"
 import type { SessionSchema } from "../schema.js"
@@ -92,10 +93,26 @@ type Owed = {
  */
 const owed = Effect.fnUntraced(function* (input: Owed, notificationID: SessionMessage.ID, sessionID: SessionSchema.ID) {
   if ((yield* SessionInbox.find(input.db, notificationID)) === undefined) return false
+  // Admitted while its owner was archived (synthetic-archived): held for the user's next prompt, owed no wake.
+  if (yield* SessionAdmission.isHeld(input.db, notificationID)) return false
   const owner = yield* input.store.get(sessionID)
   if (!owner || owner.revert || owner.time.archived) return false
   return !(yield* input.execution.stopped(sessionID))
 })
+
+/**
+ * Rings the owner for an owed notice in one write transaction with its admission rule (SessionAdmission.ring): an
+ * archive, a delete, a revert or a stop that commits before it is seen, so no wake reaches an archived owner.
+ */
+const ringOwed = (input: Owed, notificationID: SessionMessage.ID, sessionID: SessionSchema.ID) =>
+  SessionAdmission.ring({
+    db: input.db,
+    store: input.store,
+    sessionID,
+    inputID: notificationID,
+    wake: (id) =>
+      input.execution.stopped(id).pipe(Effect.flatMap((held) => (held ? Effect.void : input.execution.wake(id)))),
+  })
 
 /** Wakes for one notice, the first included, this many times at most; past that the mark waits for the next boot. */
 const ATTEMPTS = 3
@@ -122,7 +139,7 @@ const follow = Effect.fnUntraced(function* (
     if (yield* input.execution.isActive(sessionID)) continue
     if (attempts >= ATTEMPTS) return
     attempts++
-    yield* input.execution.wake(sessionID)
+    yield* ringOwed(input, notificationID, sessionID)
   }
 })
 
@@ -154,7 +171,7 @@ export const wakeOwed = Effect.fnUntraced(function* (
         continue
       }
       const idle = !(yield* input.execution.isActive(sessionID))
-      if (idle) yield* input.execution.wake(sessionID)
+      if (idle) yield* ringOwed(input, notificationID, sessionID)
       yield* follow(input, entry.key, notificationID, sessionID, idle ? 1 : 0).pipe(
         Effect.ignoreCause,
         Effect.forkIn(input.scope),

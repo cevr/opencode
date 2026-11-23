@@ -193,15 +193,21 @@ export const make = Effect.fn("SessionInbox.make")(function* () {
     readonly id: SessionMessage.ID
     readonly sessionID: SessionSchema.ID
     readonly item: Item & { readonly type: Type }
+    /** Runs inside the admitting transaction (fork: SessionAdmission.commit). */
+    readonly commit?: Bus.PublishOptions["commit"]
   }) {
     const existing = yield* reconcile({ ...request, type: request.item.type, delivery: request.item.delivery })
     if (existing !== undefined) return existing
     const admitted = yield* bus
-      .publish(SessionEvent.InboxEnqueued, {
-        inboxID: request.id,
-        sessionID: request.sessionID,
-        item: request.item,
-      })
+      .publish(
+        SessionEvent.InboxEnqueued,
+        {
+          inboxID: request.id,
+          sessionID: request.sessionID,
+          item: request.item,
+        },
+        { commit: request.commit },
+      )
       .pipe(
         Effect.map((event) =>
           Info.make({

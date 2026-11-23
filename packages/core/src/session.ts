@@ -547,6 +547,7 @@ const layer = Layer.effect(
         yield* result
           .synthetic({
             sessionID,
+            source: "background",
             text: [
               "User requested that active blocking work be moved to the background.",
               "",

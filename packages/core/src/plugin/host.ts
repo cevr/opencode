@@ -23,6 +23,7 @@ import { Mcp } from "../mcp/index.js"
 import { Session } from "../session.js"
 import { InstructionEntry } from "../session/instruction-entry.js"
 import { SessionTitle } from "../session/title.js"
+import { SessionAdmission } from "../session/admission.js"
 import { PersistentPty } from "../persistent-pty.js"
 import { Provider } from "../provider.js"
 import { Reference } from "../reference.js"
@@ -592,7 +593,8 @@ export const make = Effect.fn("PluginHost.make")(function* (plugin: Pick<Interfa
       remove: (input) => sessions.remove(input.sessionID),
       switchAgent: sessions.switchAgent,
       switchModel: sessions.switchModel,
-      prompt: sessions.prompt,
+      // Fork (synthetic-archived): a plugin's input is not the user's: refused, typed, by an archived session.
+      prompt: (input) => SessionAdmission.typed(sessions.prompt({ ...input, source: "plugin" })),
       generate: sessions.generate,
       command: (input) => sessions.command({ ...input, command: input.name }),
       compact: sessions.compact,
@@ -610,7 +612,7 @@ export const make = Effect.fn("PluginHost.make")(function* (plugin: Pick<Interfa
           yield* sessions.setPermissions({ sessionID: input.sessionID, permissions: input.permissions })
       }),
       move: sessions.move,
-      synthetic: sessions.synthetic,
+      synthetic: (input) => SessionAdmission.typed(sessions.synthetic({ ...input, source: "plugin" })),
       interrupt: (input) =>
         sessions
           .interrupt(input.sessionID, { resume: input.resume })

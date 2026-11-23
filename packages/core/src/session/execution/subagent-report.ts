@@ -2,7 +2,10 @@ export * as SubagentReport from "./subagent-report.js"
 
 import { Automation } from "@opencode/schema/automation"
 import { Effect, Result } from "effect"
+import type { Bus } from "../../bus.js"
+import type { Database } from "../../database/database.js"
 import type { Job } from "../../job.js"
+import { SessionAdmission } from "../admission.js"
 import { SessionBackground } from "../background.js"
 import { SessionInbox } from "../inbox.js"
 import { SessionMessage } from "../message.js"
@@ -31,6 +34,12 @@ export type Deps = {
    * its parent only what a Job promised (the stop's own cancelled settlement), and a report does not wake it.
    */
   readonly stopped: (sessionID: SessionSchema.ID) => Effect.Effect<boolean>
+  /**
+   * Fork (synthetic-archived): the database the report's admission decides in (SessionAdmission): the parent is woken
+   * inside the admitting transaction, and an archived parent holds the report without a wake. Without it, upstream's
+   * wake after the admission.
+   */
+  readonly db?: Database.Interface["db"]
 }
 
 /** Narrow inbox admission so delivery does not depend on the full lifecycle service shape. */
@@ -39,6 +48,7 @@ export type Inbox = {
     readonly id: SessionMessage.ID
     readonly sessionID: SessionSchema.ID
     readonly item: SessionInbox.Item
+    readonly commit?: Bus.PublishOptions["commit"]
   }) => Effect.Effect<unknown, SessionInbox.LifecycleConflict>
 }
 
@@ -83,11 +93,27 @@ export const make = (deps: Deps) => {
       yield* deps.jobs.completeBackground(report.notificationID)
       return
     }
+    const wakeParent = (id: SessionSchema.ID) =>
+      deps.stopped(id).pipe(Effect.flatMap((held) => (held ? Effect.void : deps.wake(id))))
+    // Whether this delivery's own admission decided (and rang) inside its transaction.
+    let decided = false
+    const db = deps.db
     const delivered = yield* SubagentCompletion.deliver(
       {
-        synthetic: (notice) =>
-          deps.inbox.admit({
-            id: notice.id ?? report.notificationID,
+        synthetic: (notice) => {
+          const id = notice.id ?? report.notificationID
+          const decide =
+            db &&
+            SessionAdmission.commit({
+              db,
+              store: deps.store,
+              sessionID: notice.sessionID,
+              inputID: id,
+              keeps: SessionAdmission.Sources.subagent.keeps,
+              wake: wakeParent,
+            })
+          return deps.inbox.admit({
+            id,
             sessionID: notice.sessionID,
             item: {
               type: "synthetic",
@@ -98,7 +124,9 @@ export const make = (deps: Deps) => {
               }),
               delivery: "steer",
             },
-          }),
+            commit: decide && (() => Effect.sync(() => void (decided = true)).pipe(Effect.andThen(decide()))),
+          })
+        },
       },
       deps.jobs,
       report,
@@ -129,6 +157,19 @@ export const make = (deps: Deps) => {
       ),
     )
     if (!delivered) return
+    if (db) {
+      // A report admitted before (a retried outbox row) rings as upstream's would, under the same rule; one held by an
+      // archived parent rings nothing.
+      if (!decided)
+        yield* SessionAdmission.ring({
+          db,
+          store: deps.store,
+          sessionID: parentID,
+          wake: wakeParent,
+          inputID: report.notificationID,
+        })
+      return
+    }
     const parent = yield* deps.store.get(parentID)
     if (parent && !parent.revert && !(yield* deps.stopped(parentID))) yield* deps.wake(parentID)
   })

@@ -11,6 +11,7 @@ import { Database } from "../database/database.js"
 import { Instance } from "../instance/service.js"
 import { ShellResult } from "../shell/result.js"
 import type { Skill } from "../skill.js"
+import { SessionAdmission } from "./admission.js"
 import { BusyError, CompactionConflictError, InboxConflictError, NotFoundError, PromptConflictError } from "./error.js"
 import { SessionEvent } from "./event.js"
 import { SessionExecution } from "./execution.js"
@@ -27,6 +28,8 @@ import { SessionSynthetic } from "./synthetic.js"
 type PromptRequest = SessionPrompt.Input & {
   id?: SessionMessage.ID
   resume?: boolean
+  /** Fork (synthetic-archived): set for a prompt that is not the user's own (SessionAdmission). */
+  source?: SessionAdmission.Source
 }
 
 /**
@@ -97,7 +100,8 @@ export const make = Effect.fn("Session.make")(function* () {
     const session = yield* get(sessionID)
     // Without a stored agent the Session runs as its Location's default, which its last step records.
     const current =
-      session.agent ?? (yield* store.lastAssistantAfter({ sessionID }).pipe(Effect.orElseSucceed(() => undefined)))?.agent
+      session.agent ??
+      (yield* store.lastAssistantAfter({ sessionID }).pipe(Effect.orElseSucceed(() => undefined)))?.agent
     if (current === input.agent) return
     yield* bus.publish(SessionEvent.AgentSelected, { sessionID, agent: input.agent, previous: session.agent })
   })
@@ -156,6 +160,23 @@ export const make = Effect.fn("Session.make")(function* () {
         Effect.gen(function* () {
           const session = yield* get(sessionID)
           const messageID = input.id ?? SessionMessage.ID.create()
+          // Fork (synthetic-archived): a plugin's prompt is admitted under SessionAdmission's rule, its wake rung in
+          // the admitting transaction. A user's prompt (no source) is upstream's.
+          const source = input.source
+          if (source && session.time.archived && SessionAdmission.keeps(source))
+            return yield* Effect.die(new SessionAdmission.Refused(sessionID, "archived"))
+          let decided = false
+          const resume = input.resume !== false
+          const decide = source
+            ? SessionAdmission.commit({
+                db: database.db,
+                store,
+                sessionID,
+                inputID: messageID,
+                keeps: SessionAdmission.keeps(source),
+                wake: resume ? execution.wake : undefined,
+              })
+            : undefined
           const admitted = yield* Effect.gen(function* () {
             const existing = yield* admission.reconcile({
               id: messageID,
@@ -170,11 +191,13 @@ export const make = Effect.fn("Session.make")(function* () {
               const item = yield* restore(SessionPrompt.prepare({ session, messageID, input }))
               // Commit a staged revert only after preparation succeeds, before admitting new work.
               if (session.revert) yield* SessionRevert.commit(bus, session)
-              return yield* admission.admit({
+              const admit = admission.admit({
                 id: messageID,
                 sessionID: session.id,
                 item,
+                commit: decide && (() => Effect.sync(() => void (decided = true)).pipe(Effect.andThen(decide()))),
               })
+              return yield* source ? SessionAdmission.refused(store, sessionID, admit) : admit
             }).pipe(
               instances.provide(session),
               Effect.provideService(Database.Service, database),
@@ -183,7 +206,16 @@ export const make = Effect.fn("Session.make")(function* () {
           }).pipe(
             Effect.catchTag("SessionInbox.LifecycleConflict", () => new PromptConflictError({ sessionID, messageID })),
           )
-          if (input.resume !== false) yield* execution.wake(sessionID)
+          if (source) {
+            if (resume && !decided)
+              yield* SessionAdmission.ring({
+                db: database.db,
+                store,
+                sessionID,
+                wake: execution.wake,
+                inputID: messageID,
+              })
+          } else if (resume) yield* execution.wake(sessionID)
           // Checkpoint an accepted handoff before observing cancellation. Prompt preparation above stays interruptible.
           if (onAccepted) yield* onAccepted
           return admitted
@@ -205,6 +237,7 @@ export const make = Effect.fn("Session.make")(function* () {
             description: input.command,
             metadata: { source: "shell", state: "error" },
             resume: false,
+            source: "shell",
           }),
         ),
         Effect.orDie,
@@ -227,6 +260,7 @@ export const make = Effect.fn("Session.make")(function* () {
       yield* synthetic(sessionID, {
         ...ShellResult.userNotification(terminal),
         resume: false,
+        source: "shell",
       }).pipe(
         Effect.catchTag("Session.NotFoundError", () => Effect.void),
         Effect.orDie,
@@ -286,8 +320,12 @@ export const make = Effect.fn("Session.make")(function* () {
     yield* execution.resume(sessionID)
   })
   // A stopped Session keeps a notice for its next task instead of running on it (SessionExecution.stop).
-  const admitSynthetic = SessionSynthetic.make(store, admission, (sessionID) =>
-    execution.stopped(sessionID).pipe(Effect.flatMap((held) => (held ? Effect.void : execution.wake(sessionID)))),
+  const admitSynthetic = SessionSynthetic.make(
+    store,
+    admission,
+    (sessionID) =>
+      execution.stopped(sessionID).pipe(Effect.flatMap((held) => (held ? Effect.void : execution.wake(sessionID)))),
+    database.db,
   )
   const synthetic = (sessionID: SessionSchema.ID, input: Omit<Parameters<typeof admitSynthetic>[0], "sessionID">) =>
     admitSynthetic({ ...input, sessionID })

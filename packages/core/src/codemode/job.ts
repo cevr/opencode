@@ -120,7 +120,7 @@ export const make = Effect.fnUntraced(function* (
               ? { ...info, output: yield* truncate([info.output ?? info.error, ...paths].join("\n")) }
               : info,
           )
-          yield* synthetic({ id: notificationID, sessionID, ...message }).pipe(
+          yield* synthetic({ id: notificationID, sessionID, ...message, source: "job" }).pipe(
             Effect.catchTag("Session.NotFoundError", () => Effect.void),
           )
           yield* jobs.completeBackground(notificationID)

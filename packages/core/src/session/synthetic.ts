@@ -1,6 +1,8 @@
 export * as SessionSynthetic from "./synthetic.js"
 
 import { Effect } from "effect"
+import type { Database } from "../database/database.js"
+import { SessionAdmission } from "./admission.js"
 import { NotFoundError, SyntheticConflictError } from "./error.js"
 import { SessionInbox } from "./inbox.js"
 import { SessionMessage } from "./message.js"
@@ -11,6 +13,7 @@ export const make = (
   store: SessionStore.Interface,
   inbox: SessionInbox.Interface,
   wake: (id: SessionSchema.ID) => Effect.Effect<void>,
+  db: Database.Interface["db"],
 ) =>
   Effect.fn("Session.synthetic")(function* (input: {
     sessionID: SessionSchema.ID
@@ -20,15 +23,34 @@ export const make = (
     metadata?: Record<string, unknown>
     delivery?: SessionInbox.Delivery
     resume?: boolean
+    /** Fork (synthetic-archived): who admits it, which decides an archived session's answer (SessionAdmission). */
+    source?: SessionAdmission.Source
+    /** Fork (synthetic-archived): told the admission's decision inside its transaction (the restart sweep's wakes). */
+    decided?: (decision: SessionAdmission.Decision) => Effect.Effect<void>
   }) {
     const sessionID = input.sessionID
-    const get = store
-      .get(sessionID)
-      .pipe(Effect.flatMap((session) => (session ? Effect.succeed(session) : new NotFoundError({ sessionID }))))
-    yield* get
+    const session = yield* store.get(sessionID)
+    if (!session) return yield* new NotFoundError({ sessionID })
+    // Early refusal; the admitting transaction decides again, atomically with the write.
+    const keeps = SessionAdmission.keeps(input.source)
+    if (session.time.archived && keeps) return yield* Effect.die(new SessionAdmission.Refused(sessionID, "archived"))
     const id = input.id ?? SessionMessage.ID.create()
-    const admitted = yield* inbox
-      .admit({
+    const resume = input.resume !== false
+    // Whether this call's own admission decided (its transaction ran the commit hook), whatever it decided.
+    let decided = false
+    const decide = SessionAdmission.commit({
+      db,
+      store,
+      sessionID,
+      inputID: id,
+      keeps,
+      wake: resume ? wake : undefined,
+      decided: input.decided,
+    })
+    const admitted = yield* SessionAdmission.refused(
+      store,
+      sessionID,
+      inbox.admit({
         id,
         sessionID,
         item: {
@@ -40,10 +62,22 @@ export const make = (
             metadata: input.metadata,
           }),
         },
+        // The wake is rung inside the admitting transaction: no archive commits between the two.
+        commit: () => Effect.sync(() => void (decided = true)).pipe(Effect.andThen(decide())),
+      }),
+    ).pipe(
+      Effect.catchTag("SessionInbox.LifecycleConflict", () => new SyntheticConflictError({ sessionID, inputID: id })),
+    )
+    // An input admitted before (a retry of the same ID) was not admitted by this call: wake for it as upstream does,
+    // under the same rule, in its own transaction; a held input (archived when admitted) rings nothing.
+    if (!decided && (resume || input.decided))
+      yield* SessionAdmission.ring({
+        db,
+        store,
+        sessionID,
+        inputID: id,
+        wake: resume ? wake : undefined,
+        decided: input.decided,
       })
-      .pipe(
-        Effect.catchTag("SessionInbox.LifecycleConflict", () => new SyntheticConflictError({ sessionID, inputID: id })),
-      )
-    if (input.resume !== false && !(yield* get).revert) yield* wake(sessionID)
     return admitted
   }, Effect.uninterruptible)

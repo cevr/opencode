@@ -127,7 +127,7 @@ export const layer = Layer.effect(
     // A stopped Session keeps a notice for its next task instead of running on it (stop).
     const wakeUnlessStopped = (sessionID: SessionSchema.ID) =>
       stopped(sessionID).pipe(Effect.flatMap((held) => (held ? Effect.void : wake(sessionID))))
-    const background = CodeModeJob.make(jobs, SessionSynthetic.make(store, inbox, wakeUnlessStopped), scope)
+    const background = CodeModeJob.make(jobs, SessionSynthetic.make(store, inbox, wakeUnlessStopped, db), scope)
     const subagentReport = SubagentReport.make({
       store,
       jobs,
@@ -137,6 +137,7 @@ export const layer = Layer.effect(
         holder.coordinator ? holder.coordinator.draining : Effect.succeed(new Set<SessionSchema.ID>()),
       ),
       stopped,
+      db,
     })
     // Sessions a `recover` asked to run: their next run's first drain checks the stop mark before running the turn.
     const recovering = new Set<SessionSchema.ID>()

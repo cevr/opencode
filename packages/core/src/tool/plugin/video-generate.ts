@@ -158,6 +158,7 @@ export const track = Effect.fnUntraced(function* (input: {
     yield* input.sessions.synthetic({
       id: input.notificationID,
       sessionID: input.sessionID,
+      source: "media",
       description: "Video generation",
       text: notice({
         id: input.videoID,

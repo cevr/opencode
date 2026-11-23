@@ -2,6 +2,7 @@ import { Instance } from "@opencode/core/instance/service"
 import { Session } from "@opencode/core/session"
 import { SessionStats } from "@opencode/core/session/stats"
 import { SessionTitle } from "@opencode/core/session/title"
+import { SessionAdmission } from "@opencode/core/session/admission"
 import { SessionTransfer } from "@opencode/core/session/transfer"
 import { InstructionEntry } from "@opencode/core/session/instruction-entry"
 import { Form } from "@opencode/core/form"
@@ -391,8 +392,16 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
               metadata: ctx.payload.metadata,
               delivery: ctx.payload.delivery,
               resume: ctx.payload.resume,
+              source: "http",
             })
             .pipe(
+              // Fork (synthetic-archived): an archived session refuses a client's message; the client keeps it.
+              SessionAdmission.typed,
+              Effect.catchTag("Session.ArchivedError", (error) =>
+                Effect.fail(
+                  new ConflictError({ message: `Session is archived: ${error.sessionID}`, resource: "archived" }),
+                ),
+              ),
               Effect.catchTag("Session.NotFoundError", missingSession),
               Effect.catchTag("Session.SyntheticConflictError", (error) =>
                 Effect.fail(

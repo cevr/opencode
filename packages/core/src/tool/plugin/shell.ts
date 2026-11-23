@@ -404,6 +404,7 @@ const notify = Effect.fnUntraced(function* (
     .synthetic({
       ...(info.notificationID ? { id: info.notificationID } : {}),
       sessionID: input.sessionID,
+      source: "shell",
       description: input.command,
       ...ShellResult.notification({
         jobID: input.id,

@@ -211,6 +211,7 @@ export const Plugin = {
         yield* sessions.synthetic({
           id: input.notificationID,
           sessionID: input.sessionID,
+          source: "media",
           description: "Image generation",
           text: ImageNotice.text({
             id: input.id,

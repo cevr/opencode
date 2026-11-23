@@ -27,6 +27,7 @@ import { ImageNotice } from "../../image/notice.js"
 import { ShellResult } from "../../shell/result.js"
 import { SubagentCompletion } from "../subagent-completion.js"
 import { SubagentJob } from "../subagent-job.js"
+import { SessionAdmission } from "../admission.js"
 import { RestartWake } from "./restart-wake.js"
 
 const CONTINUE_AFTER_SERVER_RESTART =
@@ -96,10 +97,11 @@ export const layer = (options?: Options) =>
       const scope = yield* Effect.scope
       const maxAttempts = options?.maxAttempts ?? DEFAULT_MAX_ATTEMPTS
 
-      const wake = Effect.fnUntraced(function* (sessionID: SessionSchema.ID) {
-        const owner = yield* store.get(sessionID)
-        if (owner && !owner.revert && !(yield* execution.stopped(sessionID))) yield* execution.wake(sessionID)
-      })
+      // Fork (synthetic-archived): the owner is read and woken in one write transaction (SessionAdmission.ring), so an
+      // archive, a delete or a revert lands before the wake (none) or after it.
+      const wakeLive = (id: SessionSchema.ID) =>
+        execution.stopped(id).pipe(Effect.flatMap((held) => (held ? Effect.void : execution.wake(id))))
+      const wake = (sessionID: SessionSchema.ID) => SessionAdmission.ring({ db, store, sessionID, wake: wakeLive })
 
       const prepareResume = Effect.fnUntraced(function* (sessionID: SessionSchema.ID) {
         // Durable before the resume runs, so a crash inside the resumed turn is
@@ -196,6 +198,7 @@ export const layer = (options?: Options) =>
             // Restart notices must not revive idle owners of long-lived background tools.
             // Interrupted executions resume separately after their notices are admitted.
             resume: false,
+            source: "restart",
           })
           .pipe(
             Effect.as(true),
@@ -469,6 +472,7 @@ export const layer = (options?: Options) =>
               state.defer = false
               yield* Effect.forEach(wakes, (sessionID) => Effect.ignoreCause(wake(sessionID)), { discard: true })
               yield* Effect.ignoreCause(RestartWake.wakeOwed({ kv, db, store, execution, skip: claimed, scope }))
+              yield* Effect.ignoreCause(SessionAdmission.sweep(db))
               suspended.clear()
             }),
           )
@@ -476,15 +480,20 @@ export const layer = (options?: Options) =>
           // child cannot settle mid-sweep and wake its parent past that budget.
           const notices: Notices = {
             synthetic: (input) =>
-              sessions.synthetic({ ...input, resume: false }).pipe(
-                Effect.tap(() => {
-                  if (suspended.has(input.sessionID)) return Effect.void
-                  if (!state.defer) return wake(input.sessionID)
-                  wakes.add(input.sessionID)
-                  return Effect.void
-                }),
-                Effect.uninterruptible,
-              ),
+              sessions
+                .synthetic({
+                  ...input,
+                  resume: false,
+                  source: "restart",
+                  // Fork (synthetic-archived): decided in the admitting transaction; a notice held by an archived
+                  // owner owes no wake, now or after an unarchive.
+                  decided: (decision) => {
+                    if (decision !== "live" || suspended.has(input.sessionID)) return Effect.void
+                    if (!state.defer) return wakeLive(input.sessionID)
+                    return Effect.sync(() => void wakes.add(input.sessionID))
+                  },
+                })
+                .pipe(Effect.uninterruptible),
           }
           const recoverable = Effect.fnUntraced(function* (background: Job.Background) {
             return (yield* jobs.get(background.id))?.status !== "running"
