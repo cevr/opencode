@@ -3,11 +3,11 @@
 // own, one released hands it to its parent. It is the only in-memory effect path inside a transaction: nothing is done
 // in memory there that a rollback would have to undo, so no driver needs a rollback callback.
 import { describe, expect } from "bun:test"
-import { Data, Effect } from "effect"
+import { Data, Effect, Exit } from "effect"
 import { Database } from "@opencode/core/database/database"
-import { afterCommit } from "@opencode/core/database/drizzle/effect-sqlite/session"
+import { afterCommit, managesTransactionsNatively } from "@opencode/core/database/drizzle/effect-sqlite/session"
 import { testEffect } from "./lib/effect"
-import { databaseLayer } from "./fixture/command-selection"
+import { databaseLayer, driver } from "./fixture/test-database"
 
 const it = testEffect(databaseLayer())
 
@@ -20,6 +20,14 @@ const recorder = () => {
 }
 
 describe("a transaction's after-commit work", () => {
+  it.effect(`runs on the driver OPENCODE_TEST_SQLITE names (${driver})`, () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      // Durable Object SQLite manages its transactions itself and has no rollback callback.
+      expect(managesTransactionsNatively(db.$client)).toBe(driver === "durable-object")
+    }),
+  )
+
   it.effect("committed: runs after it, in order", () =>
     Effect.gen(function* () {
       const { db } = yield* Database.Service
@@ -55,26 +63,30 @@ describe("a transaction's after-commit work", () => {
     }),
   )
 
+  // Durable Object SQLite has no savepoints: the nested failure dooms the outer transaction (database-drivers.test.ts).
   it.effect("a savepoint rolled back inside a committed transaction: its work dropped, the outer's runs", () =>
     Effect.gen(function* () {
       const { db } = yield* Database.Service
       const { log, note } = recorder()
-      yield* db.transaction(
-        () =>
-          Effect.gen(function* () {
-            yield* afterCommit(db.$client, note("outer"))
-            yield* db
-              .transaction(() =>
-                Effect.gen(function* () {
-                  yield* afterCommit(db.$client, note("inner"))
-                  return yield* new Abort()
-                }),
-              )
-              .pipe(Effect.ignore)
-          }),
-        { behavior: "immediate" },
-      )
-      expect(log).toEqual(["outer"])
+      const exit = yield* db
+        .transaction(
+          () =>
+            Effect.gen(function* () {
+              yield* afterCommit(db.$client, note("outer"))
+              yield* db
+                .transaction(() =>
+                  Effect.gen(function* () {
+                    yield* afterCommit(db.$client, note("inner"))
+                    return yield* new Abort()
+                  }),
+                )
+                .pipe(Effect.ignore)
+            }),
+          { behavior: "immediate" },
+        )
+        .pipe(Effect.exit)
+      expect(Exit.isSuccess(exit)).toBe(driver === "bun:sqlite")
+      expect(log).toEqual(driver === "bun:sqlite" ? ["outer"] : [])
     }),
   )
 

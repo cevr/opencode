@@ -32,8 +32,9 @@ describe("the admitting transaction's in-memory state", () => {
       plan: [],
       inbox: [],
       synthetic: [],
-      // The after-commit levels themselves, deleted when the outermost level closes.
-      drizzle: ["afterCommitLevels"],
+      // Transaction-local: the after-commit levels and a native transaction's doom, deleted when the outermost level
+      // closes, either way.
+      drizzle: ["afterCommitLevels", "doomed"],
     })
   })
 

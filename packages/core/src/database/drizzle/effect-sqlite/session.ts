@@ -1,10 +1,11 @@
 /* oxlint-disable */
+import * as Cause from "effect/Cause"
 import * as Context from "effect/Context"
 import * as Effect from "effect/Effect"
 import * as Exit from "effect/Exit"
 import * as Scope from "effect/Scope"
 import type { SqlClient } from "effect/sql/SqlClient"
-import type { SqlError } from "effect/sql/SqlError"
+import { SqlError, UnknownError } from "effect/sql/SqlError"
 import { StorageFailure } from "../../storage-failure.js"
 import type { EffectCacheShape } from "drizzle-orm/cache/core/cache-effect"
 import type { WithCacheConfig } from "drizzle-orm/cache/core/types"
@@ -44,9 +45,26 @@ export function managesTransactionsNatively(client: SqlClient): client is Native
 }
 
 // Fork feature (synthetic-archived): work to run once the outermost transaction of a connection commits (the bus's
-// routing of the events it wrote), as effect/sql's `afterCommit` does for transactions it opens itself. One level per
+// routing of the events it wrote), on every driver: effect/sql's own `afterCommit` belongs to the transactions its
+// client opens, which a natively managed client (Durable Object SQLite) replaces, so it would run the work at once. One level per
 // transaction or savepoint: a released savepoint hands its work to its parent, a rolled-back one drops it.
 const afterCommitLevels = new WeakMap<object, Array<Array<Effect.Effect<void>>>>()
+// A natively managed connection whose nested transaction failed, with the error its outermost transaction now fails with
+// (no savepoints: withNativeTransaction).
+const doomed = new WeakMap<object, SqlError>()
+
+/** The error a doomed native transaction fails with, naming the nested failure that doomed it. */
+export const nestedTransactionFailed = (cause: Cause.Cause<unknown>) => {
+  const inner = Cause.squash(cause)
+  const named = inner instanceof Error ? inner.message || inner.name : String(inner)
+  return new SqlError({
+    reason: new UnknownError({
+      cause: inner,
+      message: `NestedTransactionFailed: a nested transaction failed (${named}), and this storage cannot roll back only its part`,
+      operation: "transaction",
+    }),
+  })
+}
 
 function openLevel(connection: object, id: number) {
   if (id === 0) afterCommitLevels.set(connection, [[]])
@@ -71,7 +89,6 @@ function closeLevel(connection: object, id: number, committed: boolean): Array<E
  * when that transaction, or the savepoint it was registered in, rolls back.
  */
 export function afterCommit(client: SqlClient, effect: Effect.Effect<void>): Effect.Effect<void> {
-  if (managesTransactionsNatively(client)) return client.afterCommit(effect)
   return Effect.flatMap(Effect.serviceOption(client.transactionService), (option) => {
     const levels = option._tag === "Some" ? afterCommitLevels.get(option.value[0]) : undefined
     const level = levels?.at(-1)
@@ -158,6 +175,13 @@ export class EffectSQLiteSession<TRelations extends AnyRelations> extends SQLite
   }
 
   private execute(query: Query, params: unknown[], method: SQLiteExecuteMethod | "values") {
+    // Fork (synthetic-archived): a doomed native transaction refuses every later statement.
+    if (managesTransactionsNatively(this.client))
+      return this.doomedStatement().pipe(Effect.andThen(this.executeStatement(query, params, method)))
+    return this.executeStatement(query, params, method)
+  }
+
+  private executeStatement(query: Query, params: unknown[], method: SQLiteExecuteMethod | "values") {
     const statement = this.client.unsafe(query.sql, params)
     if (method === "values") return statement.values.pipe(Effect.withTracerEnabled(false))
     if (method === "get")
@@ -176,8 +200,73 @@ export class EffectSQLiteSession<TRelations extends AnyRelations> extends SQLite
     return connection.executeUnprepared(query, [], undefined).pipe(Effect.asVoid)
   }
 
+  // Fork (synthetic-archived): a natively managed client's transaction, with the same after-commit levels as the
+  // statement path. Durable Object SQLite has no savepoints and rejects a nested transaction, so one opened inside
+  // another joins it. Its after-commit work is dropped if it fails, and the outer transaction is doomed: none of it can
+  // be undone alone, so every later statement, nested transaction and the commit fail with `NestedTransactionFailed`,
+  // even if the caller caught the inner failure, and no after-commit work runs.
+  private withNativeTransaction<A, E, R>(client: NativeTransactionSqlClient, effect: Effect.Effect<A, E, R>) {
+    return Effect.withFiber<A, E | SqlError, R>((fiber) => {
+      const outer = Context.getOption(fiber.context, client.transactionService)
+      if (outer._tag === "Some") {
+        const [connection, parent] = outer.value
+        const id = parent + 1
+        const failed = doomed.get(connection)
+        if (failed) return Effect.fail(failed)
+        return Effect.sync(() => openLevel(connection, id)).pipe(
+          Effect.andThen(
+            Effect.provideContext(effect, Context.add(fiber.context, client.transactionService, [connection, id])),
+          ),
+          Effect.onExit((exit) =>
+            Effect.sync(() => {
+              closeLevel(connection, id, Exit.isSuccess(exit))
+              if (Exit.isFailure(exit) && !doomed.has(connection))
+                doomed.set(connection, nestedTransactionFailed(exit.cause))
+            }),
+          ),
+        )
+      }
+      const after: Array<Effect.Effect<void>> = []
+      return client
+        .withTransaction(
+          Effect.withFiber<A, E | SqlError, R>((inner) => {
+            // The connection the client's own transaction provides (always present inside it).
+            const opened = Context.getOption(inner.context, client.transactionService)
+            if (opened._tag === "None") return effect
+            const [connection] = opened.value
+            return Effect.sync(() => openLevel(connection, 0)).pipe(
+              Effect.andThen(effect),
+              Effect.flatMap((value) => {
+                const failed = doomed.get(connection)
+                return failed ? Effect.fail(failed) : Effect.succeed(value)
+              }),
+              Effect.onExit((exit) =>
+                Effect.sync(() => {
+                  after.push(...closeLevel(connection, 0, Exit.isSuccess(exit)))
+                  doomed.delete(connection)
+                }),
+              ),
+            )
+          }),
+        )
+        .pipe(
+          // Only once the storage committed: its own commit can still fail after the body succeeded.
+          Effect.tap(() => Effect.forEach(after.splice(0), (work) => Effect.ignoreCause(work), { discard: true })),
+        )
+    })
+  }
+
+  /** Fork (synthetic-archived): a doomed native transaction's statements fail (withNativeTransaction). */
+  private doomedStatement(): Effect.Effect<void, SqlError> {
+    if (!managesTransactionsNatively(this.client)) return Effect.void
+    return Effect.flatMap(Effect.serviceOption(this.client.transactionService), (option) => {
+      const failed = option._tag === "Some" ? doomed.get(option.value[0]) : undefined
+      return failed ? Effect.fail(failed) : Effect.void
+    })
+  }
+
   private withTransaction<A, E, R>(effect: Effect.Effect<A, E, R>, config: SQLiteTransactionConfig | undefined) {
-    if (managesTransactionsNatively(this.client)) return this.client.withTransaction(effect)
+    if (managesTransactionsNatively(this.client)) return this.withNativeTransaction(this.client, effect)
     return Effect.uninterruptibleMask((restore) =>
       Effect.withFiber<A, E | SqlError, R>((fiber) => {
         const services = fiber.context
