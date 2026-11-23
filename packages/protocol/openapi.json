@@ -5724,16 +5724,6 @@
               }
             }
           },
-          "403": {
-            "description": "ForbiddenError",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ForbiddenErrorEncoded"
-                }
-              }
-            }
-          },
           "404": {
             "description": "ProviderNotFoundError | ModelNotFoundError | LocationNotFoundError",
             "content": {
@@ -5785,7 +5775,7 @@
             }
           }
         },
-        "description": "Submit a video job to a video model using the server's base configuration and return its ID once the provider accepted it. The server polls the job and stores the finished videos as blobs; read the job with GET /api/experimental/generate/video/:id and the video with GET /api/experimental/blob/:id. Behind the video_generate flag. Experimental: may change without compatibility guarantees.",
+        "description": "Submit a video job to a video model using the server's base configuration and return its ID once the provider accepted it. The server polls the job and stores the finished videos as blobs; read the job with GET /api/experimental/generate/video/:id and the video with GET /api/experimental/blob/:id. Experimental: may change without compatibility guarantees.",
         "summary": "Create a video generation",
         "requestBody": {
           "content": {
@@ -5845,16 +5835,6 @@
               }
             }
           },
-          "403": {
-            "description": "ForbiddenError",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ForbiddenErrorEncoded"
-                }
-              }
-            }
-          },
           "404": {
             "description": "VideoNotFoundError | LocationNotFoundError",
             "content": {
@@ -5873,7 +5853,7 @@
             }
           }
         },
-        "description": "Read a video job: running, completed with its videos' blobs, or error with a reason. Jobs survive a server restart, which resumes polling running ones. A job is not found 24 hours after it finished, or once none of its blobs remain. Behind the video_generate flag. Experimental: may change without compatibility guarantees.",
+        "description": "Read a video job: running, completed with its videos' blobs, or error with a reason. Jobs survive a server restart, which resumes polling running ones. A job is not found 24 hours after it finished, or once none of its blobs remain. Experimental: may change without compatibility guarantees.",
         "summary": "Read a video generation"
       }
     },
@@ -18001,6 +17981,27 @@
               "artifacts": {
                 "type": "boolean"
               },
+              "console_watches": {
+                "type": "boolean"
+              },
+              "recommended_api": {
+                "type": "boolean"
+              },
+              "full_codemode": {
+                "type": "boolean"
+              },
+              "machines": {
+                "type": "boolean"
+              },
+              "home_memory": {
+                "type": "boolean"
+              },
+              "project_overlay": {
+                "type": "boolean"
+              },
+              "sqlite_fts": {
+                "type": "boolean"
+              },
               "video_generate": {
                 "anyOf": [
                   {
@@ -18040,27 +18041,6 @@
                     "additionalProperties": false
                   }
                 ]
-              },
-              "console_watches": {
-                "type": "boolean"
-              },
-              "recommended_api": {
-                "type": "boolean"
-              },
-              "full_codemode": {
-                "type": "boolean"
-              },
-              "machines": {
-                "type": "boolean"
-              },
-              "home_memory": {
-                "type": "boolean"
-              },
-              "project_overlay": {
-                "type": "boolean"
-              },
-              "sqlite_fts": {
-                "type": "boolean"
               },
               "part_rows": {
                 "type": "boolean"
