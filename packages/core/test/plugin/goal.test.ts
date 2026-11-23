@@ -1,6 +1,6 @@
 import { describe, expect } from "bun:test"
 import { Deferred, Effect, Layer, Option, Schedule, Schema, Stream } from "effect"
-import { AIError, InvalidRequestError, LanguageModel, type LLMRequest } from "@opencode/ai/effect"
+import { AIError, InvalidRequestError, LanguageModel, LLMEvent, type LLMRequest } from "@opencode/ai/effect"
 import { OpenAIChat } from "@opencode/ai/protocols/openai-chat"
 import { TestLLM } from "@opencode/ai/testing"
 import { Agent } from "@opencode/core/agent"
@@ -328,6 +328,113 @@ describe("goal plugin", () => {
           (message) => message.type === "synthetic" && message.text.includes("Keep working toward it."),
         ),
       ).toBe(false)
+    }),
+  )
+
+  it.live("keeps the reminder in place after a compaction so each step extends the request before it", () =>
+    Effect.gen(function* () {
+      const session = yield* project()
+      const sessions = yield* Session.Service
+      const llm = yield* TestLLM.Test
+      const summarize = (request: LLMRequest) => JSON.stringify(request.messages.at(-1)).includes("summar")
+      const calls = { remaining: 0 }
+      yield* serve((request) => {
+        if (summarize(request)) return TestLLM.text("## Objective\n- Make CI green", "summary")
+        if (isReview(request)) return TestLLM.text('{"verdict":"paused","reason":"Stop here."}', "review")
+        if (calls.remaining === 0) return TestLLM.text("On it.", "work")
+        calls.remaining--
+        return TestLLM.toolCall(`call-${calls.remaining}`, "missing_tool", {})
+      })
+      yield* sessions.prompt({ sessionID: session.id, text: "Look at the failing CI job" })
+      yield* sessions.wait(session.id)
+      yield* setGoal(session.id, {
+        id: "goal-compacted",
+        objective: "Make CI green",
+        status: "active",
+        rounds: 2,
+        maxRounds: 50,
+        boot: "an-earlier-process",
+        updatedAt: 0,
+      })
+      yield* sessions.compact({ sessionID: session.id })
+      yield* sessions.wait(session.id)
+
+      const before = (yield* llm.requests()).length
+      calls.remaining = 3
+      yield* sessions.prompt({ sessionID: session.id, text: "Carry on" })
+      yield* sessions.wait(session.id)
+      const steps = (yield* llm.requests())
+        .slice(before)
+        .filter((request) => !summarize(request) && !isReview(request))
+        .map((request) => request.messages.map((message) => JSON.stringify([message.role, message.content])))
+
+      expect(steps).toHaveLength(4)
+      // The provider caches each request up to its last message, which the next step can only reuse as its prefix.
+      steps
+        .slice(1)
+        .forEach((messages, index) => expect(messages.slice(0, steps[index]!.length)).toEqual(steps[index]!))
+      steps.forEach((messages) =>
+        expect(messages.filter((message) => message.includes("Keep working toward it."))).toHaveLength(1),
+      )
+    }),
+  )
+
+  it.live("preserves the active goal reminder in the cached prefix of a checkpoint update", () =>
+    Effect.gen(function* () {
+      const session = yield* project()
+      const sessions = yield* Session.Service
+      const llm = yield* TestLLM.Test
+      const reminder = "Keep working toward it."
+      const isSummary = (request: LLMRequest) =>
+        /summarize the conversation above|Update the existing checkpoint/.test(JSON.stringify(request.messages.at(-1)))
+      const report = "neutral transcript evidence.\n".repeat(1400)
+      let calls = 0
+      yield* serve((request) => {
+        if (isSummary(request)) {
+          return TestLLM.text("## Objective\n- Produce a neutral report", "summary")
+        }
+        if (calls > 0 && JSON.stringify(request.messages).includes(reminder) && !isReview(request)) {
+          const step = calls--
+          const tokens = step === 1 ? 174_000 : 20_000
+          return TestLLM.complete(
+            { reason: { normalized: "tool-calls" }, usage: { inputTokens: tokens, nonCachedInputTokens: tokens } },
+            LLMEvent.toolCall({ id: `counting-call-${step}`, name: "missing_tool", input: {} }),
+          )
+        }
+        return TestLLM.text("Noted.", "work")
+      })
+      yield* sessions.prompt({ sessionID: session.id, text: "Prepare a report.\n" + report })
+      yield* sessions.wait(session.id)
+      yield* sessions.compact({ sessionID: session.id })
+      yield* sessions.wait(session.id)
+      yield* setGoal(session.id, {
+        id: "goal-second-compact",
+        objective: "Produce a neutral report",
+        status: "active",
+        rounds: 2,
+        maxRounds: 50,
+        boot: "an-earlier-process",
+        updatedAt: 0,
+      })
+      const before = (yield* llm.requests()).length
+      calls = 3
+      yield* sessions.prompt({ sessionID: session.id, text: "Add this evidence.\n" + report })
+      yield* sessions.wait(session.id)
+      const requests = (yield* llm.requests()).slice(before)
+      const summaryIndex = requests.findIndex(isSummary)
+      const lastTurn = requests[summaryIndex - 1]!
+      const summary = requests[summaryIndex]!
+      expect(calls).toBe(0)
+      expect(JSON.stringify(lastTurn.messages[1])).toContain(reminder)
+      expect(JSON.stringify(summary.messages.at(-1))).toContain("Update the existing checkpoint")
+      const serialize = (request: LLMRequest) =>
+        request.messages.map((message) => JSON.stringify([message.role, message.content]))
+      expect(summary.system).toEqual(lastTurn.system)
+      expect(summary.tools).toEqual(lastTurn.tools)
+      // Compare positions separately: a mismatch should not dump the report text into the test log.
+      const prior = serialize(lastTurn)
+      const current = serialize(summary)
+      expect(current.findIndex((message, index) => message !== prior[index])).toBe(prior.length)
     }),
   )
 

@@ -2,7 +2,7 @@ export * as GoalPlugin from "./goal.js"
 
 import { isContextOverflowFailure, Message } from "@opencode/ai/effect"
 import { define } from "@opencode/plugin/effect/plugin"
-import type { SessionIdleBackground } from "@opencode/plugin/effect/session"
+import type { SessionIdleBackground, SessionRequest } from "@opencode/plugin/effect/session"
 import { Goal } from "@opencode/schema/goal"
 import { Session } from "@opencode/schema/session"
 import { isExactRootFallback } from "@opencode/util/session-title-fallback"
@@ -221,20 +221,24 @@ export const Plugin = define({
       ),
     )
 
-    // Until the next continuation restates the objective, a compacted history may not show it. Add it near the tail,
-    // without persisting it, so the cached prefix stays warm and the reminder stops once a continuation lands.
-    yield* ctx.session.hook("context", (event) =>
+    // A compacted history may omit the objective until the next continuation. Keep the reminder after the first
+    // message (normally the checkpoint), in both primary and summary requests so both extend the cached prefix.
+    const remind = (event: SessionRequest) =>
       read(event.sessionID).pipe(
         Effect.map((goal) => {
           if (goal?.status !== "active") return
           const objective = objectiveBlock(goal.objective)
           if (event.messages.some((message) => message.role === "user" && textOf(message).includes(objective))) return
-          const at = event.messages.at(-1)?.role === "user" ? event.messages.length - 1 : event.messages.length
-          event.messages.splice(at, 0, Message.user(render(REMINDER, { objective: escape(goal.objective) })))
+          event.messages.splice(
+            Math.min(1, event.messages.length),
+            0,
+            Message.user(render(REMINDER, { objective: escape(goal.objective) })),
+          )
         }),
         Effect.catchCause((cause) => Effect.logWarning("failed to remind the model of the goal", { cause })),
-      ),
-    )
+      )
+    yield* ctx.session.hook("context", remind)
+    yield* ctx.session.hook("compaction", remind)
 
     // An active goal only sits idle while it waits on background work, whose notice wakes the Session. If nothing has
     // run in the Session or below it for WAIT_LIMIT (a hung subagent, a shell that never exits, a missed wake), pause
