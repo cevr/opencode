@@ -50,6 +50,7 @@ import { SessionInbox } from "./session/inbox.js"
 import { InstructionState } from "./session/instruction-state.js"
 import { SessionGenerate } from "./session/generate.js"
 import { SessionCommand } from "./session/command.js"
+import { SessionAdmission } from "./session/admission.js"
 import {
   SessionMove,
   DestinationNotFoundError,
@@ -523,6 +524,10 @@ const layer = Layer.effect(
       }),
       command: Effect.fn("Session.command")(function* (input) {
         const session = yield* result.get(input.sessionID)
+        // Fork (synthetic-archived): a command no user typed (a plugin's, an automation's) into an archived session is refused
+        // before its execute runs anything (SessionAdmission: the user's own command carries its mark).
+        if (session.time.archived && (yield* SessionAdmission.pluginSource(input.sessionID)) !== undefined)
+          return yield* Effect.die(new SessionAdmission.Refused(input.sessionID, "archived"))
         return yield* SessionCommand.execute({ ...input, session }).pipe(
           Effect.provideService(Instance.Service, instances),
         )

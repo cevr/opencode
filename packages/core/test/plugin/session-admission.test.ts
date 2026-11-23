@@ -140,9 +140,10 @@ describe("a plugin's input and the user's own command", () => {
       expect(t.seen.get("probe:plain")).toBe("Session.ArchivedError")
 
       // A command a plugin runs (ctx.session.command: the built-in /init, which prompts its session) from inside the
-      // user's own command does not inherit the mark: its prompt is refused, and the plugin is told.
+      // user's own command does not inherit the mark: the command is refused before its execute runs anything, and the
+      // plugin is told.
       yield* SessionAdmission.userCommand(t.session.id)(t.run("nested", t.session.id))
-      expect(t.seen.get("nested")).toStartWith("Command.ExecutionError")
+      expect(t.seen.get("nested")).toBe("Session.ArchivedError")
       expect(yield* t.rows).toBe(1)
       // The same /init, typed by the user, is admitted.
       const typed = yield* SessionAdmission.userCommand(t.session.id)(

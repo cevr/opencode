@@ -601,7 +601,8 @@ export const make = Effect.fn("PluginHost.make")(function* (plugin: Pick<Interfa
           Effect.flatMap((source) => SessionAdmission.typed(sessions.prompt({ ...input, source }))),
         ),
       generate: sessions.generate,
-      command: (input) => SessionAdmission.notUserCommand(sessions.command({ ...input, command: input.name })),
+      command: (input) =>
+        SessionAdmission.typed(SessionAdmission.notUserCommand(sessions.command({ ...input, command: input.name }))),
       compact: sessions.compact,
       update: Effect.fn(function* (input) {
         const info = yield* sessions.get(input.sessionID)
