@@ -2,7 +2,7 @@ export * as GoalPlugin from "./goal.js"
 
 import { isContextOverflowFailure, Message } from "@opencode/ai/effect"
 import { define } from "@opencode/plugin/effect/plugin"
-import type { SessionIdleBackground } from "@opencode/plugin/effect/session"
+import type { SessionIdleBackground, SessionRequest } from "@opencode/plugin/effect/session"
 import { Goal } from "@opencode/schema/goal"
 import { Session } from "@opencode/schema/session"
 import { isExactRootFallback } from "@opencode/util/session-title-fallback"
@@ -221,10 +221,9 @@ export const Plugin = define({
       ),
     )
 
-    // Until the next continuation restates the objective, a compacted history may not show it. Add it right after the
-    // first message, the compaction summary, without persisting it. The last message carries the conversation's cache
-    // point, so a reminder at the tail would move every step and no request would reuse the previous one's cache.
-    yield* ctx.session.hook("context", (event) =>
+    // A compacted history may omit the objective until the next continuation. Keep the reminder after the first
+    // message (normally the checkpoint), in both primary and summary requests so both extend the cached prefix.
+    const remind = (event: SessionRequest) =>
       read(event.sessionID).pipe(
         Effect.map((goal) => {
           if (goal?.status !== "active") return
@@ -237,8 +236,9 @@ export const Plugin = define({
           )
         }),
         Effect.catchCause((cause) => Effect.logWarning("failed to remind the model of the goal", { cause })),
-      ),
-    )
+      )
+    yield* ctx.session.hook("context", remind)
+    yield* ctx.session.hook("compaction", remind)
 
     // An active goal only sits idle while it waits on background work, whose notice wakes the Session. If nothing has
     // run in the Session or below it for WAIT_LIMIT (a hung subagent, a shell that never exits, a missed wake), pause
