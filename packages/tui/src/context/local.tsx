@@ -613,7 +613,13 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             batch(() => {
               setPreferences("speed", modelPreferenceKey(standard), value)
               void repository.saveSpeed(standard, value).catch(() => undefined)
-              if (route.data.type === "session") return setSessionDraft(route.data.sessionID, { ...m, modelID: target })
+              // Choosing a speed is a pick, so the session's selection stops being a client default.
+              if (route.data.type === "session")
+                return setSessionDraft(route.data.sessionID, {
+                  providerID: m.providerID,
+                  modelID: target,
+                  variant: m.variant,
+                })
               // A new session starts on the model, which runs at the speed just saved for it.
               const current = agent.current()
               if (current) setSelectionState("newSessionModelByLocationAgent", locationAgentKey(current.id), standard)
