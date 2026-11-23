@@ -485,8 +485,8 @@ export const layer = (options?: Options) =>
                   ...input,
                   resume: false,
                   source: "restart",
-                  // Fork (synthetic-archived): decided in the admitting transaction; a notice held by an archived
-                  // owner owes no wake, now or after an unarchive.
+                  // Fork (synthetic-archived): decided by the ring once the notice committed; a notice held by an
+                  // archived owner owes no wake, now or after an unarchive.
                   decided: (decision) => {
                     if (decision !== "live" || suspended.has(input.sessionID)) return Effect.void
                     if (!state.defer) return wakeLive(input.sessionID)

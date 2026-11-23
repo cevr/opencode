@@ -1,7 +1,7 @@
 // Fork feature (synthetic-archived): the edges of deciding an admission and its wake in one transaction
 // (session/admission.ts), on the real Session, coordinator, inbox and KV, with a drain that records what it takes.
 import { describe, expect } from "bun:test"
-import { Effect, Exit } from "effect"
+import { Cause, Effect, Exit } from "effect"
 import { Bus } from "@opencode/core/bus"
 import { Database } from "@opencode/core/database/database"
 import { Project } from "@opencode/core/project"
@@ -120,35 +120,60 @@ describe("an HTTP client's message to an archived session (ACP's turn context)",
 })
 
 describe("SessionAdmission's transaction", () => {
-  it.live("a wake rung inside a transaction that then rolls back starts a drain that finds no input", () =>
+  it.live("an admission whose transaction rolls back rings nothing: no turn, no marker, no row", () =>
     Effect.gen(function* () {
       const sessions = yield* Session.Service
       const execution = yield* SessionExecution.Service
+      const store = yield* SessionStore.Service
       const { db } = yield* Database.Service
       const drains = yield* recording
       const sessionID = yield* seed("ses_rollback")
       const inputID = SessionMessage.ID.create()
-      const decisions: SessionAdmission.Decision[] = []
-      // The decision is told after the wake was rung, inside the transaction; failing there rolls the admission back.
-      const exit = yield* sessions
-        .synthetic({
-          sessionID,
-          id: inputID,
-          text: "a notice",
-          source: "shell",
-          decided: (decision) =>
-            Effect.sync(() => decisions.push(decision)).pipe(Effect.andThen(Effect.die("rollback"))),
-        })
+      // The notice's row is written, then a later step of the same transaction fails: everything rolls back.
+      const exit = yield* db
+        .transaction(() =>
+          sessions
+            .synthetic({ sessionID, id: inputID, text: "a notice", source: "shell" })
+            .pipe(Effect.andThen(Effect.die("rollback"))),
+        )
         .pipe(Effect.exit)
+      expect(Exit.isFailure(exit)).toBe(true)
+      // The ring its caller owes it, after the transaction ended: it re-reads the row, finds none, rings nothing.
+      const decisions: SessionAdmission.Decision[] = []
+      yield* SessionAdmission.ring({
+        db,
+        store,
+        sessionID,
+        inputID,
+        wake: execution.wake,
+        decided: (decision) => Effect.sync(() => void decisions.push(decision)),
+      })
       yield* Effect.sleep(10)
       yield* execution.awaitIdle(sessionID)
-      expect(decisions).toEqual(["live"])
-      expect(Exit.isFailure(exit)).toBe(true)
+      expect(decisions).toEqual(["gone"])
       expect(yield* SessionInbox.find(db, inputID)).toBeUndefined()
-      // The wake did ring (it cannot be unrung), but no row exists for it: the drain took nothing, no model call.
-      expect(drains.flatMap((drain) => drain.took)).toEqual([])
-      // The empty execution records only its idle marker (a known gap: rare, harmless, no model call).
-      expect((yield* sessions.messages({ sessionID })).map((message) => message.type)).toEqual(["idle"])
+      expect(drains).toEqual([])
+      expect(yield* sessions.messages({ sessionID })).toEqual([])
+      current.drain = () => Effect.void
+    }),
+  )
+
+  it.live("a ring asked for inside an open transaction is refused: it cannot see that transaction's commit", () =>
+    Effect.gen(function* () {
+      const execution = yield* SessionExecution.Service
+      const store = yield* SessionStore.Service
+      const { db } = yield* Database.Service
+      const drains = yield* recording
+      const sessionID = yield* seed("ses_ring_in_txn")
+      const exit = yield* db
+        .transaction(() => SessionAdmission.ring({ db, store, sessionID, wake: execution.wake }))
+        .pipe(Effect.exit)
+      expect(Exit.isFailure(exit) && (Cause.squash(exit.cause) as { _tag?: string })._tag).toBe(
+        "SessionAdmission.RingInTransaction",
+      )
+      yield* Effect.sleep(10)
+      yield* execution.awaitIdle(sessionID)
+      expect(drains).toEqual([])
       current.drain = () => Effect.void
     }),
   )

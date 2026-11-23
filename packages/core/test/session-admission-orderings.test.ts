@@ -1,7 +1,8 @@
 // Fork feature (synthetic-archived): every source of non-user input, the user's own input and command, and the owner's
 // archive, unarchive, stop and delete, over orderings of one and two sessions (the scheduler and its properties:
-// fixture/admission-model.ts). 572 orderings: 420 for one session (each of the 10 admissions put at every position of
-// 13 control sequences), 62 held-input ones, 90 for two sessions.
+// fixture/admission-model.ts). 1066 orderings: 420 for one session (each of the 10 admissions put at every position of
+// 13 control sequences), 62 held-input ones, 494 with a rolled-back admission (`R`) at every position, 90 for two
+// sessions.
 import { describe, expect } from "bun:test"
 import { Effect } from "effect"
 import { ADMITS, interleavings, it, runAll } from "./fixture/admission-model"
@@ -54,6 +55,23 @@ describe("SessionAdmission over orderings", () => {
           ...interleavings(["A:restart", "W"], ["P", "U", "T"]),
         ]
         const { ran, failures } = yield* runAll("held", orders)
+        expect(failures).toEqual([])
+        expect(ran).toBe(orders.length)
+      }),
+    240_000,
+  )
+
+  it.live(
+    "a rolled-back admission at every point: no turn, no marker, no row",
+    () =>
+      Effect.gen(function* () {
+        const orders = [
+          ...inserted(CONTROLS, "R"),
+          ...["A:shell", "A:plugin"].flatMap((admit) => inserted(inserted(CONTROLS, admit), "R")),
+          ...inserted(interleavings(["A:restart", "W"], ["X", "Y"]), "R"),
+          ...inserted(interleavings(["X", "A:shell"], ["U@1", "T@1"]), "R@1"),
+        ]
+        const { ran, failures } = yield* runAll("rollback", orders)
         expect(failures).toEqual([])
         expect(ran).toBe(orders.length)
       }),

@@ -12,6 +12,7 @@
 //   command returned (a plugin's);
 // - `W` the restart sweep's owed wake for the last restart notice (SessionAdmission.ring with its input ID): a boot;
 // - `U` the user's prompt (its turn held open until `T`), `T` that turn ends;
+// - `R` a waking notice admitted inside a transaction that rolls back after its row was written, then rung;
 // - `X` archive, `Y` unarchive, `P` stop (Session.stop), `D` delete.
 // A `@1` suffix aims the event at the second session.
 //
@@ -19,6 +20,9 @@
 // - refused: a keeping source's input to an archived session fails with Session.ArchivedError and leaves no row;
 // - held: a holding source's input to an archived session is admitted, marked held, and no wake comes for it;
 // - deleted: any input to a deleted session fails with Session.NotFoundError and leaves no row;
+// - nothing on refusal: after a refused or missing call the session's rows are byte-identical to before it;
+// - rollback: after `R` the session's rows are byte-identical to before it (no row, no held mark, no turn marker) and
+//   no drain started;
 // - no unsolicited turn: a drain that takes input while its session is archived or stopped takes the user's input
 //   too (the user's turn), and held input never starts a turn alone (once unarchived it rides along a turn something
 //   else started, as any pending input does); unarchiving (`Y`) and the restart's wake (`W`) take nothing held;
@@ -27,6 +31,7 @@
 //   is in its session's messages exactly once and no refused input is anywhere.
 import type { FileSystem } from "@opencode/core/filesystem"
 import { Cause, Deferred, Effect, Exit, Fiber, Layer, LayerMap } from "effect"
+import { sql } from "drizzle-orm"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Bus } from "@opencode/core/bus"
@@ -44,7 +49,9 @@ import { SessionExecution } from "@opencode/core/session/execution"
 import { SessionInbox } from "@opencode/core/session/inbox"
 import { SessionMessage } from "@opencode/core/session/message"
 import { SessionRunner } from "@opencode/core/session/runner/index"
-import { SessionTable } from "@opencode/core/session/sql"
+import { SessionInboxTable, SessionMessageTable, SessionTable } from "@opencode/core/session/sql"
+import { EventSequenceTable, EventTable } from "@opencode/core/event/sql"
+import { KVTable } from "@opencode/core/kv/sql"
 import { SessionStore } from "@opencode/core/session/store"
 import { testEffect } from "../lib/effect"
 
@@ -140,10 +147,14 @@ export const run = Effect.fnUntraced(function* (id: string, events: readonly Eve
   const turnPending = [false, false]
   let at = -1
 
+  // Every drain the coordinator started per session, the empty ones included: a turn, with its markers.
+  const drains = [0, 0]
+
   const admissionOf = (inputID: string) => admissions.find((admission) => admission.id === inputID)
   current.drain = (sessionID) =>
     Effect.gen(function* () {
       const index = ids.indexOf(sessionID)
+      drains[index]!++
       const session = yield* store.get(sessionID)
       const archived = session?.time.archived !== undefined
       const stopped = yield* execution.stopped(sessionID)
@@ -224,6 +235,7 @@ export const run = Effect.fnUntraced(function* (id: string, events: readonly Eve
         resume: source !== "restart",
       })
     })()
+    const rows = yield* dump(db, sessionID)
     const exit = yield* Effect.exit(call as Effect.Effect<unknown, unknown>)
     const expected = s.deleted
       ? "missing"
@@ -241,6 +253,8 @@ export const run = Effect.fnUntraced(function* (id: string, events: readonly Eve
       const want = expected === "missing" ? "Session.NotFoundError" : "Session.ArchivedError"
       if (!tag.includes(want)) broken.push(`${event}: expected ${want}, got ${tag}`)
       if (row) broken.push(`${event}: a ${expected} input left a row`)
+      // A refused call changes nothing: the session's rows are byte-identical to before it.
+      if ((yield* dump(db, sessionID)) !== rows) broken.push(`${event}: a ${expected} call changed the session's rows`)
       return
     }
     if (Exit.isFailure(exit)) return void broken.push(`${event}: admission failed: ${exit.cause}`)
@@ -306,6 +320,35 @@ export const run = Effect.fnUntraced(function* (id: string, events: readonly Eve
       if (notice?.outcome === "held" && after !== before && !gates[target])
         broken.push(`W: the restart's wake took a held notice`)
       continue
+    } else if (kind === "R") {
+      // A notice (a waking source) whose admitting transaction rolls back after its row was written (a later step of
+      // the caller's transaction failing), then the ring its caller rings for it: no turn, no marker, no row.
+      const inputID = SessionMessage.ID.create()
+      const rows = yield* dump(db, sessionID)
+      const started = drains[target]!
+      const rolled = yield* db
+        .transaction(() =>
+          sessions
+            .synthetic({ sessionID, id: inputID, text: "rolled back", source: "shell" })
+            .pipe(Effect.andThen(Effect.die("rollback"))),
+        )
+        .pipe(Effect.exit)
+      if (Exit.isSuccess(rolled)) broken.push("R: the transaction did not roll back")
+      const decisions: SessionAdmission.Decision[] = []
+      if (!s.deleted)
+        yield* SessionAdmission.ring({
+          db,
+          store,
+          sessionID,
+          inputID,
+          wake: execution.wake,
+          decided: (decision) => Effect.sync(() => void decisions.push(decision)),
+        })
+      yield* settle
+      if (!s.deleted && decisions.join() !== "gone") broken.push(`R: the ring decided ${decisions.join() || "nothing"}`)
+      if (drains[target] !== started) broken.push("R: a rolled-back admission started a turn")
+      if ((yield* dump(db, sessionID)) !== rows) broken.push("R: a rolled-back admission left a trace")
+      continue
     } else yield* admit(event, target)
     const before = [...taken.values()].reduce((a, b) => a + b, 0)
     yield* settle
@@ -349,6 +392,20 @@ export const run = Effect.fnUntraced(function* (id: string, events: readonly Eve
   current.drain = () => Effect.void
   return broken.length === 0 ? undefined : [...new Set(broken)].join("; ")
 })
+
+/** Every row of one session (the session, its messages, inbox, events, sequence and KV marks), as one string. */
+export const dump = (db: Database.Interface["db"], sessionID: string) =>
+  Effect.all([
+    db.all(sql`SELECT * FROM ${SessionTable} WHERE id = ${sessionID}`),
+    db.all(sql`SELECT * FROM ${SessionMessageTable} WHERE session_id = ${sessionID} ORDER BY seq`),
+    db.all(sql`SELECT * FROM ${SessionInboxTable} WHERE session_id = ${sessionID} ORDER BY id`),
+    db.all(sql`SELECT * FROM ${EventTable} WHERE aggregate_id = ${sessionID} ORDER BY seq`),
+    db.all(sql`SELECT * FROM ${EventSequenceTable} WHERE aggregate_id = ${sessionID}`),
+    db.all(sql`SELECT * FROM ${KVTable} WHERE value = ${JSON.stringify(sessionID)} ORDER BY key`),
+  ]).pipe(
+    Effect.map((rows) => JSON.stringify(rows)),
+    Effect.orDie,
+  )
 
 /** The session an event aims at. */
 const target_ = (event: Event) => (event.endsWith("@1") ? 1 : 0)

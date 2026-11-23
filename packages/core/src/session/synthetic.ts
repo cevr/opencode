@@ -25,7 +25,7 @@ export const make = (
     resume?: boolean
     /** Fork (synthetic-archived): who admits it, which decides an archived session's answer (SessionAdmission). */
     source?: SessionAdmission.Source
-    /** Fork (synthetic-archived): told the admission's decision inside its transaction (the restart sweep's wakes). */
+    /** Fork (synthetic-archived): told the ring's decision for the committed input (the restart sweep's wakes). */
     decided?: (decision: SessionAdmission.Decision) => Effect.Effect<void>
   }) {
     const sessionID = input.sessionID
@@ -37,17 +37,7 @@ export const make = (
       return yield* Effect.die(new SessionAdmission.Refused(sessionID, "archived"))
     const id = input.id ?? SessionMessage.ID.create()
     const resume = input.resume !== false
-    // Whether this call's own admission decided (its transaction ran the commit hook), whatever it decided.
-    let decided = false
-    const decide = SessionAdmission.commit({
-      db,
-      store,
-      sessionID,
-      inputID: id,
-      rule,
-      wake: resume ? wake : undefined,
-      decided: input.decided,
-    })
+    const decide = SessionAdmission.commit({ db, store, sessionID, inputID: id, rule })
     const admitted = yield* SessionAdmission.refused(
       store,
       sessionID,
@@ -63,15 +53,15 @@ export const make = (
             metadata: input.metadata,
           }),
         },
-        // The wake is rung inside the admitting transaction: no archive commits between the two.
-        commit: () => Effect.sync(() => void (decided = true)).pipe(Effect.andThen(decide())),
+        // Decided inside the admitting transaction: refused (no row) or held.
+        commit: decide,
       }),
     ).pipe(
       Effect.catchTag("SessionInbox.LifecycleConflict", () => new SyntheticConflictError({ sessionID, inputID: id })),
     )
-    // An input admitted before (a retry of the same ID) was not admitted by this call: wake for it as upstream does,
-    // under the same rule, in its own transaction; a held input (archived when admitted) rings nothing.
-    if (!decided && (resume || input.decided))
+    // Rung only now, for the committed row (a retry of the same ID included), in its own transaction under the same
+    // rule: a rolled-back admission threw above and rings nothing; a held input rings nothing.
+    if (resume || input.decided)
       yield* SessionAdmission.ring({
         db,
         store,

@@ -95,8 +95,6 @@ export const make = (deps: Deps) => {
     }
     const wakeParent = (id: SessionSchema.ID) =>
       deps.stopped(id).pipe(Effect.flatMap((held) => (held ? Effect.void : deps.wake(id))))
-    // Whether this delivery's own admission decided (and rang) inside its transaction.
-    let decided = false
     const db = deps.db
     const delivered = yield* SubagentCompletion.deliver(
       {
@@ -110,7 +108,6 @@ export const make = (deps: Deps) => {
               sessionID: notice.sessionID,
               inputID: id,
               rule: SessionAdmission.rule("subagent"),
-              wake: wakeParent,
             })
           return deps.inbox.admit({
             id,
@@ -124,7 +121,7 @@ export const make = (deps: Deps) => {
               }),
               delivery: "steer",
             },
-            commit: decide && (() => Effect.sync(() => void (decided = true)).pipe(Effect.andThen(decide()))),
+            commit: decide,
           })
         },
       },
@@ -158,16 +155,15 @@ export const make = (deps: Deps) => {
     )
     if (!delivered) return
     if (db) {
-      // A report admitted before (a retried outbox row) rings as upstream's would, under the same rule; one held by an
-      // archived parent rings nothing.
-      if (!decided)
-        yield* SessionAdmission.ring({
-          db,
-          store: deps.store,
-          sessionID: parentID,
-          wake: wakeParent,
-          inputID: report.notificationID,
-        })
+      // Rung once the report is committed (a retried outbox row's too), under the same rule, for its row only: one held by
+      // an archived parent, or already taken, rings nothing.
+      yield* SessionAdmission.ring({
+        db,
+        store: deps.store,
+        sessionID: parentID,
+        wake: wakeParent,
+        inputID: report.notificationID,
+      })
       return
     }
     const parent = yield* deps.store.get(parentID)

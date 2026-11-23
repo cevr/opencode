@@ -19,11 +19,12 @@ export * as SessionAdmission from "./admission.js"
 // Unarchiving wakes nothing: it publishes no work (session.ts `unarchive`).
 
 import { and, eq, like, notExists, sql } from "drizzle-orm"
-import { Effect, Schema } from "effect"
+import { Effect, Option, Schema } from "effect"
 import { UserCommand } from "@opencode/util/effect/user-command"
 import type { Database } from "../database/database.js"
 import { KVTable } from "../kv/sql.js"
 import { NotFoundError } from "./error.js"
+import { SessionInbox } from "./inbox.js"
 import type { SessionMessage } from "./message.js"
 import { SessionSchema } from "./schema.js"
 import { SessionInboxTable } from "./sql.js"
@@ -169,10 +170,11 @@ type Store = Pick<SessionStore.Interface, "get">
 type Wake = (sessionID: SessionSchema.ID) => Effect.Effect<void>
 
 /**
- * What an admission decided: `live` (woken, unless the source asked for no wake or the session is stopped), `held`
- * (admitted into an archived session: never woken for it), `quiet` (a staged revert: admitted, not woken, as upstream).
+ * What a ring decided for committed input: `live` (woken, unless the caller asked for no wake or the session is
+ * stopped), `held` (in an archived session: never woken for it), `quiet` (a staged revert: not woken, as upstream),
+ * `gone` (no row to ring for: its admission rolled back, a turn already took it, or the session is deleted).
  */
-export type Decision = "live" | "held" | "quiet"
+export type Decision = "live" | "held" | "quiet" | "gone"
 
 /**
  * The durable mark of a held input, written in its admitting transaction: whatever later rings for that input (a
@@ -203,10 +205,20 @@ export const isHeld = Effect.fnUntraced(function* (db: DB, inputID: SessionMessa
   return row !== undefined
 }, Effect.orDie)
 
+/** Holds `inputID` (written in the caller's transaction). */
+const hold = (db: DB, sessionID: SessionSchema.ID, inputID: SessionMessage.ID) =>
+  db
+    .insert(KVTable)
+    .values({ key: HELD + inputID, value: sessionID })
+    .onConflictDoNothing()
+    .run()
+    .pipe(Effect.orDie)
+
 /**
- * The commit hook of a non-user admission (`Bus.PublishOptions.commit`): runs inside the InboxEnqueued transaction,
- * after its row is written. Refuses (a defect: the transaction rolls back, no row stays), or decides and rings `wake`
- * there. A wake rung for a transaction that then rolls back starts an execution that finds no input: no model call.
+ * The commit hook of an admission (`Bus.PublishOptions.commit`): runs inside the InboxEnqueued transaction, after its
+ * row is written, and only decides what may be written: refuses (a defect: the transaction rolls back, no row stays) or
+ * marks the input held. It rings nothing: a wake is never rung for a write that may still roll back. The caller rings
+ * after its admission returned, committed (`ring` with the input's ID).
  */
 export const commit =
   (input: {
@@ -216,10 +228,6 @@ export const commit =
     readonly inputID: SessionMessage.ID
     /** How an archived session answers (`rule(source)`). */
     readonly rule: Rule
-    /** Rung when the session is live; it checks the stop mark itself. Absent: admit without a wake. */
-    readonly wake?: Wake
-    /** Told the decision, inside the transaction (the restart sweep defers its wakes by it). */
-    readonly decided?: (decision: Decision) => Effect.Effect<void>
   }) =>
   () =>
     Effect.gen(function* () {
@@ -227,22 +235,21 @@ export const commit =
       if (state === "deleted") return yield* Effect.die(new Refused(input.sessionID, "deleted"))
       if (state === "archived" && input.rule === "refuse")
         return yield* Effect.die(new Refused(input.sessionID, "archived"))
-      const decision: Decision = state === "archived" ? "held" : state
-      if (decision === "held")
-        yield* input.db
-          .insert(KVTable)
-          .values({ key: HELD + input.inputID, value: input.sessionID })
-          .onConflictDoNothing()
-          .run()
-          .pipe(Effect.orDie)
-      if (decision === "live" && input.wake) yield* input.wake(input.sessionID)
-      if (input.decided) yield* input.decided(decision)
+      if (state === "archived") yield* hold(input.db, input.sessionID, input.inputID)
     })
 
+/** A ring was asked for inside an open transaction, whose commit it cannot see. */
+export class RingInTransaction {
+  readonly _tag = "SessionAdmission.RingInTransaction"
+  constructor(readonly sessionID: SessionSchema.ID) {}
+}
+
 /**
- * The same decision for a wake with no admission of its own (an input admitted before, a report, a restart's owed
- * wake): in its own write transaction, so an archive commits before it (no wake) or after the ring. Given `inputID`,
- * a held input rings nothing.
+ * Rings the session for input already committed, in its own write transaction, so an archive, a delete, a revert or a
+ * stop commits before it (and is seen) or after the ring. Given `inputID` it re-reads the committed row first and rings
+ * nothing when the row is absent (its admission rolled back, or a running turn already took it) or held; an input
+ * admitted live whose session was archived before this ring is held now, so only the user's prompt takes it. The ring
+ * is the last step, after `decided`. It runs only outside a transaction: the row it reads must be committed.
  */
 export const ring = (input: {
   readonly db: DB
@@ -250,26 +257,39 @@ export const ring = (input: {
   readonly sessionID: SessionSchema.ID
   readonly wake?: Wake
   readonly inputID?: SessionMessage.ID
+  /** Told the decision, inside the ring's transaction (the restart sweep defers its wakes by it). */
   readonly decided?: (decision: Decision) => Effect.Effect<void>
   /** `user`: the user's own input, woken even in an archived session, as upstream. Default `hold`. */
   readonly rule?: Rule
 }) =>
-  input.db
-    .transaction(
-      () =>
-        Effect.gen(function* () {
-          const state =
-            input.inputID !== undefined && (yield* isHeld(input.db, input.inputID))
-              ? "held"
-              : yield* look(input.store, input.sessionID, input.rule === "user")
-          if (state === "deleted") return
-          const decision: Decision = state === "archived" ? "held" : state
-          if (decision === "live" && input.wake) yield* input.wake(input.sessionID)
-          if (input.decided) yield* input.decided(decision)
-        }),
-      { behavior: "immediate" },
-    )
-    .pipe(Effect.orDie)
+  Effect.gen(function* () {
+    if (Option.isSome(yield* Effect.serviceOption(input.db.$client.transactionService)))
+      return yield* Effect.die(new RingInTransaction(input.sessionID))
+    yield* input.db
+      .transaction(
+        () =>
+          Effect.gen(function* () {
+            const inputID = input.inputID
+            if (inputID !== undefined) {
+              if (yield* isHeld(input.db, inputID)) return yield* tell("held")
+              if ((yield* SessionInbox.find(input.db, inputID)) === undefined) return yield* tell("gone")
+            }
+            const state = yield* look(input.store, input.sessionID, input.rule === "user")
+            if (state === "deleted") return yield* tell("gone")
+            if (state === "archived") {
+              if (inputID !== undefined) yield* hold(input.db, input.sessionID, inputID)
+              return yield* tell("held")
+            }
+            yield* tell(state)
+            if (state === "live" && input.wake) yield* input.wake(input.sessionID)
+          }),
+        { behavior: "immediate" },
+      )
+      .pipe(Effect.orDie)
+    function tell(decision: Decision) {
+      return input.decided ? input.decided(decision) : Effect.void
+    }
+  })
 
 /** Drops the held marks of inputs no longer in any inbox (a user's turn took them, or the session is gone). */
 export const sweep = (db: DB) =>

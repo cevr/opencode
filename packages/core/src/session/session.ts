@@ -160,12 +160,12 @@ export const make = Effect.fn("Session.make")(function* () {
         Effect.gen(function* () {
           const session = yield* get(sessionID)
           const messageID = input.id ?? SessionMessage.ID.create()
-          // Fork (synthetic-archived): a plugin's prompt is admitted under SessionAdmission's rule, its wake rung in
-          // the admitting transaction. A user's prompt (no source) is upstream's.
+          // Fork (synthetic-archived): a plugin's prompt is admitted under SessionAdmission's rule, decided in the
+          // admitting transaction, which also commits a staged revert, so a refusal changes nothing; it is rung after
+          // that commit. A user's prompt (no source) is upstream's.
           const source = input.source
           if (source && session.time.archived && SessionAdmission.rule(source) === "refuse")
             return yield* Effect.die(new SessionAdmission.Refused(sessionID, "archived"))
-          let decided = false
           const resume = input.resume !== false
           const decide = source
             ? SessionAdmission.commit({
@@ -174,7 +174,6 @@ export const make = Effect.fn("Session.make")(function* () {
                 sessionID,
                 inputID: messageID,
                 rule: SessionAdmission.rule(source),
-                wake: resume ? execution.wake : undefined,
               })
             : undefined
           const admitted = yield* Effect.gen(function* () {
@@ -189,13 +188,18 @@ export const make = Effect.fn("Session.make")(function* () {
             // services, so projections see its config whoever called prompt.
             return yield* Effect.gen(function* () {
               const item = yield* restore(SessionPrompt.prepare({ session, messageID, input }))
-              // Commit a staged revert only after preparation succeeds, before admitting new work.
-              if (session.revert) yield* SessionRevert.commit(bus, session)
+              // Commit a staged revert only after preparation succeeds, before admitting new work. Fork
+              // (synthetic-archived): a sourced prompt commits it in its admitting transaction (refused: neither).
+              if (session.revert && !decide) yield* SessionRevert.commit(bus, session)
               const admit = admission.admit({
                 id: messageID,
                 sessionID: session.id,
                 item,
-                commit: decide && (() => Effect.sync(() => void (decided = true)).pipe(Effect.andThen(decide()))),
+                commit: decide,
+                before:
+                  decide && session.revert
+                    ? [SessionEvent.RevertEvent.Committed, { sessionID: session.id, to: session.revert.messageID }]
+                    : undefined,
               })
               return yield* source ? SessionAdmission.refused(store, sessionID, admit) : admit
             }).pipe(
@@ -207,13 +211,14 @@ export const make = Effect.fn("Session.make")(function* () {
             Effect.catchTag("SessionInbox.LifecycleConflict", () => new PromptConflictError({ sessionID, messageID })),
           )
           if (source) {
-            if (resume && !decided)
+            if (resume)
               yield* SessionAdmission.ring({
                 db: database.db,
                 store,
                 sessionID,
                 wake: execution.wake,
                 inputID: messageID,
+                rule: SessionAdmission.rule(source),
               })
           } else if (resume) yield* execution.wake(sessionID)
           // Checkpoint an accepted handoff before observing cancellation. Prompt preparation above stays interruptible.

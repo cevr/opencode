@@ -169,6 +169,16 @@ export type Interface = Effect.Success<ReturnType<typeof make>>
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SessionInbox") {}
 
+/** Fork (synthetic-archived): a bus whose publish carries `before` in the same transaction (Bus.publishAll). */
+const publishingAfter = (bus: Bus.Interface, before: Bus.PublishInput): Pick<Bus.Interface, "publish"> => ({
+  publish: (definition, data, options) =>
+    bus
+      // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the admitted input's own durable event
+      .publishAll([before, [definition, data, options] as unknown as Bus.PublishInput])
+      // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the second payload is that event's
+      .pipe(Effect.map((events) => events[1] as never)),
+})
+
 export const make = Effect.fn("SessionInbox.make")(function* () {
   const database = yield* Database.Service
   const db = database.db
@@ -195,10 +205,13 @@ export const make = Effect.fn("SessionInbox.make")(function* () {
     readonly item: Item & { readonly type: Type }
     /** Runs inside the admitting transaction (fork: SessionAdmission.commit). */
     readonly commit?: Bus.PublishOptions["commit"]
+    /** Fork (synthetic-archived): an event of the session published in the same transaction, before the input. */
+    readonly before?: Bus.PublishInput
   }) {
     const existing = yield* reconcile({ ...request, type: request.item.type, delivery: request.item.delivery })
     if (existing !== undefined) return existing
-    const admitted = yield* bus
+    const events = request.before ? publishingAfter(bus, request.before) : bus
+    const admitted = yield* events
       .publish(
         SessionEvent.InboxEnqueued,
         {
