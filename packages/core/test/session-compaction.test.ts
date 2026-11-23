@@ -27,6 +27,7 @@ import { SessionModelRequest } from "@opencode/core/session/model-request"
 import { PluginHooks } from "@opencode/core/plugin/hooks"
 import { Token } from "@opencode/core/util/token"
 import { SessionProjector } from "@opencode/core/session/projector"
+import { SessionRecentText } from "@opencode/core/session/recent-text"
 import { SessionRunnerModel } from "@opencode/core/session/runner/model"
 import { toLLMMessages } from "@opencode/core/session/runner/to-llm-message"
 import { SessionMessageTable, SessionTable } from "@opencode/core/session/sql"
@@ -879,6 +880,8 @@ it.effect(
   () =>
     Effect.gen(function* () {
       requests = []
+      const compaction = yield* SessionCompaction.Service
+      yield* compaction.transform((editor) => editor.configure({ keep: 32_000 }))
       const session = yield* insertSession(Session.ID.make("ses_compaction_older_fallback"))
       // About 190k estimated tokens in total, past the 184k left for the summary. The 160k before the retained
       // 30k latest exchange fits the 170k ceiling.
@@ -900,6 +903,130 @@ it.effect(
       expect(requests[0].messages[0].content).toEqual([{ type: "text", text: messages[0].text }])
       expect(requests[0].messages[1].content).toEqual([{ type: "text", text: SessionCompaction.buildPrompt(false) }])
     }),
+)
+
+/** The completed compaction a manual compaction of these stored messages leaves. */
+const compactStored = (id: Session.ID, messages: readonly SessionMessage.Info[]) =>
+  Effect.gen(function* () {
+    const session = yield* insertSession(id)
+    yield* storeMessages(id, messages)
+    expect(yield* compactManually(session, messages)).toEqual({ status: "completed" })
+    const store = yield* SessionStore.Service
+    const stored = (yield* store.context(id))[0]
+    if (stored?.type !== "compaction" || stored.status !== "completed") return yield* Effect.die("compaction missing")
+    return stored
+  })
+
+it.effect("a long run without user messages keeps only the newest messages within keep", () =>
+  Effect.gen(function* () {
+    requests = []
+    // An earlier request, then one request followed by 60 tool steps of about 330 estimated tokens each with a synthetic note after every fifth:
+    // about 20k tokens since the only user message, past the 15k allowance.
+    const steps = Array.from({ length: 60 }, (_, index) => [
+      Schema.decodeUnknownSync(SessionMessage.Assistant)({
+        id: SessionMessage.ID.create(),
+        type: "assistant",
+        agent: Agent.defaultID,
+        model: { id: "summary-model", providerID: "test" },
+        content: [
+          {
+            type: "tool",
+            id: `call_${index}`,
+            name: "read",
+            state: { status: "completed", input: { index }, content: [{ type: "text", text: "x".repeat(1_250) }] },
+            time: { created: 0 },
+          },
+        ],
+        time: { created: 0, completed: 0 },
+      }),
+      ...(index % 5 === 4
+        ? [
+            SessionMessage.Synthetic.make({
+              id: SessionMessage.ID.create(),
+              type: "synthetic",
+              text: `Step ${index} checked`,
+              time: { created: DateTime.makeUnsafe(0) },
+            }),
+          ]
+        : []),
+    ])
+    const messages = [textUser("Earlier question"), textUser("Run the migration"), ...steps.flat()]
+
+    const stored = yield* compactStored(Session.ID.make("ses_compaction_long_run"), messages)
+    const kept = messages.findIndex((message) => message.id === stored.metadata?.keepID)
+    expect(kept).toBeGreaterThan(1)
+    const recent = SessionRecentText.kept(stored)
+    expect(Token.estimate(recent)).toBeLessThanOrEqual(15_000)
+    expect(Token.estimate(recent)).toBeGreaterThan(14_000)
+    expect(recent).not.toContain("Run the migration")
+  }),
+)
+
+it.effect("an agent's compaction window starts automatic compaction, and the tail it keeps stays within keep", () =>
+  Effect.gen(function* () {
+    requests = []
+    const compaction = yield* SessionCompaction.Service
+    // 60 tool steps of about 330 estimated tokens each: about 20k tokens since the only user message, past the 15k
+    // allowance. The newest step's request used 40k of input tokens: past a 50k window's ceiling (50k less the 16k
+    // reserve), far from the model's own 200k one.
+    const steps = Array.from({ length: 60 }, (_, index) =>
+      Schema.decodeUnknownSync(SessionMessage.Assistant)({
+        id: SessionMessage.ID.create(),
+        type: "assistant",
+        agent: Agent.defaultID,
+        model: { id: "summary-model", providerID: "test" },
+        content: [
+          {
+            type: "tool",
+            id: `call_window_${index}`,
+            name: "read",
+            state: { status: "completed", input: { index }, content: [{ type: "text", text: "x".repeat(1_250) }] },
+            time: { created: 0 },
+          },
+        ],
+        ...(index === 59 ? { tokens: { input: 40_000, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } } : {}),
+        time: { created: 0, completed: 0 },
+      }),
+    )
+    const messages = [textUser("Earlier question"), textUser("Run the migration"), ...steps]
+    const info = Agent.Info.default(Agent.defaultID)
+    const context = (session: Session.Info, window?: number) => ({
+      ...loaded(session, messages),
+      agent: {
+        id: Agent.defaultID,
+        info: { ...info, request: { ...info.request, settings: window === undefined ? {} : { compactionWindow: window } } },
+      },
+    })
+
+    // Without a window the same context is far from the model's ceiling.
+    const plain = yield* insertSession(Session.ID.make("ses_window_keep_plain"))
+    expect(yield* compaction.compact({ reason: "auto", context: context(plain) })).toMatchObject({ status: "skipped" })
+
+    const sessionID = Session.ID.make("ses_window_keep")
+    const session = yield* insertSession(sessionID)
+    yield* storeMessages(sessionID, messages)
+    expect(yield* compaction.compact({ reason: "auto", context: context(session, 50_000) })).toEqual({
+      status: "completed",
+    })
+    const stored = (yield* (yield* SessionStore.Service).context(sessionID))[0]
+    if (stored?.type !== "compaction" || stored.status !== "completed") return yield* Effect.die("compaction missing")
+    const recent = SessionRecentText.kept(stored)
+    expect(Token.estimate(recent)).toBeLessThanOrEqual(15_000)
+    expect(Token.estimate(recent)).toBeGreaterThan(14_000)
+    expect(recent).not.toContain("Run the migration")
+  }),
+)
+
+it.effect("compaction keeps no tail when the newest message alone exceeds keep", () =>
+  Effect.gen(function* () {
+    requests = []
+    const stored = yield* compactStored(Session.ID.make("ses_compaction_oversized_latest"), [
+      textUser("Earlier question"),
+      textUser(`Latest ${"x".repeat(80_000)}`),
+    ])
+    expect(stored.metadata?.keepID).toBeUndefined()
+    expect(SessionRecentText.kept(stored)).toBe("")
+  }),
 )
 
 it.effect("compaction lowers the output limit when it sends a request it could not shrink", () =>
