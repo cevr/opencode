@@ -1,4 +1,4 @@
-import { Context, Effect, Exit, Layer, Semaphore, Stream } from "effect"
+import { Cause, Context, Effect, Exit, Layer, Semaphore, Stream } from "effect"
 import { Reactivity } from "effect/reactivity"
 import { SqlClient, Statement } from "effect/sql"
 import type { Connection } from "effect/sql/SqlConnection"
@@ -54,70 +54,16 @@ interface Config {
   readonly transformQueryNames?: (str: string) => string
 }
 
-// sql.exec() rejects BEGIN/COMMIT/SAVEPOINT, so SqlClient.make's default
-// transaction SQL can never run. withTransaction is replaced below with a
-// DurableObjectStorage.transaction-backed implementation; this service only
-// tracks the active transaction connection for statements and nesting checks.
-const WorkerdTransaction = Context.Service<SqlClient.TransactionConnection, SqlClient.TransactionConnection.Service>(
-  "@opencode/core/database/SqliteWorkerdTransaction",
-)
+type Transaction = {
+  readonly after: Array<Effect.Effect<void>>
+  open: boolean
+  failed?: SqlError
+}
 
-const transactionError = (message: string) =>
+const transactionError = (cause: unknown, message: string) =>
   new SqlError({
-    reason: new UnknownError({ cause: new Error(message), message, operation: "transaction" }),
+    reason: new UnknownError({ cause, message, operation: "transaction" }),
   })
-
-const makeWithTransaction =
-  (
-    storage: DurableObjectStorage,
-    connection: Connection,
-    semaphore: Semaphore.Semaphore,
-  ): SqlClient.SqlClient["withTransaction"] =>
-  <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E | SqlError, R> =>
-    Effect.withFiber((fiber) => {
-      const services = fiber.context
-      if (Context.getOption(services, WorkerdTransaction)._tag === "Some")
-        return Effect.fail(
-          transactionError("Nested transactions are not supported by Cloudflare Durable Object SQLite storage"),
-        )
-      const effectWithTxn = Effect.provideContext(
-        effect,
-        Context.add(services, WorkerdTransaction, [connection, 0] as const),
-      )
-      return semaphore.withPermits(1)(
-        Effect.callback((resume) => {
-          let interrupted = false
-          const promise = storage
-            .transaction(
-              (txn) =>
-                new Promise<void>((resolve) => {
-                  if (interrupted) return resolve()
-                  resume(
-                    Effect.onExit(effectWithTxn, (exit) => {
-                      if (Exit.isFailure(exit)) txn.rollback()
-                      resolve()
-                      // wait for the transaction to complete
-                      return Effect.promise(() => promise)
-                    }),
-                  )
-                }),
-            )
-            .catch((cause) =>
-              resume(
-                Effect.fail(
-                  new SqlError({
-                    reason: classifySqliteError(cause, { message: "Failed transaction", operation: "transaction" }),
-                  }),
-                ),
-              ),
-            )
-          return Effect.suspend(() => {
-            interrupted = true
-            return Effect.promise(() => promise)
-          })
-        }),
-      )
-    })
 
 const make = (options: Config) =>
   Effect.gen(function* () {
@@ -165,14 +111,21 @@ const make = (options: Config) =>
           }),
       })
 
+    const checked = <A>(effect: Effect.Effect<A, SqlError>) =>
+      Effect.flatMap(Effect.serviceOption(nativeTransaction), (option) => {
+        if (option._tag === "None") return effect
+        const failed = unavailable(option.value)
+        return failed ? Effect.fail(failed) : effect
+      })
+
     const connection: Connection = {
       execute: (query, params, transformRows) =>
-        transformRows ? Effect.map(run(query, params), transformRows) : run(query, params),
-      executeRaw: (query, params) => run(query, params),
-      executeValues: (query, params) => runValues(query, params),
-      executeValuesUnprepared: (query, params) => runValues(query, params),
+        checked(transformRows ? Effect.map(run(query, params), transformRows) : run(query, params)),
+      executeRaw: (query, params) => checked(run(query, params)),
+      executeValues: (query, params) => checked(runValues(query, params)),
+      executeValuesUnprepared: (query, params) => checked(runValues(query, params)),
       executeUnprepared: (query, params, transformRows) =>
-        transformRows ? Effect.map(run(query, params), transformRows) : run(query, params),
+        checked(transformRows ? Effect.map(run(query, params), transformRows) : run(query, params)),
       executeStream: () => Stream.die("executeStream not implemented"),
     }
 
@@ -182,30 +135,111 @@ const make = (options: Config) =>
       Effect.as(restore(semaphore.takeScoped(1)), connection),
     )
 
-    const client = Object.assign(
-      (yield* SqlClient.make({
-        acquirer,
-        compiler,
-        transactionAcquirer,
-        transactionService: WorkerdTransaction,
-        driver: "sqlite-do",
-        spanAttributes: [
-          ...(options.spanAttributes ? Object.entries(options.spanAttributes) : []),
-          [ATTR_DB_SYSTEM_NAME, "sqlite"],
-        ],
-        transformRows,
-      })) as SqliteClient,
-      {
-        [TypeId]: TypeId,
-        config: options,
-        withTransaction: makeWithTransaction(native, connection, semaphore),
-        // Durable Object SQLite rejects BEGIN/COMMIT/SAVEPOINT; consumers such
-        // as the drizzle session detect this and route through withTransaction.
-        transactionStatements: false,
-      } as const,
-    ) satisfies NativeTransactionSqlClient
+    const client = (yield* SqlClient.make({
+      acquirer,
+      compiler,
+      transactionAcquirer,
+      driver: "sqlite-do",
+      spanAttributes: [
+        ...(options.spanAttributes ? Object.entries(options.spanAttributes) : []),
+        [ATTR_DB_SYSTEM_NAME, "sqlite"],
+      ],
+      transformRows,
+    })) as SqliteClient
+    const transactionService = client.transactionService
+    const nativeTransaction = Context.Service<Transaction>(`${transactionService.key}/workerd`)
+    const ended = "Durable Object SQLite transaction has already ended"
+    const unavailable = (state: Transaction) =>
+      state.failed ?? (state.open ? undefined : transactionError(undefined, ended))
 
-    return client
+    // Fork (synthetic-archived): without savepoints, both SQL client and Drizzle
+    // nesting join the native transaction. A failed inner write dooms the whole
+    // unit, even if the outer body catches it.
+    const withTransaction: SqlClient.SqlClient["withTransaction"] = (effect) =>
+      Effect.flatMap(Effect.serviceOption(nativeTransaction), (outer) => {
+        if (outer._tag === "Some") {
+          const state = outer.value
+          const failed = unavailable(state)
+          if (failed) return Effect.fail(failed)
+          return Effect.onExit(effect, (exit) =>
+            Effect.sync(() => {
+              if (Exit.isSuccess(exit) || state.failed) return
+              const inner = Cause.squash(exit.cause)
+              const name = inner instanceof Error ? inner.message || inner.name : String(inner)
+              state.failed = transactionError(
+                inner,
+                `NestedTransactionFailed: a nested transaction failed (${name}), and this storage cannot roll back only its part`,
+              )
+            }),
+          )
+        }
+        return Effect.uninterruptibleMask((restore) =>
+          Effect.gen(function* () {
+            const state: Transaction = { open: true, after: [] }
+            const result = yield* Effect.scoped(
+              Effect.gen(function* () {
+                yield* restore(semaphore.takeScoped(1))
+                // Native storage holds the transaction open until its callback returns.
+                // Its promise, not the body's success, decides whether the commit happened.
+                const ready = Promise.withResolvers<Exit.Exit<void, SqlError>>()
+                const done = Promise.withResolvers<boolean>()
+                const settled = Promise.resolve()
+                  .then(() =>
+                    native.transaction(async (txn) => {
+                      ready.resolve(Exit.void)
+                      if (!(await done.promise)) txn.rollback()
+                    }),
+                  )
+                  .then(
+                    () => Exit.void,
+                    (cause) => {
+                      const failure = Exit.fail(
+                        new SqlError({
+                          reason: classifySqliteError(cause, { message: "Failed transaction", operation: "transaction" }),
+                        }),
+                      )
+                      ready.resolve(failure)
+                      return failure
+                    },
+                  )
+                yield* Effect.flatten(Effect.promise(() => ready.promise))
+                const exit = yield* restore(effect).pipe(
+                  Effect.provideService(nativeTransaction, state),
+                  Effect.provideService(transactionService, [connection, 0]),
+                  Effect.flatMap((value) => (state.failed ? Effect.fail(state.failed) : Effect.succeed(value))),
+                  Effect.exit,
+                )
+                state.open = false
+                done.resolve(Exit.isSuccess(exit))
+                return yield* Effect.onExit(exit, () => Effect.flatten(Effect.promise(() => settled)))
+              }),
+            )
+            yield* Effect.forEach(state.after.splice(0), (work) => Effect.ignoreCause(work), { discard: true })
+            return result
+          }),
+        )
+      })
+
+    const afterCommit: SqlClient.SqlClient["afterCommit"] = <R>(effect: Effect.Effect<void, never, R>) =>
+      Effect.withFiber((fiber) => {
+        const state = Context.getOrUndefined(fiber.context, nativeTransaction)
+        if (!state) return Effect.ignoreCause(effect)
+        if (!state.open) return Effect.die(new Error(ended))
+        // Capture the registering fiber's services, but never the finished transaction.
+        const context = Context.omit(nativeTransaction, transactionService)(fiber.context) as Context.Context<R>
+        state.after.push(Effect.provideContext(effect, context))
+        return Effect.void
+      })
+
+    return Object.assign(client, {
+      [TypeId]: TypeId,
+      config: options,
+      withTransaction,
+      afterCommit,
+      // Durable Object SQLite rejects BEGIN/COMMIT/SAVEPOINT; consumers such
+      // as the drizzle session detect this and route through withTransaction.
+      transactionStatements: false,
+    } as const) satisfies NativeTransactionSqlClient
   })
 
 // Defends against the shared path-based Database.layer, which passes a

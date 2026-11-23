@@ -211,6 +211,15 @@ describe("the same histories on bun:sqlite and Durable Object SQLite", () => {
     expect(durable.error).toStartWith("NestedTransactionFailed")
   })
 
+  test("Durable Object SQLite: a durable publish joins an outer SQL client transaction", async () => {
+    const durable = await run("durable-object", (tools) =>
+      tools.db.$client.withTransaction(
+        rename(tools, "phantom").pipe(Effect.andThen(tools.note("phantom work")), Effect.andThen(new Abort())),
+      ),
+    )
+    expect(durable).toEqual({ rows: [], routed: [], work: [], error: "Abort" })
+  })
+
   test("a doomed transaction whose caller also swallows the later failures still fails at its commit", async () => {
     const history: History = (tools) =>
       tools.db.transaction(

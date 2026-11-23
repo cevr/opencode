@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { Effect, Layer } from "effect"
+import { Deferred, Effect, Exit, Fiber, Layer } from "effect"
 import { SqlClient } from "effect/sql"
 import { SqlError } from "effect/sql/SqlError"
 import { sqliteLayer } from "@opencode/core/database/sqlite.workerd"
@@ -63,18 +63,99 @@ describe("sqlite.workerd", () => {
     expect(count[0].count).toBe(1)
   })
 
-  test("nested withTransaction fails with SqlError", async () => {
-    const error = await run(
+  test("a nested transaction joins its outer, but a caught inner failure still rolls back both", async () => {
+    const rows = await run(
       makeDurableObjectStorage(),
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient
         yield* sql`CREATE TABLE t (value TEXT NOT NULL)`
-        return yield* sql
-          .withTransaction(sql.withTransaction(sql`INSERT INTO t (value) VALUES (${"nested"})`))
+        yield* sql.withTransaction(sql.withTransaction(sql`INSERT INTO t (value) VALUES (${"kept"})`))
+        const failure = yield* sql
+          .withTransaction(
+            Effect.gen(function* () {
+              yield* sql`INSERT INTO t (value) VALUES (${"outer"})`
+              yield* sql
+                .withTransaction(
+                  sql`INSERT INTO t (value) VALUES (${"inner"})`.pipe(Effect.andThen(Effect.fail("abort inner"))),
+                )
+                .pipe(Effect.ignore)
+              const later = yield* sql`INSERT INTO t (value) VALUES (${"later"})`.pipe(Effect.flip)
+              expect(later.message).toContain("abort inner")
+              const nested = yield* sql.withTransaction(Effect.void).pipe(Effect.flip)
+              expect(nested).toBe(later)
+            }),
+          )
           .pipe(Effect.flip)
+        expect(failure).toBeInstanceOf(SqlError)
+        expect(failure instanceof SqlError && failure.message).toStartWith("NestedTransactionFailed:")
+        expect(failure instanceof SqlError && failure.message).toContain("abort inner")
+        return yield* sql`SELECT value FROM t`
       }),
     )
-    expect(error).toBeInstanceOf(SqlError)
+    expect(rows).toEqual([{ value: "kept" }])
+  })
+
+  test("interrupting a running transaction rolls it back before releasing the connection", async () => {
+    await run(
+      makeDurableObjectStorage(),
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient
+        const written = yield* Deferred.make<void>()
+        const committed: string[] = []
+        yield* sql`CREATE TABLE t (value TEXT NOT NULL)`
+        const fiber = yield* sql
+          .withTransaction(
+            Effect.gen(function* () {
+              yield* sql`INSERT INTO t VALUES ('discarded')`
+              yield* sql.afterCommit(Effect.sync(() => void committed.push("interrupted")))
+              yield* Deferred.succeed(written, undefined)
+              return yield* Effect.never
+            }),
+          )
+          .pipe(Effect.forkChild)
+        yield* Deferred.await(written)
+        yield* Fiber.interrupt(fiber)
+        yield* sql.withTransaction(sql`INSERT INTO t VALUES ('kept')`)
+        expect(committed).toEqual([])
+        expect(yield* sql`SELECT value FROM t`).toEqual([{ value: "kept" }])
+      }),
+    )
+  })
+
+  test("native afterCommit waits for storage, does not run on failed COMMIT, and can query after release", async () => {
+    const ran: string[] = []
+    await run(
+      makeDurableObjectStorage(),
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient
+        yield* sql`CREATE TABLE parent (id INTEGER PRIMARY KEY)`
+        yield* sql`CREATE TABLE child (parent INTEGER REFERENCES parent(id) DEFERRABLE INITIALLY DEFERRED)`
+        const note = (entry: string) => sql.afterCommit(Effect.sync(() => void ran.push(entry)))
+        const failed = yield* sql
+          .withTransaction(
+            sql`INSERT INTO child VALUES (1)`.pipe(Effect.andThen(note("phantom")), Effect.asVoid),
+          )
+          .pipe(Effect.exit)
+        expect(Exit.isFailure(failed)).toBe(true)
+        expect(ran).toEqual([])
+        expect(yield* sql`SELECT * FROM child`).toEqual([])
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            yield* sql`INSERT INTO parent VALUES (1)`
+            yield* sql.withTransaction(note("nested"))
+            yield* sql.afterCommit(
+              sql<{ id: number }>`SELECT id FROM parent`.pipe(
+                Effect.orDie,
+                Effect.tap((rows) => Effect.sync(() => void ran.push(`read ${rows[0]?.id}`))),
+                Effect.asVoid,
+              ),
+            )
+            expect(ran).toEqual([])
+          }),
+        )
+      }),
+    )
+    expect(ran).toEqual(["nested", "read 1"])
   })
 
   test("boots the full database layer with migrations over injected storage", async () => {

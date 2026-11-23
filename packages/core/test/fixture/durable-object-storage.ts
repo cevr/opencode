@@ -33,16 +33,15 @@ export const makeDurableObjectStorage = (): DurableObjectStorage => {
     transaction<T>(closure: (txn: { rollback(): void }) => Promise<T>): Promise<T> {
       native.run("BEGIN")
       let rolledBack = false
-      return closure({ rollback: () => (rolledBack = true) }).then(
-        (result) => {
+      return closure({ rollback: () => (rolledBack = true) })
+        .then((result) => {
           native.run(rolledBack ? "ROLLBACK" : "COMMIT")
           return result
-        },
-        (error) => {
-          native.run("ROLLBACK")
+        })
+        .catch((error) => {
+          if (native.inTransaction) native.run("ROLLBACK")
           throw error
-        },
-      )
+        })
     },
     transactionSync<T>(closure: () => T): T {
       return native.transaction(closure)()
