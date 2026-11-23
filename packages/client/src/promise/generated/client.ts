@@ -652,6 +652,7 @@ export function make(options: ClientOptions) {
               title: input?.["title"],
               agent: input?.["agent"],
               model: input?.["model"],
+              modelOrigin: input?.["modelOrigin"],
               location: input?.["location"],
               metadata: input?.["metadata"],
               permissions: input?.["permissions"],
@@ -724,7 +725,7 @@ export function make(options: ClientOptions) {
           {
             method: "POST",
             path: `/api/session/${encodeURIComponent(input.sessionID)}/model`,
-            body: { model: input["model"] },
+            body: { model: input["model"], origin: input["origin"] },
             successStatus: 204,
             declaredStatuses: [400, 401, 404],
             empty: true,

@@ -49,6 +49,8 @@ export const Created = Event.durable({
     title: Schema.String.pipe(optional),
     agent: Agent.ID.pipe(optional),
     model: Model.Ref.pipe(optional),
+    /** How `model` was chosen; absent means explicit. */
+    modelOrigin: Model.SelectionOrigin.pipe(optional),
     /** Host-supplied annotations resolved at creation, including any inherited from a parent. */
     metadata: SessionMetadata.pipe(optional),
     permissions: Permission.Ruleset.pipe(optional),
@@ -74,6 +76,8 @@ export const ModelSelected = Event.durable({
   schema: {
     ...Base,
     model: Model.Ref,
+    /** How `model` was chosen; absent means explicit. */
+    origin: Model.SelectionOrigin.pipe(optional),
     previous: Model.Ref.pipe(optional),
   },
 })

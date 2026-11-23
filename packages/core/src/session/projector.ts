@@ -49,6 +49,10 @@ type Usage = {
 
 const ForkBatchSize = 500
 
+// The model column's JSON carries a default origin beside the ref, so older rows read as explicit without a migration.
+const storedModel = (model: Model.Ref | undefined, origin: Model.SelectionOrigin | undefined) =>
+  model && origin === "default" ? { ...model, origin } : model
+
 const insertParts = (db: DatabaseService, rows: ReadonlyArray<typeof SessionPartTable.$inferInsert>) =>
   Effect.forEach(
     DatabaseBatch.insertBatches(SessionPartTable, rows),
@@ -882,7 +886,7 @@ const layer = Layer.effectDiscard(
             path: event.data.subpath,
             title: event.data.title,
             agent: event.data.agent,
-            model: event.data.model,
+            model: storedModel(event.data.model, event.data.modelOrigin),
             metadata: event.data.metadata,
             permission: event.data.permissions,
             version: event.data.version,
@@ -978,7 +982,10 @@ const layer = Layer.effectDiscard(
     yield* bus.project(SessionEvent.ModelSelected, (event) =>
       Effect.gen(function* () {
         yield* run(db, event)
-        yield* setSession(db, event.data.sessionID, { model: event.data.model, time_updated: event.created })
+        yield* setSession(db, event.data.sessionID, {
+          model: storedModel(event.data.model, event.data.origin),
+          time_updated: event.created,
+        })
       }),
     )
     yield* bus.project(SessionEvent.Renamed, (event) =>

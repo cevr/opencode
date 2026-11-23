@@ -44,6 +44,15 @@ export const Ref = Schema.Struct({
   )
 export interface Ref extends Schema.Schema.Type<typeof Ref> {}
 
+/**
+ * How a Session's stored model selection was made. `explicit`: a user's or caller's pick. `default`: a client recorded
+ * its implicit default, not a pick. A selection stored without one is explicit.
+ */
+export const SelectionOrigin = Schema.Literals(["explicit", "default"]).annotate({
+  identifier: "Model.SelectionOrigin",
+})
+export type SelectionOrigin = typeof SelectionOrigin.Type
+
 export { Compatibility, MaxTokensField, MediaInput, ReasoningField }
 
 export const Family = Schema.String.pipe(Schema.brand("Model.Family"))

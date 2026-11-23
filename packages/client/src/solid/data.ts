@@ -1883,6 +1883,8 @@ export function createData(config: CreateDataInput) {
         title?: string
         agent?: string
         model?: ModelRef
+        /** How `model` was chosen; absent means explicit. */
+        modelOrigin?: "explicit" | "default"
         location?: LocationRef
         projectID?: string
       }) {
@@ -1899,6 +1901,7 @@ export function createData(config: CreateDataInput) {
             projectID: projectID ?? store.location[locationKey(location)]?.info?.project.id ?? "",
             agent: payload.agent,
             model: payload.model,
+            ...(payload.modelOrigin ? { modelOrigin: payload.modelOrigin } : {}),
             cost: 0,
             tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
             time: { created: now, updated: now },

@@ -30,6 +30,7 @@ export function fromRow(row: typeof SessionTable.$inferSelect): SessionSchema.In
           variant: Model.VariantID.make(row.model.variant ?? "default"),
         }
       : undefined,
+    modelOrigin: row.model?.origin === "default" ? "default" : undefined,
     cost: Money.USD.make(row.cost),
     tokens: {
       input: row.tokens_input,

@@ -56,6 +56,8 @@ export type SessionID = string
 
 export type SessionMessageID = string
 
+export type ModelSelectionOrigin = "explicit" | "default"
+
 export type MoneyUSD = number
 
 export type TokenUsageInfo = {
@@ -1280,7 +1282,7 @@ export type SessionModelSelected = {
   type: "session.model.selected"
   durable: { aggregateID: string; seq: EventSeq; version: 1 }
   location?: LocationRef
-  data: { sessionID: SessionID; model: ModelRef; previous?: ModelRef }
+  data: { sessionID: SessionID; model: ModelRef; origin?: ModelSelectionOrigin; previous?: ModelRef }
 }
 
 export type SessionMoved = {
@@ -2454,6 +2456,7 @@ export type SessionInfo = {
   projectID: ProjectID
   agent?: AgentID
   model?: ModelRef
+  modelOrigin?: ModelSelectionOrigin
   cost: MoneyUSD
   tokens: TokenUsageInfo
   outcome?: "succeeded" | "failed" | "interrupted"
@@ -2483,6 +2486,7 @@ export type SessionCreated = {
     title?: string
     agent?: AgentID
     model?: ModelRef
+    modelOrigin?: ModelSelectionOrigin
     metadata?: SessionMetadata
     permissions?: PermissionRuleset
     version: string
@@ -3536,6 +3540,7 @@ export type SessionCreateInput = {
   readonly title?: string | null | undefined
   readonly agent?: string | null | undefined
   readonly model?: { readonly id: string; readonly providerID: string; readonly variant?: string } | null | undefined
+  readonly modelOrigin?: ("explicit" | "default") | null | undefined
   readonly location?: { readonly directory: string } | null | undefined
   readonly metadata?: { readonly [x: string]: JsonValue } | null | undefined
   readonly permissions?:
@@ -3567,6 +3572,7 @@ export type SessionSwitchAgentOutput = void
 export type SessionSwitchModelInput = {
   readonly sessionID: string
   readonly model: { readonly id: string; readonly providerID: string; readonly variant?: string }
+  readonly origin?: ("explicit" | "default") | null | undefined
 }
 
 export type SessionSwitchModelOutput = void
@@ -4025,6 +4031,7 @@ export type ExperimentalSessionImportInput = {
     readonly projectID: string
     readonly agent?: string
     readonly model?: { readonly id: string; readonly providerID: string; readonly variant?: string }
+    readonly modelOrigin?: "explicit" | "default"
     readonly cost: number
     readonly tokens: {
       readonly input: number

@@ -157,6 +157,7 @@ export type SessionCreateInput = {
   readonly title?: string | undefined
   readonly agent?: Agent.ID | undefined
   readonly model?: Model.Ref | undefined
+  readonly modelOrigin?: Model.SelectionOrigin | undefined
   readonly location?: Location.PublicRef | undefined
   readonly metadata?: Session.Metadata | undefined
   readonly permissions?: Permission.Ruleset | undefined
@@ -185,7 +186,11 @@ export type SessionSwitchAgentOperation<E = never> = (
   input: SessionSwitchAgentInput,
 ) => Effect.Effect<SessionSwitchAgentOutput, E>
 
-export type SessionSwitchModelInput = { readonly sessionID: Session.ID; readonly model: Model.Ref }
+export type SessionSwitchModelInput = {
+  readonly sessionID: Session.ID
+  readonly model: Model.Ref
+  readonly origin?: Model.SelectionOrigin | undefined
+}
 export type SessionSwitchModelOutput = void
 export type SessionSwitchModelOperation<E = never> = (
   input: SessionSwitchModelInput,
@@ -652,6 +657,7 @@ export type ExperimentalSessionLogOutput =
             readonly title?: string | undefined
             readonly agent?: Agent.ID | undefined
             readonly model?: Model.Ref | undefined
+            readonly modelOrigin?: Model.SelectionOrigin | undefined
             readonly metadata?: Session.Metadata | undefined
             readonly permissions?: Permission.Ruleset | undefined
             readonly version: string
@@ -684,6 +690,7 @@ export type ExperimentalSessionLogOutput =
           readonly data: {
             readonly sessionID: Session.ID
             readonly model: Model.Ref
+            readonly origin?: Model.SelectionOrigin | undefined
             readonly previous?: Model.Ref | undefined
           }
         }

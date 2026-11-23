@@ -1324,6 +1324,8 @@ export function Prompt(props: PromptProps) {
           id: selection.modelID,
           variant,
         },
+        // The composer's implicit default is recorded as one, so routing can tell it from a pick.
+        ...(selection.origin ? { modelOrigin: selection.origin } : {}),
       })
       if (newSessionID !== undefined) created.request.catch(() => args.restoreNewSessionID(newSessionID))
       sessionID = created.id
@@ -1369,11 +1371,14 @@ export function Prompt(props: PromptProps) {
     }
     const commitModel = () => {
       const model = { providerID: selection.providerID, id: selection.modelID, variant }
-      const cancelCommit = local.model.trackSessionCommit(target, model, agent.id)
-      return client.api.session.switchModel({ sessionID: target, model }).catch((error) => {
-        cancelCommit()
-        throw new Error(`Failed to switch model: ${errorMessage(error)}`, { cause: error })
-      })
+      const origin = selection.origin
+      const cancelCommit = local.model.trackSessionCommit(target, { ...model, origin }, agent.id)
+      return client.api.session
+        .switchModel({ sessionID: target, model, ...(origin ? { origin } : {}) })
+        .catch((error) => {
+          cancelCommit()
+          throw new Error(`Failed to switch model: ${errorMessage(error)}`, { cause: error })
+        })
     }
     const commitSelection = async () => {
       await prepareAgent()

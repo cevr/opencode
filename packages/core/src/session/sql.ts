@@ -61,6 +61,8 @@ export const SessionTable = sqliteTable(
       id: string
       providerID: string
       variant?: string
+      /** Set only for a client's implicit default; absent means explicit. */
+      origin?: "default"
     }>(),
     ...Timestamps,
     time_busy: integer(),
