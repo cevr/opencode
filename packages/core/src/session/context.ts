@@ -2,9 +2,9 @@ export * as SessionContext from "./context.js"
 
 import { Model } from "../model.js"
 import { Permission } from "../permission.js"
-import { Context, Effect, Layer } from "effect"
+import { Context, Effect, Exit, Layer } from "effect"
 import { Agent } from "../agent.js"
-import type { SessionRequestKind } from "@opencode/plugin/effect/session"
+import type { SessionRequestKind, SessionRouteStep } from "@opencode/plugin/effect/session"
 import { CodeModeInstructions } from "../codemode/instructions.js"
 import { CodeModeTool } from "../codemode/tool.js"
 import { Database } from "../database/database.js"
@@ -39,6 +39,8 @@ export interface Selection {
   readonly agent: Agent.Selection & { readonly info: Agent.Info }
   readonly instructions: Instructions.List
   readonly tools: Tool.Snapshot
+  /** The primary model a runner Step was routed to, or why it could not be: a hold, an unavailable model. */
+  readonly routed?: Exit.Exit<SessionRunnerModel.Resolved, SessionRunnerModel.Error>
 }
 
 export interface Loaded {
@@ -58,7 +60,13 @@ export interface Loaded {
  */
 export interface Interface {
   /** Selects the Session, agent, instructions, and tools used by subsequent work. */
-  readonly select: (sessionID: SessionSchema.ID) => Effect.Effect<Selection, AgentNotFoundError>
+  readonly select: (
+    sessionID: SessionSchema.ID,
+    options?: {
+      /** Routes the primary model for this runner Step before the tool snapshot (see `Selection.routed`). */
+      readonly step?: SessionRouteStep
+    },
+  ) => Effect.Effect<Selection, AgentNotFoundError>
   /** Resolves the model and active history for that selection. */
   readonly load: (selection: Selection) => Effect.Effect<Loaded, SessionRunnerModel.Error>
   readonly resolveModel: (
@@ -145,7 +153,10 @@ const layer = Layer.effect(
       return { agent, primary, selected }
     })
 
-    const select = Effect.fn("SessionContext.select")(function* (sessionID: SessionSchema.ID) {
+    const select = Effect.fn("SessionContext.select")(function* (
+      sessionID: SessionSchema.ID,
+      options?: { readonly step?: SessionRouteStep },
+    ) {
       const session = yield* store.get(sessionID)
       if (!session) return yield* Effect.die(new Error(`Session not found: ${sessionID}`))
       if (session.location.directory !== location.directory || session.location.workspaceID !== location.workspaceID)
@@ -156,16 +167,30 @@ const layer = Layer.effect(
       if (!agent.info) return yield* new AgentNotFoundError({ sessionID: session.id, agent: session.agent ?? agent.id })
       // Session permissions narrow discovery the same way they narrow the tool snapshot.
       const permissions = Permission.merge(agent.info.permissions, session.permissions ?? [])
-      const [selected, hasWebSearch, fullCodeMode] = yield* Effect.all(
+      const [selected, routed, hasWebSearch, fullCodeMode] = yield* Effect.all(
         [
           models.select(session, model.available).pipe(Effect.orElseSucceed(() => undefined)),
+          // A runner Step routes here, before the tool snapshot, so tools follow the model that serves it.
+          options?.step
+            ? models
+                .resolve(session, model.available, { kind: "primary", agent: agent.id, step: options.step })
+                .pipe(Effect.exit)
+            : Effect.succeed(undefined),
           websearch.available(),
           flags.enabled("full_codemode"),
         ],
         { concurrency: "unbounded" },
       )
+      // A route to another provider takes that model's tools; a same-provider route (a router model) keeps the
+      // selection's, as before routing could cross providers.
+      const crossed =
+        routed && Exit.isSuccess(routed) && routed.value.ref.providerID !== selected?.ref.providerID
+          ? routed.value.ref
+          : undefined
       const fallbackRef = session.model ?? agent.info.model
-      const policyModel = selected?.info ?? (fallbackRef && Model.Info.default(fallbackRef.providerID, fallbackRef.id))
+      const policyModel = crossed
+        ? ((yield* model.get(crossed.providerID, crossed.id)) ?? Model.Info.default(crossed.providerID, crossed.id))
+        : (selected?.info ?? (fallbackRef && Model.Info.default(fallbackRef.providerID, fallbackRef.id)))
       const tools = yield* registry.snapshot(permissions, {
         services,
         // An agent that can't run `execute` (such as explore) keeps every tool direct, so give it the flag-off policy.
@@ -204,11 +229,14 @@ const layer = Layer.effect(
           loaded.entries,
         ]),
         tools,
+        ...(routed ? { routed } : {}),
       }
     })
 
     const load = Effect.fn("SessionContext.load")(function* (selection: Selection) {
-      const model = yield* resolveModel(selection.session, { kind: "primary", agent: selection.agent.id })
+      const model = selection.routed
+        ? yield* selection.routed
+        : yield* resolveModel(selection.session, { kind: "primary", agent: selection.agent.id })
       const history = yield* SessionHistory.entriesForRunner(
         db,
         selection.session.id,

@@ -2,7 +2,10 @@ export * as SessionRunnerLLM from "./llm.js"
 
 import { Message } from "@opencode/ai/effect"
 import { and, desc, eq, inArray, sql } from "drizzle-orm"
-import { Cause, Effect, Exit, FiberMap, Layer } from "effect"
+import { Cause, Clock, Duration, Effect, Exit, FiberMap, Layer } from "effect"
+import type { SessionRouteStep } from "@opencode/plugin/effect/session"
+import type { Agent } from "@opencode/schema/agent"
+import type { Model } from "@opencode/schema/model"
 import { Database } from "../../database/database.js"
 import { Bus } from "../../bus.js"
 import { LocationLifecycle } from "../../location-lifecycle.js"
@@ -37,6 +40,9 @@ import { MAX_STEPS_PROMPT } from "./max-steps.js"
 
 const CONTINUE_AFTER_OUTPUT_LIMIT =
   "Your last response hit the output token limit (stop reason: length). Do not apologize, recap, or repeat yourself. Break the remaining work into smaller pieces."
+
+// The shortest wait of a held Step, so a hook that holds or refuses with a past time cannot spin.
+const HOLD_MIN_MS = 1_000
 
 type DrainInput = Parameters<Interface["drain"]>[0]
 
@@ -87,7 +93,7 @@ const layer = Layer.effect(
       yield* settleStaleCompactions(sessionID)
       yield* settleStaleToolCalls(sessionID)
 
-      const advanceToStep = Effect.fn("SessionRunner.advanceToStep")(() =>
+      const advanceToStep = Effect.fn("SessionRunner.advanceToStep")((route: SessionRouteStep) =>
         Effect.uninterruptibleMask((restore) =>
           Effect.gen(function* () {
             while (true) {
@@ -203,7 +209,7 @@ const layer = Layer.effect(
               }
               const ready = yield* restore(
                 Effect.gen(function* () {
-                  const selected = yield* prepareContext(sessionID)
+                  const selected = yield* prepareContext(sessionID, route)
                   const promoted = yield* SessionInbox.promote(
                     db,
                     bus,
@@ -218,7 +224,8 @@ const layer = Layer.effect(
                       onlyIfMissing: true,
                     })
                   if (promoted > 0) step = 1
-                  return { _tag: "Ready" as const, context: yield* context.load(selected) }
+                  // The Step loads its model and history itself, so a routing hold waits there, after delivery.
+                  return { _tag: "Ready" as const, selection: selected }
                 }),
               )
               if (ready) return ready
@@ -228,9 +235,11 @@ const layer = Layer.effect(
       )
 
       while (true) {
-        const next = yield* advanceToStep()
+        // The Step's routing identity doubles as its first assistant message.
+        const stepID = SessionMessage.ID.create()
+        const next = yield* advanceToStep({ id: stepID, attempt: 1 })
         if (next._tag !== "Ready") return next
-        continuing = yield* runStep(next.context, step, input.interruption)
+        continuing = yield* runStep(next.selection, step, stepID, input.interruption)
         stepped = true
         step++
         force = false
@@ -238,10 +247,13 @@ const layer = Layer.effect(
       }
     })
 
-    const prepareContext = Effect.fn("SessionRunner.prepareContext")(function* (sessionID: SessionSchema.ID) {
+    const prepareContext = Effect.fn("SessionRunner.prepareContext")(function* (
+      sessionID: SessionSchema.ID,
+      route: SessionRouteStep,
+    ) {
       // Plugins can reload mid-turn; each step and retry must read the settled agents, models and skills.
       yield* plugins.awaitActivation
-      const selected = yield* context.select(sessionID)
+      const selected = yield* context.select(sessionID, { step: route })
       // A blocked initial instruction baseline must leave admitted input pending.
       yield* InstructionState.prepare(db, bus, selected.instructions, sessionID)
       return selected
@@ -249,26 +261,80 @@ const layer = Layer.effect(
 
     /** Owns logical Step policy; each attempt owns its streaming, tools, and durable settlement. */
     const runStep = Effect.fn("SessionRunner.runStep")(function* (
-      first: SessionContext.Loaded,
+      first: SessionContext.Selection,
       step: number,
+      stepID: SessionMessage.ID,
       interruption: DrainInput["interruption"],
     ) {
       const sessionID = first.session.id
-      let assistantMessageID = SessionMessage.ID.create()
+      let assistantMessageID = stepID
       const retry = yield* SessionRunnerRetry.make(bus, sessionID)
-      let initial: SessionContext.Loaded | undefined = first
+      let initial: SessionContext.Selection | undefined = first
       let recoverOverflow = true
       let recoverContinuation = true
       let retryAttempt: number | undefined
+      // Routing identity of this Step across holds, refusals and retries.
+      let route: SessionRouteStep = { id: stepID, attempt: 1 }
+      const reroute = (previous?: { readonly model: Model.Ref; readonly sent: boolean }) => {
+        route = { id: stepID, attempt: route.attempt + 1, ...(previous ? { previous } : {}) }
+      }
+      let holds = 0
+      let immediate = false
+      // The one host wait for a held Step: shown as the Step's retry state, interruptible, then routed again.
+      const hold = Effect.fnUntraced(function* (input: {
+        readonly agent: Agent.ID
+        readonly model: Model.Ref
+        readonly reason: string
+        readonly until?: number
+      }) {
+        immediate = false
+        const now = yield* Clock.currentTimeMillis
+        const at = Math.ceil(Math.max(input.until ?? now, now + HOLD_MIN_MS))
+        holds++
+        yield* bus.publish(SessionEvent.Step.Started, {
+          sessionID,
+          agent: input.agent,
+          model: input.model,
+          assistantMessageID,
+          started: now,
+        })
+        yield* bus.publish(SessionEvent.RetryScheduled, {
+          sessionID,
+          assistantMessageID,
+          attempt: holds,
+          at,
+          error: { type: "route.deferred", message: input.reason },
+        })
+        yield* Effect.sleep(Duration.millis(at - now))
+      })
       while (true) {
         // Reuse boundary preparation once; retries refresh context without delivering more input.
-        const loaded = initial ?? (yield* prepareContext(sessionID).pipe(Effect.flatMap(context.load)))
+        const selection = initial ?? (yield* prepareContext(sessionID, route))
         initial = undefined
+        const routed = yield* context
+          .load(selection)
+          .pipe(
+            Effect.catchTag("SessionRunnerModel.RouteDeferred", (held) =>
+              Effect.succeed({ _tag: "Held" as const, held }),
+            ),
+          )
+        if ("_tag" in routed) {
+          yield* hold({
+            agent: selection.agent.id,
+            model: routed.held.model,
+            reason: routed.held.reason,
+            until: routed.held.until,
+          })
+          reroute()
+          continue
+        }
+        const loaded = routed
         const estimate = SessionCompaction.estimatePrompt(loaded)
         const compacted = yield* compaction.compact({ reason: "auto", context: loaded, estimate })
         if (compacted.status === "failed") return yield* new StepFailedError({ error: compacted.error })
         if (compacted.status === "completed") {
           assistantMessageID = SessionMessage.ID.create()
+          reroute()
           continue
         }
         yield* compaction.precompute(Effect.succeed(loaded), estimate)
@@ -294,6 +360,7 @@ const layer = Layer.effect(
             toolChoice: stepLimitReached ? "none" : undefined,
             webSocket: "session",
             inputTokens: estimate,
+            step: route,
           })
           .pipe(
             // The hook event holds every message from before images are bounded, screenshots included, and is a separate
@@ -303,6 +370,7 @@ const layer = Layer.effect(
               request: prepared.request,
               options: prepared.options,
               retry: prepared.retry,
+              refused: prepared.refused,
               executeTool: prepared.executeTool,
             })),
           )
@@ -356,6 +424,14 @@ const layer = Layer.effect(
               assistantMessageID,
             })
             if (outcome.freshAssistant) assistantMessageID = SessionMessage.ID.create()
+            reroute({ model: loaded.model.ref, sent: true })
+          }),
+          Refused: Effect.fnUntraced(function* (outcome) {
+            // One immediate re-route per hold, so a refusing plugin cannot spin the Step.
+            if (outcome.refusal.until !== undefined || immediate)
+              yield* hold({ agent: loaded.agent.id, model: loaded.model.ref, ...outcome.refusal })
+            else immediate = true
+            reroute({ model: loaded.model.ref, sent: false })
           }),
           OutputLimit: Effect.fn("SessionRunner.continueOutputLimit")(function* (outcome) {
             // The current response is included. User input or any other finish breaks the streak.
@@ -387,13 +463,16 @@ const layer = Layer.effect(
             if (outcome.needsContinuation) return true
             yield* bus.publish(SessionEvent.Synthetic, { sessionID, text: CONTINUE_AFTER_OUTPUT_LIMIT })
             assistantMessageID = SessionMessage.ID.create()
+            reroute({ model: loaded.model.ref, sent: true })
           }),
           Compacted: Effect.fnUntraced(function* () {
             recoverOverflow = false
             assistantMessageID = SessionMessage.ID.create()
+            reroute({ model: loaded.model.ref, sent: true })
           }),
           RecoverFull: Effect.fnUntraced(function* () {
             recoverContinuation = false
+            reroute({ model: loaded.model.ref, sent: true })
           }),
         })
         if (completed !== undefined) return completed

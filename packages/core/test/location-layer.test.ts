@@ -758,7 +758,7 @@ describe("LocationServiceMap", () => {
     ),
   )
 
-  it.live("lets plugins serve a request with another model from the same provider", () =>
+  it.live("lets plugins serve a request with a hidden model from its provider or an offered one from another", () =>
     tmpdirScoped().pipe(
       Effect.flatMap((dir) =>
         Effect.gen(function* () {
@@ -776,15 +776,23 @@ describe("LocationServiceMap", () => {
                 model.enabled = false
               })
               editor.models.update(Provider.ID.make("other"), Model.ID.make("hidden"), () => {})
+              editor.models.update(Provider.ID.make("other"), Model.ID.make("disabled"), (model) => {
+                model.enabled = false
+              })
             })
             const seen: unknown[] = []
-            const target = { providerID: router }
+            const target = { providerID: router, id: Model.ID.make("hidden") }
             const hooks = yield* PluginHooks.Service
             yield* hooks.register("session", "experimental.model.resolve", (event) =>
               Effect.sync(() => {
-                seen.push({ kind: event.kind, agent: event.agent, model: event.model.id })
-                if (event.model.id === "auto")
-                  event.model = Model.Ref.make({ providerID: target.providerID, id: Model.ID.make("hidden") })
+                seen.push({
+                  kind: event.kind,
+                  agent: event.agent,
+                  model: event.model.id,
+                  origin: event.origin,
+                  available: event.available,
+                })
+                if (event.model.id === "auto") event.model = Model.Ref.make(target)
               }),
             )
             const modelState = yield* Model.Service
@@ -804,20 +812,35 @@ describe("LocationServiceMap", () => {
               agent: Agent.ID.make("compaction"),
             })
             target.providerID = Provider.ID.make("other")
-            const crossed = yield* models
+            const crossed = yield* models.resolve(session, modelState.available, {
+              kind: "primary",
+              agent: Agent.ID.make("build"),
+            })
+            target.id = Model.ID.make("disabled")
+            const refused = yield* models
               .resolve(session, modelState.available, { kind: "primary", agent: Agent.ID.make("build") })
               .pipe(Effect.flip)
-            return { resolved, crossed, seen }
+            return { resolved, crossed, refused, seen }
           }).pipe(Effect.scoped, Effect.provide(LocationServiceMap.Service.get(location)))
 
-          expect(result.seen[0]).toEqual({ kind: "compaction", agent: "compaction", model: "auto" })
+          expect(result.seen[0]).toEqual({
+            kind: "compaction",
+            agent: "compaction",
+            model: "auto",
+            origin: "explicit",
+            available: true,
+          })
           expect(result.resolved.ref).toEqual(Model.Ref.make({ id: Model.ID.make("hidden"), providerID: router }))
           expect(String(result.resolved.model.id)).toBe("hidden")
-          // A model from another provider would bypass the selection's credentials and provider hooks.
-          expect(result.crossed).toMatchObject({
+          // Another provider serves only a model it offers, resolved with its own identity and credentials.
+          expect(result.crossed.ref).toEqual(
+            Model.Ref.make({ id: Model.ID.make("hidden"), providerID: Provider.ID.make("other") }),
+          )
+          expect(String(result.crossed.model.provider)).toBe("other")
+          expect(result.refused).toMatchObject({
             _tag: "SessionRunnerModel.ModelUnavailableError",
             providerID: "other",
-            modelID: "hidden",
+            modelID: "disabled",
           })
         }),
       ),

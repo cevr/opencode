@@ -8,6 +8,7 @@ import {
   type ToolCall,
 } from "@opencode/ai/effect"
 import type { Agent } from "@opencode/schema/agent"
+import type { SessionRouteRefuse } from "@opencode/plugin/effect/session"
 import { Cause, Clock, Data, Deferred, Effect, Exit, Fiber, Option, Stream } from "effect"
 import { SessionError } from "@opencode/schema/session-error"
 import { Bus } from "../../bus.js"
@@ -35,6 +36,8 @@ export type Outcome = Data.TaggedEnum<{
     readonly freshAssistant?: boolean
   }
   RecoverFull: {}
+  /** A send hook refused the attempt before any of it was sent; nothing was recorded or failed. */
+  Refused: { readonly refusal: SessionRouteRefuse }
   Compacted: {}
   OutputLimit: { readonly needsContinuation: boolean }
 }>
@@ -176,6 +179,10 @@ export const make = Effect.gen(function* () {
           !pendingStartSnapshot.pollUnsafe()
         )
           return yield* Effect.failCause(stream.cause)
+        // Known not sent: the attempt leaves no record, so the runner can route the Step again or hold it.
+        const refusal = input.prepared.refused?.()
+        if (refusal && Exit.isFailure(stream) && !streamInterrupted && !publisher.record().outputStarted)
+          return Outcome.Refused({ refusal })
         if (publisher.hasStarted()) yield* publisher.streamed()
         if (streamInterrupted) yield* stopTools
         const fibers = toolRuns.map((run) => run.fiber)

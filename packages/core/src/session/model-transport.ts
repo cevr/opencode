@@ -64,11 +64,12 @@ export interface Handshake {
 
 /**
  * Per-exchange taps. `handshake` runs before the connection is selected; `send` sees each outbound
- * frame after the driver builds it; `receive` sees each inbound frame before the driver observes it.
+ * frame after the driver builds it, and returns undefined to refuse it: the frame is not written, the socket closes and
+ * the exchange fails as not sent; `receive` sees each inbound frame before the driver observes it.
  */
 export interface Interceptor {
   readonly handshake?: (connect: Handshake) => Effect.Effect<Handshake>
-  readonly send?: (frame: string) => Effect.Effect<string>
+  readonly send?: (frame: string) => Effect.Effect<string | undefined>
   readonly receive?: (frame: string) => Effect.Effect<string>
 }
 
@@ -375,6 +376,17 @@ export const makeLayer = (connector: WebSocketConnector) =>
         const message = interceptor?.send
           ? yield* interceptor.send(create.message).pipe(Effect.onInterrupt(() => closeChannel(owner, channel)))
           : create.message
+        if (message === undefined) {
+          // The driver built this frame against the socket's state; a fresh socket serves the next exchange.
+          yield* closeChannel(owner, channel)
+          return yield* transportError("WebSocket frame refused before sending", {
+            url: exchange.connect.url,
+            operation: "request",
+            code: "refused",
+            phase: "send",
+            delivery: "not-sent",
+          })
+        }
         yield* Effect.logDebug("session websocket sending", {
           sessionTransport: "websocket",
           phase: "send",
