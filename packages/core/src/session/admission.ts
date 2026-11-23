@@ -20,6 +20,7 @@ export * as SessionAdmission from "./admission.js"
 
 import { and, eq, like, notExists, sql } from "drizzle-orm"
 import { Effect, Schema } from "effect"
+import { UserCommand } from "@opencode/util/effect/user-command"
 import type { Database } from "../database/database.js"
 import { KVTable } from "../kv/sql.js"
 import { NotFoundError } from "./error.js"
@@ -30,63 +31,122 @@ import type { SessionStore } from "./store.js"
 
 /**
  * Every source other than the user's own prompt that admits input into a session, and whether it keeps its input
- * when refused. `keeps: true` → an archived session refuses it; `keeps: false` → an archived session holds it. Each
- * source names the files that admit through it; `test/session-admission-sources.test.ts` fails on an admission site
- * not named here.
+ * when refused. `keeps: true` → an archived session refuses it; `keeps: false` → an archived session holds it. Every
+ * admission call site in core and server names its source (`source: "<name>"`), is a plugin's (`ctx.session`, named
+ * by the plugin host), or is counted in `Exempt`: `test/session-admission-sources.test.ts` fails on any other.
  */
 export const Sources = {
   plugin: {
     keeps: true,
     why: "a plugin's ctx.session.synthetic or ctx.session.prompt: the plugin holds its input and is told",
-    sites: ["packages/core/src/plugin/host.ts"],
   },
   http: {
     keeps: true,
     why: "a client's POST /api/session/:id/synthetic: the client is told (409)",
-    sites: ["packages/server/src/handlers/session.ts"],
   },
   shell: {
     keeps: false,
     why: "a shell's end notice (the shell tool's background command, the user's ! command): its output has no other home",
-    sites: ["packages/core/src/tool/plugin/shell.ts", "packages/core/src/session/session.ts"],
   },
   job: {
     keeps: false,
     why: "a Code Mode script's background completion",
-    sites: ["packages/core/src/session/execution.ts"],
   },
   media: {
     keeps: false,
     why: "an image or video generation's result",
-    sites: ["packages/core/src/tool/plugin/image-generate.ts", "packages/core/src/tool/plugin/video-generate.ts"],
   },
   subagent: {
     keeps: false,
     why: "a subagent's report to its parent (live and at restart)",
-    sites: [
-      "packages/core/src/session/subagent-completion.ts",
-      "packages/core/src/session/execution/subagent-report.ts",
-    ],
   },
   restart: {
     keeps: false,
     why: "a notice the restart sweep recovers (a tool job the dead server left)",
-    sites: ["packages/core/src/session/execution/restart.ts"],
   },
   background: {
     keeps: false,
     why: "the notice of the user's own request to background a session's blocking work",
-    sites: ["packages/core/src/session.ts"],
   },
 } as const
 
 export type Source = keyof typeof Sources
 
 /**
- * Whether `source` keeps its input. A caller naming no source (tests, and any new upstream caller until it is
- * classified, which the sources test catches) is held, never refused: upstream admitted it.
+ * The admission call sites that name no source, counted per file (path from the repository root), each the user's own
+ * input, an upstream path kept as is, the admission machinery itself, or no admission at all. A new call in any of
+ * these files, or one anywhere else that names no source, fails the sources test until it is classified here or in
+ * `Sources`.
  */
-export const keeps = (source: Source | undefined) => (source === undefined ? false : Sources[source].keeps)
+export const Exempt: Record<string, { readonly sites: number; readonly why: string }> = {
+  "packages/server/src/handlers/session.ts": { sites: 1, why: "session.prompt: the user's own prompt over HTTP" },
+  "packages/core/src/session.ts": { sites: 2, why: "the facade's prompt and synthetic forward their caller's input" },
+  "packages/core/src/session/session.ts": {
+    sites: 2,
+    why: "prompt's own admission (its source, if any, decides there) and compaction (the user's /compact)",
+  },
+  "packages/core/src/session/synthetic.ts": { sites: 1, why: "synthetic's own admission, under its source's rule" },
+  "packages/core/src/session/inbox.ts": { sites: 1, why: "admitCompaction's admission (the user's /compact)" },
+  "packages/core/src/session/move.ts": { sites: 1, why: "the user's own move of the session to another location" },
+  "packages/core/src/session/execution/subagent-report.ts": {
+    sites: 1,
+    why: 'a subagent\'s report, admitted through SessionAdmission.commit with rule("subagent") (`decide`)',
+  },
+  "packages/core/src/plugin/host.ts": {
+    sites: 2,
+    why: "a plugin's prompt and synthetic: source `plugin`, or none inside the user's own command (pluginSource)",
+  },
+  "packages/core/src/automation.ts": {
+    sites: 3,
+    why: "an automation's scheduled prompt: the user's standing instruction naming the session; upstream kept (owner question)",
+  },
+  "packages/core/src/tool/plugin/subagent.ts": {
+    sites: 1,
+    why: "the parent's turn prompting its own child (a deliberate act of a live, prompted parent); upstream kept",
+  },
+  "packages/core/src/config/plugin/command.ts": {
+    sites: 1,
+    why: "a subagent command's prompt to the child it just created for the user's command; upstream kept",
+  },
+  "packages/core/src/aisdk.ts": { sites: 1, why: "a model request's prompt field: no session admission" },
+  "packages/core/src/codemode/instructions.ts": { sites: 1, why: "an instruction template: no session admission" },
+}
+
+/**
+ * How an archived session answers an admission: `refuse` (a source that keeps its input), `hold` (one that does not),
+ * or `user`: no source, the user's own input (a prompt, a slash command the user typed), admitted and woken as
+ * upstream does. Every production call site names its source or is counted in `Exempt` (the sources test).
+ */
+export type Rule = "refuse" | "hold" | "user"
+
+export const rule = (source: Source | undefined): Rule =>
+  source === undefined ? "user" : Sources[source].keeps ? "refuse" : "hold"
+
+/**
+ * Runs the user's own slash command (`Session.command` called from the server's route, the user's entry): within its
+ * execute's extent, a plugin's prompt or message to that session is the user's (the plugin host reads the mark). The
+ * mark closes when the command returns, so work the command left running is a plugin's again.
+ */
+export const userCommand =
+  (sessionID: SessionSchema.ID) =>
+  <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    Effect.suspend(() => {
+      const mark: UserCommand.Mark = { sessionID, open: true }
+      return effect.pipe(
+        Effect.provideService(UserCommand.Current, mark),
+        Effect.ensuring(Effect.sync(() => void (mark.open = false))),
+      )
+    })
+
+/** A command a plugin invokes is not the user's, even from inside the user's own command. */
+export const notUserCommand = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  effect.pipe(Effect.provideService(UserCommand.Current, undefined))
+
+/** The source of a plugin's input to `sessionID` now: none (the user's) inside the user's command on it, else `plugin`. */
+export const pluginSource = Effect.fnUntraced(function* (sessionID: SessionSchema.ID) {
+  const mark = yield* UserCommand.Current
+  return UserCommand.covers(mark, sessionID) ? undefined : ("plugin" as const)
+})
 
 /** A source that keeps its input was refused: the session is archived. Nothing was admitted. */
 export class ArchivedError extends Schema.TaggedError<ArchivedError>()("Session.ArchivedError", {
@@ -120,10 +180,11 @@ export type Decision = "live" | "held" | "quiet"
 const HELD = "session.held:"
 
 /** What the session admits now; read inside the caller's transaction. */
-const look = Effect.fnUntraced(function* (store: Store, sessionID: SessionSchema.ID) {
+const look = Effect.fnUntraced(function* (store: Store, sessionID: SessionSchema.ID, user = false) {
   const session = yield* store.get(sessionID)
   if (!session) return "deleted" as const
-  if (session.time.archived) return "archived" as const
+  // The user's own input runs in an archived session as upstream's does.
+  if (session.time.archived && !user) return "archived" as const
   // Upstream's rule (synthetic.ts `!(yield* get).revert`): a staged revert waits for its owner. The stop mark is the
   // `wake` function's to read (the fork's Session.stop: a notice admitted to a stopped session does not wake it).
   if (session.revert) return "quiet" as const
@@ -151,8 +212,8 @@ export const commit =
     readonly store: Store
     readonly sessionID: SessionSchema.ID
     readonly inputID: SessionMessage.ID
-    /** Whether the source keeps its input (Sources[source].keeps): refused, not held, by an archived session. */
-    readonly keeps: boolean
+    /** How an archived session answers (`rule(source)`). */
+    readonly rule: Rule
     /** Rung when the session is live; it checks the stop mark itself. Absent: admit without a wake. */
     readonly wake?: Wake
     /** Told the decision, inside the transaction (the restart sweep defers its wakes by it). */
@@ -160,9 +221,10 @@ export const commit =
   }) =>
   () =>
     Effect.gen(function* () {
-      const state = yield* look(input.store, input.sessionID)
+      const state = yield* look(input.store, input.sessionID, input.rule === "user")
       if (state === "deleted") return yield* Effect.die(new Refused(input.sessionID, "deleted"))
-      if (state === "archived" && input.keeps) return yield* Effect.die(new Refused(input.sessionID, "archived"))
+      if (state === "archived" && input.rule === "refuse")
+        return yield* Effect.die(new Refused(input.sessionID, "archived"))
       const decision: Decision = state === "archived" ? "held" : state
       if (decision === "held")
         yield* input.db
@@ -187,6 +249,8 @@ export const ring = (input: {
   readonly wake?: Wake
   readonly inputID?: SessionMessage.ID
   readonly decided?: (decision: Decision) => Effect.Effect<void>
+  /** `user`: the user's own input, woken even in an archived session, as upstream. Default `hold`. */
+  readonly rule?: Rule
 }) =>
   input.db
     .transaction(
@@ -195,7 +259,7 @@ export const ring = (input: {
           const state =
             input.inputID !== undefined && (yield* isHeld(input.db, input.inputID))
               ? "held"
-              : yield* look(input.store, input.sessionID)
+              : yield* look(input.store, input.sessionID, input.rule === "user")
           if (state === "deleted") return
           const decision: Decision = state === "archived" ? "held" : state
           if (decision === "live" && input.wake) yield* input.wake(input.sessionID)

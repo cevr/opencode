@@ -163,7 +163,7 @@ export const make = Effect.fn("Session.make")(function* () {
           // Fork (synthetic-archived): a plugin's prompt is admitted under SessionAdmission's rule, its wake rung in
           // the admitting transaction. A user's prompt (no source) is upstream's.
           const source = input.source
-          if (source && session.time.archived && SessionAdmission.keeps(source))
+          if (source && session.time.archived && SessionAdmission.rule(source) === "refuse")
             return yield* Effect.die(new SessionAdmission.Refused(sessionID, "archived"))
           let decided = false
           const resume = input.resume !== false
@@ -173,7 +173,7 @@ export const make = Effect.fn("Session.make")(function* () {
                 store,
                 sessionID,
                 inputID: messageID,
-                keeps: SessionAdmission.keeps(source),
+                rule: SessionAdmission.rule(source),
                 wake: resume ? execution.wake : undefined,
               })
             : undefined

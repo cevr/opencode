@@ -339,6 +339,8 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
               delivery: ctx.payload.delivery,
             })
             .pipe(
+              // Fork (synthetic-archived): the user's own slash command: what it admits to this session is the user's.
+              SessionAdmission.userCommand(ctx.params.sessionID),
               Effect.catchTag("Session.NotFoundError", missingSession),
               Effect.catchTag("Command.NotFoundError", (error) =>
                 Effect.fail(

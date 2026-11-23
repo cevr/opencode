@@ -109,7 +109,7 @@ export const make = (deps: Deps) => {
               store: deps.store,
               sessionID: notice.sessionID,
               inputID: id,
-              keeps: SessionAdmission.Sources.subagent.keeps,
+              rule: SessionAdmission.rule("subagent"),
               wake: wakeParent,
             })
           return deps.inbox.admit({

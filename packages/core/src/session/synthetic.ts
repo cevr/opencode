@@ -32,8 +32,9 @@ export const make = (
     const session = yield* store.get(sessionID)
     if (!session) return yield* new NotFoundError({ sessionID })
     // Early refusal; the admitting transaction decides again, atomically with the write.
-    const keeps = SessionAdmission.keeps(input.source)
-    if (session.time.archived && keeps) return yield* Effect.die(new SessionAdmission.Refused(sessionID, "archived"))
+    const rule = SessionAdmission.rule(input.source)
+    if (session.time.archived && rule === "refuse")
+      return yield* Effect.die(new SessionAdmission.Refused(sessionID, "archived"))
     const id = input.id ?? SessionMessage.ID.create()
     const resume = input.resume !== false
     // Whether this call's own admission decided (its transaction ran the commit hook), whatever it decided.
@@ -43,7 +44,7 @@ export const make = (
       store,
       sessionID,
       inputID: id,
-      keeps,
+      rule,
       wake: resume ? wake : undefined,
       decided: input.decided,
     })
@@ -76,6 +77,7 @@ export const make = (
         store,
         sessionID,
         inputID: id,
+        rule,
         wake: resume ? wake : undefined,
         decided: input.decided,
       })

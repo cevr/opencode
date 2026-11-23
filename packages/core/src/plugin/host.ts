@@ -593,10 +593,15 @@ export const make = Effect.fn("PluginHost.make")(function* (plugin: Pick<Interfa
       remove: (input) => sessions.remove(input.sessionID),
       switchAgent: sessions.switchAgent,
       switchModel: sessions.switchModel,
-      // Fork (synthetic-archived): a plugin's input is not the user's: refused, typed, by an archived session.
-      prompt: (input) => SessionAdmission.typed(sessions.prompt({ ...input, source: "plugin" })),
+      // Fork (synthetic-archived): a plugin's input is not the user's (refused, typed, by an archived session), except
+      // inside the user's own slash command on that session (SessionAdmission.userCommand). A command a plugin runs is
+      // not the user's.
+      prompt: (input) =>
+        SessionAdmission.pluginSource(input.sessionID).pipe(
+          Effect.flatMap((source) => SessionAdmission.typed(sessions.prompt({ ...input, source }))),
+        ),
       generate: sessions.generate,
-      command: (input) => sessions.command({ ...input, command: input.name }),
+      command: (input) => SessionAdmission.notUserCommand(sessions.command({ ...input, command: input.name })),
       compact: sessions.compact,
       update: Effect.fn(function* (input) {
         const info = yield* sessions.get(input.sessionID)
@@ -612,7 +617,10 @@ export const make = Effect.fn("PluginHost.make")(function* (plugin: Pick<Interfa
           yield* sessions.setPermissions({ sessionID: input.sessionID, permissions: input.permissions })
       }),
       move: sessions.move,
-      synthetic: (input) => SessionAdmission.typed(sessions.synthetic({ ...input, source: "plugin" })),
+      synthetic: (input) =>
+        SessionAdmission.pluginSource(input.sessionID).pipe(
+          Effect.flatMap((source) => SessionAdmission.typed(sessions.synthetic({ ...input, source }))),
+        ),
       interrupt: (input) =>
         sessions
           .interrupt(input.sessionID, { resume: input.resume })

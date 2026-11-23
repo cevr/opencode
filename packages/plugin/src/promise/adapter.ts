@@ -4,6 +4,8 @@ import type { OpenCodeEvent } from "@opencode/client"
 import type { RpcCallOptions, RpcEventPayload, SelectedEvent, SubscribeOptions } from "@opencode/client/promise/api"
 import { Effect, Schema, SchemaAST, Stream } from "effect"
 import type { Scope } from "effect"
+import { AsyncLocalStorage } from "node:async_hooks"
+import { UserCommand } from "@opencode/util/effect/user-command"
 import { HttpApiEndpoint, HttpApiSchema } from "effect/http-api"
 import { define } from "../effect/plugin.js"
 import { AssertInput } from "../permission.js"
@@ -214,6 +216,9 @@ function compileEndpoint(endpoint: HttpApiEndpoint.Top) {
  * preserves boot-time batching, so Promise-plugin transforms still coalesce
  * into one reload per domain.
  */
+/** Fork (synthetic-archived): the user's command mark across a Promise plugin's own awaits (UserCommand). */
+const commandOrigin = new AsyncLocalStorage<UserCommand.Mark | undefined>()
+
 export function fromPromise(plugin: Plugin) {
   return define({
     id: plugin.id,
@@ -303,6 +308,7 @@ export function fromPromise(plugin: Plugin) {
         ) => {
           const compiled = compileEndpoint(endpoint)
           return ((input?: unknown) =>
+            // Fork (synthetic-archived): a call made inside the user's own command keeps its mark (read here, synchronously).
             Effect.gen(function* () {
               // Match the generated Promise client, whose request body crosses JSON before endpoint decoding.
               const normalized = yield* Schema.encodeUnknownEffect(JsonInput)(input ?? {}).pipe(
@@ -312,7 +318,10 @@ export function fromPromise(plugin: Plugin) {
               const result = yield* method(Object.assign({}, ...decoded) as never)
               if (compiled.noContent) return undefined
               return yield* compiled.encode(result)
-            }).pipe(Effect.runPromiseWith(runtime))) as PromiseMethod
+            }).pipe(
+              Effect.provideService(UserCommand.Current, commandOrigin.getStore()),
+              Effect.runPromiseWith(runtime),
+            )) as PromiseMethod
         }
 
         const transform =
@@ -351,8 +360,14 @@ export function fromPromise(plugin: Plugin) {
                     add: (definition) =>
                       editor.add({
                         ...definition,
+                        // Fork (synthetic-archived): the user's command mark follows the plugin's promise to its host calls.
                         execute: (input) =>
-                          Effect.tryPromise({ try: () => definition.execute(input), catch: (cause) => cause }),
+                          Effect.flatMap(UserCommand.Current, (mark) =>
+                            Effect.tryPromise({
+                              try: () => commandOrigin.run(mark, () => definition.execute(input)),
+                              catch: (cause) => cause,
+                            }),
+                          ),
                       }),
                   }),
                 ),
