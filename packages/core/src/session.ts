@@ -530,6 +530,10 @@ const layer = Layer.effect(
           return yield* Effect.die(new SessionAdmission.Refused(input.sessionID, "archived"))
         return yield* SessionCommand.execute({ ...input, session }).pipe(
           Effect.provideService(Instance.Service, instances),
+          // Fork (synthetic-archived): the command's extent; a selection no prompt carried is published as it returns.
+          SessionAdmission.commandExtent(input.sessionID, (selection, rule) =>
+            sessions.forSession(input.sessionID).select({ selection, rule }).pipe(Effect.ignoreCause),
+          ),
         )
       }),
       shell: (input) => sessions.forSession(input.sessionID).shell(input),

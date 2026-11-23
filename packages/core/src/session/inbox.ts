@@ -170,13 +170,16 @@ export type Interface = Effect.Success<ReturnType<typeof make>>
 export class Service extends Context.Service<Service, Interface>()("@opencode/SessionInbox") {}
 
 /** Fork (synthetic-archived): a bus whose publish carries `before` in the same transaction (Bus.publishAll). */
-const publishingAfter = (bus: Bus.Interface, before: Bus.PublishInput): Pick<Bus.Interface, "publish"> => ({
+const publishingAfter = (
+  bus: Bus.Interface,
+  before: readonly [Bus.PublishInput, ...Bus.PublishInput[]],
+): Pick<Bus.Interface, "publish"> => ({
   publish: (definition, data, options) =>
     bus
       // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the admitted input's own durable event
-      .publishAll([before, [definition, data, options] as unknown as Bus.PublishInput])
-      // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the second payload is that event's
-      .pipe(Effect.map((events) => events[1] as never)),
+      .publishAll([...before, [definition, data, options] as unknown as Bus.PublishInput])
+      // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the last payload is that event's
+      .pipe(Effect.map((events) => events.at(-1) as never)),
 })
 
 export const make = Effect.fn("SessionInbox.make")(function* () {
@@ -205,12 +208,13 @@ export const make = Effect.fn("SessionInbox.make")(function* () {
     readonly item: Item & { readonly type: Type }
     /** Runs inside the admitting transaction (fork: SessionAdmission.commit). */
     readonly commit?: Bus.PublishOptions["commit"]
-    /** Fork (synthetic-archived): an event of the session published in the same transaction, before the input. */
-    readonly before?: Bus.PublishInput
+    /** Fork (synthetic-archived): events of the session published in the same transaction, before the input. */
+    readonly before?: readonly Bus.PublishInput[]
   }) {
     const existing = yield* reconcile({ ...request, type: request.item.type, delivery: request.item.delivery })
     if (existing !== undefined) return existing
-    const events = request.before ? publishingAfter(bus, request.before) : bus
+    const [first, ...rest] = request.before ?? []
+    const events = first ? publishingAfter(bus, [first, ...rest]) : bus
     const admitted = yield* events
       .publish(
         SessionEvent.InboxEnqueued,

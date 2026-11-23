@@ -7,6 +7,7 @@ import type { Permission } from "@opencode/schema/permission"
 import { Event } from "@opencode/schema/event"
 import { FSUtil } from "@opencode/util/fs-util"
 import { Bus } from "../bus.js"
+import { isSqlError, type SqlError } from "effect/sql/SqlError"
 import { Database } from "../database/database.js"
 import { Instance } from "../instance/service.js"
 import { ShellResult } from "../shell/result.js"
@@ -30,6 +31,11 @@ type PromptRequest = SessionPrompt.Input & {
   resume?: boolean
   /** Fork (synthetic-archived): set for a prompt that is not the user's own (SessionAdmission). */
   source?: SessionAdmission.Source
+  /**
+   * Fork (synthetic-archived): the selection its command's execute left pending (SessionAdmission.commandExtent),
+   * published in this prompt's admitting transaction by switchAgent's and switchModel's rules.
+   */
+  select?: SessionAdmission.Selection
 }
 
 /**
@@ -118,6 +124,68 @@ export const make = Effect.fn("Session.make")(function* () {
       return
     yield* bus.publish(SessionEvent.ModelSelected, { sessionID, model: input.model, previous: session.model })
   })
+  // Fork (synthetic-archived): one write transaction for a command's selection and what it is admitted with, holding
+  // the session's publish lock first (so its own publishes inside need no other lock and are routed after the commit,
+  // in order). A database failure is a defect, as a publish's is.
+  const together = <A, E, R>(sessionID: SessionSchema.ID, effect: Effect.Effect<A, E, R>) =>
+    Bus.exclusive(
+      bus,
+      sessionID,
+    )(
+      database.db
+        .transaction(() => effect, { behavior: "immediate" })
+        .pipe(Effect.catchIf((error): error is SqlError => isSqlError(error), Effect.die)),
+    )
+  // Fork (synthetic-archived): a command's pending selection, published as switchAgent and switchModel publish it, by
+  // their rules and in that order, each its own event; then the selection's reactions (SessionAdmission.onSelection)
+  // write theirs, before the input it is admitted with. Inside `together`.
+  const applySelection = Effect.fnUntraced(function* (
+    session: SessionSchema.Info,
+    select: SessionAdmission.Selection | undefined,
+  ) {
+    const published: SessionAdmission.SelectionEvent[] = []
+    const agent = select?.agent
+    if (agent !== undefined) {
+      const current =
+        session.agent ??
+        (yield* store.lastAssistantAfter({ sessionID: session.id }).pipe(Effect.orElseSucceed(() => undefined)))?.agent
+      if (current !== agent)
+        published.push(
+          yield* bus.publish(SessionEvent.AgentSelected, { sessionID: session.id, agent, previous: session.agent }),
+        )
+    }
+    const model = select?.model
+    if (
+      model !== undefined &&
+      !(
+        session.model?.providerID === model.providerID &&
+        session.model.id === model.id &&
+        (session.model.variant ?? "default") === (model.variant ?? "default")
+      )
+    )
+      published.push(
+        yield* bus.publish(SessionEvent.ModelSelected, { sessionID: session.id, model, previous: session.model }),
+      )
+    yield* SessionAdmission.react(published)
+  })
+  // Fork (synthetic-archived): a selection its command's execute made and no prompt carried, published when the
+  // command returns, in one transaction checked under the admission's rule first: refused (archived, not the user's)
+  // or deleted, nothing is selected.
+  const select = Effect.fn("Session.select")(function* (
+    sessionID: SessionSchema.ID,
+    input: { readonly selection: SessionAdmission.Selection; readonly rule: SessionAdmission.Rule },
+  ) {
+    yield* together(
+      sessionID,
+      Effect.gen(function* () {
+        yield* SessionAdmission.guard({ store, sessionID, rule: input.rule })
+        const session = yield* store.get(sessionID)
+        if (session) yield* applySelection(session, input.selection)
+      }),
+    ).pipe(
+      Effect.catchDefect((defect) => (defect instanceof SessionAdmission.Refused ? Effect.void : Effect.die(defect))),
+    )
+  })
   const mutatePending = (
     sessionID: SessionSchema.ID,
     inboxID: SessionMessage.ID,
@@ -189,18 +257,25 @@ export const make = Effect.fn("Session.make")(function* () {
             return yield* Effect.gen(function* () {
               const item = yield* restore(SessionPrompt.prepare({ session, messageID, input }))
               // Commit a staged revert only after preparation succeeds, before admitting new work. Fork
-              // (synthetic-archived): a sourced prompt commits it in its admitting transaction (refused: neither).
-              if (session.revert && !decide) yield* SessionRevert.commit(bus, session)
-              const admit = admission.admit({
+              // (synthetic-archived): a sourced prompt, or one carrying a command's selection, writes the selection, its
+              // reactions and then the revert's commit (upstream's order) in its admitting transaction (refused: none).
+              const selecting = input.select?.agent !== undefined || input.select?.model !== undefined
+              const atomic = decide !== undefined || selecting
+              if (session.revert && !atomic) yield* SessionRevert.commit(bus, session)
+              const revert: Bus.PublishInput[] =
+                atomic && session.revert
+                  ? [[SessionEvent.RevertEvent.Committed, { sessionID: session.id, to: session.revert.messageID }]]
+                  : []
+              const enqueue = admission.admit({
                 id: messageID,
                 sessionID: session.id,
                 item,
                 commit: decide,
-                before:
-                  decide && session.revert
-                    ? [SessionEvent.RevertEvent.Committed, { sessionID: session.id, to: session.revert.messageID }]
-                    : undefined,
+                before: revert,
               })
+              const admit = selecting
+                ? together(sessionID, applySelection(session, input.select).pipe(Effect.andThen(enqueue)))
+                : enqueue
               return yield* source ? SessionAdmission.refused(store, sessionID, admit) : admit
             }).pipe(
               instances.provide(session),
@@ -389,6 +464,7 @@ export const make = Effect.fn("Session.make")(function* () {
     steerInbox,
     queueInbox,
     revert,
+    select,
   }
 
   const forSession = (sessionID: SessionSchema.ID) => {
@@ -418,6 +494,7 @@ export const make = Effect.fn("Session.make")(function* () {
     const clear = operations.revert.clear.bind(undefined, sessionID)
     const commit = operations.revert.commit.bind(undefined, sessionID)
     const revert = { stage, clear, commit }
+    const select = operations.select.bind(undefined, sessionID)
 
     return {
       id: sessionID,
@@ -444,6 +521,7 @@ export const make = Effect.fn("Session.make")(function* () {
       steerInbox,
       queueInbox,
       revert,
+      select,
     }
   }
   return { forSession }

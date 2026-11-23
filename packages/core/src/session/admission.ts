@@ -9,7 +9,11 @@ export * as SessionAdmission from "./admission.js"
 // - it is taken inside the write transaction that admits the input (a `Bus.publish` commit hook, under SQLite's write
 //   lock), so an archive or a delete commits either before the admit (and is seen) or after it (and the input was
 //   admitted while the session was live);
-// - the wake is rung inside that same transaction: no archive can commit between the admit and the ring;
+// - the wake is rung only after that transaction committed, in a transaction of its own that re-reads the committed
+//   row under the same rule (`ring`): a rolled-back admission rings nothing, and an archive that commits between the
+//   admit and the ring is seen by the ring (the input is held then);
+// - a refused call changes nothing: whatever it would write with its input (a staged revert's commit, a command's
+//   agent or model selection) is written in the admitting transaction, and the refusal rolls it all back;
 // - a deleted session refuses every source (typed NotFound);
 // - an archived session refuses a source that keeps its input (typed ArchivedError, no row: the caller still holds it
 //   and can give it again at the next prompt) and holds the input of one that does not (row admitted, no wake: the
@@ -19,13 +23,17 @@ export * as SessionAdmission from "./admission.js"
 // Unarchiving wakes nothing: it publishes no work (session.ts `unarchive`).
 
 import { and, eq, like, notExists, sql } from "drizzle-orm"
-import { Effect, Option, Schema } from "effect"
+import { Cause, Effect, Option, Schema } from "effect"
+import type { Agent } from "@opencode/schema/agent"
+import type { Model } from "@opencode/schema/model"
+import type { Event } from "@opencode/schema/event"
 import { UserCommand } from "@opencode/util/effect/user-command"
 import type { Database } from "../database/database.js"
 import { KVTable } from "../kv/sql.js"
 import { NotFoundError } from "./error.js"
 import { SessionInbox } from "./inbox.js"
 import type { SessionMessage } from "./message.js"
+import type { SessionEvent } from "./event.js"
 import { SessionSchema } from "./schema.js"
 import { SessionInboxTable } from "./sql.js"
 import type { SessionStore } from "./store.js"
@@ -134,7 +142,7 @@ export const userCommand =
   (sessionID: SessionSchema.ID) =>
   <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     Effect.suspend(() => {
-      const mark: UserCommand.Mark = { sessionID, open: true }
+      const mark: UserCommand.Mark = { sessionID, user: true, open: true }
       return effect.pipe(
         Effect.provideService(UserCommand.Current, mark),
         Effect.ensuring(Effect.sync(() => void (mark.open = false))),
@@ -150,6 +158,143 @@ export const pluginSource = Effect.fnUntraced(function* (sessionID: SessionSchem
   const mark = yield* UserCommand.Current
   return UserCommand.covers(mark, sessionID) ? undefined : ("plugin" as const)
 })
+
+/** The agent and model a command's execute selected for its session (ctx.session.switchAgent / switchModel). */
+export type Selection = { agent?: Agent.ID; model?: Model.Ref }
+
+/** The selections pending on each command extent, for that extent's own session. */
+const pending = new WeakMap<UserCommand.Mark, Selection>()
+
+const selecting = (mark: UserCommand.Mark | undefined, sessionID: SessionSchema.ID) =>
+  mark !== undefined && mark.open && mark.sessionID === sessionID ? pending.get(mark) : undefined
+
+/**
+ * Runs a command's execute (`Session.command`) as its extent: a mark of its own, the user's when the server's route
+ * marked the call (`userCommand`), else a plugin's or an automation's. Within it a plugin's selection of the command's
+ * session's agent or model is pending (`defer`) until the extent's next prompt carries it into its admitting
+ * transaction (`take`); one no prompt carried is given to `flush` when execute returns, with the rule it is admitted
+ * under (`user`, or `refuse`: dropped by an archived session).
+ */
+export const commandExtent =
+  (sessionID: SessionSchema.ID, flush: (selection: Selection, rule: Rule) => Effect.Effect<void>) =>
+  <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    Effect.gen(function* () {
+      const user = UserCommand.covers(yield* UserCommand.Current, sessionID)
+      const mark: UserCommand.Mark = { sessionID, user, open: true }
+      pending.set(mark, {})
+      return yield* effect.pipe(
+        Effect.provideService(UserCommand.Current, mark),
+        Effect.ensuring(
+          Effect.suspend(() => {
+            mark.open = false
+            const selection = pending.get(mark)
+            pending.delete(mark)
+            return selection && (selection.agent !== undefined || selection.model !== undefined)
+              ? flush(selection, user ? "user" : "refuse")
+              : Effect.void
+          }),
+        ),
+      )
+    })
+
+/** Keeps a selection pending on the current command extent when it is `sessionID`'s; false: publish it now. */
+export const defer = Effect.fnUntraced(function* (sessionID: SessionSchema.ID, selection: Selection) {
+  const current = selecting(yield* UserCommand.Current, sessionID)
+  if (!current) return false
+  Object.assign(current, selection)
+  return true
+})
+
+/** The selection pending for `sessionID` (what a read of the session answers inside the extent). */
+export const pendingSelection = (sessionID: SessionSchema.ID) =>
+  Effect.map(UserCommand.Current, (mark) => {
+    const current = selecting(mark, sessionID)
+    return current && (current.agent !== undefined || current.model !== undefined) ? { ...current } : undefined
+  })
+
+/**
+ * Takes the pending selection into a prompt (which publishes it in its admitting transaction). A prompt that fails
+ * for a reason other than its refusal gives it back, as upstream's selection had already committed.
+ */
+export const carrying =
+  (sessionID: SessionSchema.ID) =>
+  <A, E, R>(admitting: (selection: Selection | undefined) => Effect.Effect<A, E, R>) =>
+    Effect.gen(function* () {
+      const mark = yield* UserCommand.Current
+      const current = selecting(mark, sessionID)
+      const selection =
+        current && (current.agent !== undefined || current.model !== undefined) ? { ...current } : undefined
+      if (mark && selection) pending.set(mark, {})
+      return yield* admitting(selection).pipe(
+        Effect.onError((cause) =>
+          Effect.sync(() => {
+            if (!mark || !selection || !mark.open) return
+            const refusal = Cause.squash(cause)
+            if (refusal instanceof Refused || refusal instanceof ArchivedError) return
+            pending.set(mark, { ...selection, ...pending.get(mark) })
+          }),
+        ),
+      )
+    })
+
+/** A selection's event as its admission published it. */
+export type SelectionEvent =
+  | Event.Payload<typeof SessionEvent.AgentSelected>
+  | Event.Payload<typeof SessionEvent.ModelSelected>
+
+/** What a part of OpenCode writes in reaction to a selection (plan.ts's Plan-mode reminder). */
+export type Reaction = (event: SelectionEvent) => Effect.Effect<void, unknown>
+
+const reactions = new Set<Reaction>()
+const reactedTo = new Set<string>()
+
+/**
+ * Registers a reaction to a command's selection, run inside the transaction that admits it, after the selection's
+ * events and before the input they are admitted with: what it writes lands where it would have had the selection been
+ * its own write, and a refusal rolls it back with the rest. The registrant's subscriber to the same events skips those
+ * reacted to here (`reacted`). Scoped: removed with its plugin.
+ */
+export const onSelection = (reaction: Reaction) =>
+  Effect.acquireRelease(
+    Effect.sync(() => void reactions.add(reaction)),
+    () => Effect.sync(() => void reactions.delete(reaction)),
+  )
+
+/** Whether a reaction already ran for this event inside its admission (once: the subscriber's check consumes it). */
+export const reacted = (eventID: string) => reactedTo.delete(eventID)
+
+/**
+ * Runs every reaction for the events just published, in the caller's transaction. A failure aborts it: a refusal of
+ * what a reaction writes (an archived session, not the user's) is the admission's refusal.
+ */
+export const react = (events: ReadonlyArray<SelectionEvent>) =>
+  Effect.forEach(
+    events,
+    (event) =>
+      Effect.forEach(reactions, (reaction) => reaction(event), { discard: true }).pipe(
+        Effect.andThen(Effect.sync(() => void reactedTo.add(event.id))),
+        Effect.catch((error) =>
+          Effect.die(error instanceof ArchivedError ? new Refused(error.sessionID, "archived") : error),
+        ),
+        Effect.catchDefect((defect) =>
+          Effect.die(defect instanceof ArchivedError ? new Refused(defect.sessionID, "archived") : defect),
+        ),
+      ),
+    { discard: true },
+  )
+
+/**
+ * The commit hook that admits a write without an input row (a command's pending selection), under `rule`: a deleted
+ * session, or an archived one under `refuse`, aborts the transaction (Refused).
+ */
+export const guard = (input: { readonly store: Store; readonly sessionID: SessionSchema.ID; readonly rule: Rule }) =>
+  Effect.gen(function* () {
+    const state = yield* look(input.store, input.sessionID, input.rule === "user")
+    if (state === "deleted") return yield* Effect.die(new Refused(input.sessionID, "deleted"))
+    if (state === "archived" && input.rule === "refuse")
+      return yield* Effect.die(new Refused(input.sessionID, "archived"))
+    return state
+  })
 
 /** A source that keeps its input was refused: the session is archived. Nothing was admitted. */
 export class ArchivedError extends Schema.TaggedError<ArchivedError>()("Session.ArchivedError", {
@@ -231,11 +376,7 @@ export const commit =
   }) =>
   () =>
     Effect.gen(function* () {
-      const state = yield* look(input.store, input.sessionID, input.rule === "user")
-      if (state === "deleted") return yield* Effect.die(new Refused(input.sessionID, "deleted"))
-      if (state === "archived" && input.rule === "refuse")
-        return yield* Effect.die(new Refused(input.sessionID, "archived"))
-      if (state === "archived") yield* hold(input.db, input.sessionID, input.inputID)
+      if ((yield* guard(input)) === "archived") yield* hold(input.db, input.sessionID, input.inputID)
     })
 
 /** A ring was asked for inside an open transaction, whose commit it cannot see. */

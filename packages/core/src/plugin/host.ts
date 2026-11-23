@@ -589,16 +589,38 @@ export const make = Effect.fn("PluginHost.make")(function* (plugin: Pick<Interfa
               }
             : { parentID: input.parentID }),
         }),
-      get: (input) => sessions.get(input.sessionID),
+      // Fork (synthetic-archived): inside a command's execute, its session's agent and model selection is pending
+      // (SessionAdmission.commandExtent): read back as selected, published with the command's next prompt, in its
+      // admitting transaction, or when the command returns.
+      get: (input) =>
+        Effect.all([sessions.get(input.sessionID), SessionAdmission.pendingSelection(input.sessionID)]).pipe(
+          Effect.map(([info, selection]) =>
+            selection ? { ...info, agent: selection.agent ?? info.agent, model: selection.model ?? info.model } : info,
+          ),
+        ),
       remove: (input) => sessions.remove(input.sessionID),
-      switchAgent: sessions.switchAgent,
-      switchModel: sessions.switchModel,
+      switchAgent: (input) =>
+        SessionAdmission.defer(input.sessionID, { agent: input.agent }).pipe(
+          Effect.flatMap((deferred) =>
+            deferred ? sessions.get(input.sessionID).pipe(Effect.asVoid) : sessions.switchAgent(input),
+          ),
+        ),
+      switchModel: (input) =>
+        SessionAdmission.defer(input.sessionID, { model: input.model }).pipe(
+          Effect.flatMap((deferred) =>
+            deferred ? sessions.get(input.sessionID).pipe(Effect.asVoid) : sessions.switchModel(input),
+          ),
+        ),
       // Fork (synthetic-archived): a plugin's input is not the user's (refused, typed, by an archived session), except
       // inside the user's own slash command on that session (SessionAdmission.userCommand). A command a plugin runs is
       // not the user's.
       prompt: (input) =>
         SessionAdmission.pluginSource(input.sessionID).pipe(
-          Effect.flatMap((source) => SessionAdmission.typed(sessions.prompt({ ...input, source }))),
+          Effect.flatMap((source) =>
+            SessionAdmission.carrying(input.sessionID)((select) =>
+              SessionAdmission.typed(sessions.prompt({ ...input, source, select })),
+            ),
+          ),
         ),
       generate: sessions.generate,
       command: (input) =>
