@@ -40,11 +40,13 @@ export function managesTransactionsNatively(client: SqlClient): client is Native
 }
 
 /**
- * Runs `effect` once the outermost transaction open on the current fiber commits; at once when none is open. Dropped
- * when that transaction, or the savepoint it was registered in, rolls back.
+ * Defer through the client's queue within a transaction. Otherwise preserve the caller's direct effect, including
+ * interruption, not the queue's isolation of callback failures.
  */
 export function afterCommit(client: SqlClient, effect: Effect.Effect<void>): Effect.Effect<void> {
-  return client.afterCommit(effect)
+  return Effect.flatMap(Effect.serviceOption(client.transactionService), (transaction) =>
+    transaction._tag === "Some" ? client.afterCommit(effect) : effect,
+  )
 }
 
 export type EffectSQLiteRunResult = readonly never[]
