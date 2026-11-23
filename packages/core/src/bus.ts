@@ -5,6 +5,7 @@ import { Event } from "@opencode/schema/event"
 import type { EventLog } from "@opencode/schema/event-log"
 import { and, asc, eq, gt, lte, sql } from "drizzle-orm"
 import { Database } from "./database/database.js"
+import { afterCommit } from "./database/drizzle/effect-sqlite/session.js"
 import { EventSequenceTable, EventTable } from "./event/sql.js"
 import type { Location } from "@opencode/schema/location"
 import { KeyedMutex } from "./effect/keyed-mutex.js"
@@ -182,6 +183,21 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Bus") {}
 
+type Exclusive = (aggregateID: string) => <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>
+const exclusives = new WeakMap<Interface, Exclusive>()
+
+/**
+ * Fork (synthetic-archived): runs `effect` holding the aggregate's publish lock, which its own publishes to that
+ * aggregate then share (reentrant): a transaction opened inside it can publish to the aggregate, and those events are
+ * routed after its commit, in order, before any other publisher's to it. A bus without one (a test double) runs it as is.
+ */
+export const exclusive =
+  (bus: Interface, aggregateID: string) =>
+  <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> => {
+    const lock = exclusives.get(bus)
+    return lock ? lock(aggregateID)(effect) : effect
+  }
+
 interface Options {
   readonly beforeAggregateRead?: (aggregateID: string) => Effect.Effect<void>
   /** Maximum durable rows read per page while replaying or tailing an aggregate log. */
@@ -209,6 +225,18 @@ export function configured(options?: Options) {
         const projectors = new Map<string, Subscriber[]>()
         const listeners = new Array<Subscriber>()
         const durableLocks = KeyedMutex.makeUnsafe<string>()
+        // Fork (synthetic-archived): the aggregates whose publish lock this fiber holds (Bus.exclusive).
+        const held = Context.Reference<ReadonlySet<string>>("@opencode/Bus/held", { defaultValue: () => new Set() })
+        const exclusive =
+          (aggregateID: string) =>
+          <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+            Effect.flatMap(held, (aggregates) =>
+              aggregates.has(aggregateID)
+                ? effect
+                : durableLocks.withLock(aggregateID)(
+                    Effect.provideService(effect, held, new Set([...aggregates, aggregateID])),
+                  ),
+            )
         const { db } = yield* Database.Service
         const logReadPageSize = options?.logReadPageSize ?? 512
         const persist = options?.persist ?? false
@@ -434,14 +462,19 @@ export function configured(options?: Options) {
                     { behavior: "immediate" },
                   )
                   .pipe(Effect.orDie)
-                if (committed) {
-                  committed.route()
-                  yield* Effect.forEach(
-                    pubsub.durable.get(committed.aggregateID) ?? [],
-                    (wake) => PubSub.publish(wake, undefined),
-                    { discard: true },
+                if (committed)
+                  // Fork (synthetic-archived): routed once the outermost transaction commits (at once outside one).
+                  yield* afterCommit(
+                    db.$client,
+                    Effect.suspend(() => {
+                      committed.route()
+                      return Effect.forEach(
+                        pubsub.durable.get(committed.aggregateID) ?? [],
+                        (wake) => PubSub.publish(wake, undefined),
+                        { discard: true },
+                      )
+                    }),
                   )
-                }
                 return committed
               }),
             )
@@ -467,12 +500,12 @@ export function configured(options?: Options) {
                 return yield* commitDurableEvent(definition, event as Event.Payload, undefined, commit).pipe(
                   Effect.as(event),
                 )
-              return yield* durableLocks.withLock(aggregateID)(
+              return yield* exclusive(aggregateID)(
                 Effect.gen(function* () {
                   const committed = yield* commitDurableEvent(definition, event as Event.Payload, undefined, commit)
                   if (!committed) return event
                   event = committed.event as Event.Payload<D>
-                  yield* notify(event as Event.Payload, true)
+                  yield* afterCommit(db.$client, notify(event as Event.Payload, true))
                   return event
                 }),
               )
@@ -555,7 +588,7 @@ export function configured(options?: Options) {
                 }),
               )
             }
-            return yield* durableLocks.withLock(aggregateID)(
+            return yield* exclusive(aggregateID)(
               Effect.uninterruptible(
                 Effect.gen(function* () {
                   const committed = yield* db
@@ -634,15 +667,22 @@ export function configured(options?: Options) {
                       { behavior: "immediate" },
                     )
                     .pipe(Effect.orDie)
-                  committed.route()
-                  yield* Effect.forEach(
-                    pubsub.durable.get(aggregateID) ?? [],
-                    (wake) => PubSub.publish(wake, undefined),
-                    {
-                      discard: true,
-                    },
+                  // Fork (synthetic-archived): routed once the outermost transaction commits (at once outside one).
+                  yield* afterCommit(
+                    db.$client,
+                    Effect.suspend(() => {
+                      committed.route()
+                      return Effect.forEach(
+                        pubsub.durable.get(aggregateID) ?? [],
+                        (wake) => PubSub.publish(wake, undefined),
+                        { discard: true },
+                      ).pipe(
+                        Effect.andThen(
+                          Effect.forEach(committed.events, (event) => notify(event, true), { discard: true }),
+                        ),
+                      )
+                    }),
                   )
-                  yield* Effect.forEach(committed.events, (event) => notify(event, true), { discard: true })
                   return committed.events as PublishResult<I>
                 }),
               ),
@@ -890,7 +930,7 @@ export function configured(options?: Options) {
             projectors.set(key, list)
           })
 
-        return Service.of({
+        const service = Service.of({
           publish,
           publishAll,
           subscribe,
@@ -901,6 +941,8 @@ export function configured(options?: Options) {
           remove,
           claim,
         })
+        exclusives.set(service, exclusive)
+        return service
       }),
     ),
   })

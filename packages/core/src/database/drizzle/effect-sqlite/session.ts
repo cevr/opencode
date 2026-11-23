@@ -43,6 +43,44 @@ export function managesTransactionsNatively(client: SqlClient): client is Native
   return (client as SqlClient & { readonly transactionStatements?: boolean }).transactionStatements === false
 }
 
+// Fork feature (synthetic-archived): work to run once the outermost transaction of a connection commits (the bus's
+// routing of the events it wrote), as effect/sql's `afterCommit` does for transactions it opens itself. One level per
+// transaction or savepoint: a released savepoint hands its work to its parent, a rolled-back one drops it.
+const afterCommitLevels = new WeakMap<object, Array<Array<Effect.Effect<void>>>>()
+
+function openLevel(connection: object, id: number) {
+  if (id === 0) afterCommitLevels.set(connection, [[]])
+  else afterCommitLevels.get(connection)?.push([])
+}
+
+/** Closes a level; the outermost one, committed, answers its work, to run once the connection is released. */
+function closeLevel(connection: object, id: number, committed: boolean): Array<Effect.Effect<void>> {
+  const levels = afterCommitLevels.get(connection)
+  if (!levels) return []
+  const work = levels.pop() ?? []
+  if (id !== 0) {
+    if (committed) levels.at(-1)?.push(...work)
+    return []
+  }
+  afterCommitLevels.delete(connection)
+  return committed ? work : []
+}
+
+/**
+ * Runs `effect` once the outermost transaction open on the current fiber commits; at once when none is open. Dropped
+ * when that transaction, or the savepoint it was registered in, rolls back.
+ */
+export function afterCommit(client: SqlClient, effect: Effect.Effect<void>): Effect.Effect<void> {
+  if (managesTransactionsNatively(client)) return client.afterCommit(effect)
+  return Effect.flatMap(Effect.serviceOption(client.transactionService), (option) => {
+    const levels = option._tag === "Some" ? afterCommitLevels.get(option.value[0]) : undefined
+    const level = levels?.at(-1)
+    if (!level) return effect
+    level.push(effect)
+    return Effect.void
+  })
+}
+
 export type EffectSQLiteRunResult = readonly never[]
 
 export interface EffectSQLiteSessionOptions {
@@ -161,6 +199,7 @@ export class EffectSQLiteSession<TRelations extends AnyRelations> extends SQLite
                 ),
               )
         const id = connectionOption._tag === "Some" ? connectionOption.value[1] + 1 : 0
+        const after: Array<Effect.Effect<void>> = []
 
         return connection.pipe(
           Effect.flatMap(([scope, connection]) => {
@@ -168,6 +207,8 @@ export class EffectSQLiteSession<TRelations extends AnyRelations> extends SQLite
               connection,
               id === 0 ? `begin ${config?.behavior ?? "deferred"}` : `savepoint effect_sql_${id}`,
             ).pipe(
+              // Fork (synthetic-archived): a level of after-commit work for this transaction or savepoint.
+              Effect.tap(() => Effect.sync(() => openLevel(connection, id))),
               Effect.flatMap(() =>
                 Effect.provideContext(
                   restore(effect),
@@ -205,15 +246,27 @@ export class EffectSQLiteSession<TRelations extends AnyRelations> extends SQLite
                           ),
                         )
 
-                    return finalize.pipe(Effect.flatMap(() => exit))
+                    // Fork (synthetic-archived): run the work registered for after the outermost commit only once it
+                    // committed; a rolled-back level drops its own.
+                    return finalize.pipe(
+                      Effect.onExit((done) =>
+                        Effect.sync(() => {
+                          after.push(...closeLevel(connection, id, Exit.isSuccess(exit) && Exit.isSuccess(done)))
+                        }),
+                      ),
+                      Effect.flatMap(() => exit),
+                    )
                   }),
                 ),
               ),
             )
 
-            return scope === undefined
-              ? transaction
-              : transaction.pipe(Effect.onExit((exit) => Scope.close(scope, exit)))
+            return (
+              scope === undefined ? transaction : transaction.pipe(Effect.onExit((exit) => Scope.close(scope, exit)))
+            ).pipe(
+              // Fork (synthetic-archived): after the commit and the connection's release, as the bus routed before.
+              Effect.tap(() => Effect.forEach(after.splice(0), (work) => Effect.ignoreCause(work), { discard: true })),
+            )
           }),
         )
       }),
