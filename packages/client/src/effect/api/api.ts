@@ -13,10 +13,10 @@ import type { SessionMessage } from "@opencode/schema/session-message"
 import type { SessionInbox } from "@opencode/schema/session-inbox"
 import type { PromptInput } from "@opencode/schema/prompt-input"
 import type { AgentAttachment } from "@opencode/schema/prompt"
+import type { DateTime } from "effect"
 import type { FileDiff } from "@opencode/schema/file-diff"
 import type { Money } from "@opencode/schema/money"
 import type { Form } from "@opencode/schema/form"
-import type { DateTime } from "effect"
 import type { Skill } from "@opencode/schema/skill"
 import type { InstructionEntry } from "@opencode/schema/instruction-entry"
 import type { Schema } from "effect"
@@ -244,7 +244,15 @@ export type SessionSyntheticInput = {
   readonly delivery?: SessionInbox.Delivery | undefined
   readonly resume?: boolean | undefined
 }
-export type SessionSyntheticOutput = SessionInbox.Synthetic
+export type SessionSyntheticOutput = {
+  readonly id: SessionMessage.ID
+  readonly sessionID: Session.ID
+  readonly time: { readonly created: DateTime.Utc }
+  readonly type: "synthetic"
+  readonly payload: SessionInbox.SyntheticPayload
+  readonly delivery: SessionInbox.Delivery
+  readonly held?: boolean | undefined
+}
 export type SessionSyntheticOperation<E = never> = (
   input: SessionSyntheticInput,
 ) => Effect.Effect<SessionSyntheticOutput, E>

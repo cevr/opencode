@@ -2423,7 +2423,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "$ref": "#/components/schemas/Session.Inbox.Synthetic"
+                      "$ref": "#/components/schemas/Session.Inbox.SyntheticAdmitted"
                     }
                   },
                   "required": ["data"],
@@ -24665,6 +24665,50 @@
           },
           "delivery": {
             "$ref": "#/components/schemas/Session.Inbox.Delivery"
+          }
+        },
+        "required": ["id", "sessionID", "time", "type", "payload", "delivery"],
+        "additionalProperties": false
+      },
+      "Session.Inbox.SyntheticAdmitted": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/Session.Message.ID"
+          },
+          "sessionID": {
+            "$ref": "#/components/schemas/Session.ID"
+          },
+          "time": {
+            "type": "object",
+            "properties": {
+              "created": {
+                "type": "number"
+              }
+            },
+            "required": ["created"],
+            "additionalProperties": false
+          },
+          "type": {
+            "type": "string",
+            "enum": ["synthetic"]
+          },
+          "payload": {
+            "$ref": "#/components/schemas/Session.Inbox.SyntheticPayload"
+          },
+          "delivery": {
+            "$ref": "#/components/schemas/Session.Inbox.Delivery"
+          },
+          "held": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "True when the session is archived: the message was admitted but not woken; the next user prompt's turn takes it."
           }
         },
         "required": ["id", "sessionID", "time", "type", "payload", "delivery"],

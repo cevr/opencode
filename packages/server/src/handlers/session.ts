@@ -385,6 +385,9 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
       .handle(
         "session.synthetic",
         Effect.fn(function* (ctx) {
+          // Fork (synthetic-archived): an archived session holds a client's message unwoken (the route cannot tell
+          // ACP's own turn context from any other caller's); the response says so.
+          let held = false
           const data = yield* session
             .synthetic({
               id: ctx.payload.id,
@@ -395,15 +398,9 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
               delivery: ctx.payload.delivery,
               resume: ctx.payload.resume,
               source: "http",
+              decided: (decision) => Effect.sync(() => void (held = decision === "held")),
             })
             .pipe(
-              // Fork (synthetic-archived): an archived session refuses a client's message; the client keeps it.
-              SessionAdmission.typed,
-              Effect.catchTag("Session.ArchivedError", (error) =>
-                Effect.fail(
-                  new ConflictError({ message: `Session is archived: ${error.sessionID}`, resource: "archived" }),
-                ),
-              ),
               Effect.catchTag("Session.NotFoundError", missingSession),
               Effect.catchTag("Session.SyntheticConflictError", (error) =>
                 Effect.fail(
@@ -414,7 +411,7 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
                 ),
               ),
             )
-          return { data }
+          return { data: held ? { ...data, held } : data }
         }),
       )
       .handle(

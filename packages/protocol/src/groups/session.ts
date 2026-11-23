@@ -411,7 +411,16 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
           delivery: SessionInbox.Delivery.pipe(Schema.optional),
           resume: Schema.Boolean.pipe(Schema.optional),
         }),
-        success: Schema.Struct({ data: SessionInbox.Synthetic }),
+        // Fork (synthetic-archived): the admitted item plus an additive `held`, present only when the session is archived.
+        success: Schema.Struct({
+          data: Schema.Struct({
+            ...SessionInbox.Synthetic.fields,
+            held: Schema.Boolean.pipe(Schema.optional).annotate({
+              description:
+                "True when the session is archived: the message was admitted but not woken; the next user prompt's turn takes it.",
+            }),
+          }).annotate({ identifier: "Session.Inbox.SyntheticAdmitted" }),
+        }),
         error: [ConflictError, SessionNotFoundError],
       }).annotateMerge(
         OpenApi.annotations({

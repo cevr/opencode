@@ -41,8 +41,10 @@ export const Sources = {
     why: "a plugin's ctx.session.synthetic or ctx.session.prompt: the plugin holds its input and is told",
   },
   http: {
-    keeps: true,
-    why: "a client's POST /api/session/:id/synthetic: the client is told (409)",
+    keeps: false,
+    why:
+      "a client's POST /api/session/:id/synthetic: the route cannot tell its callers apart (ACP's own turn context, which " +
+      "the user's prompt after it takes, an SDK script, another client), so it holds; the response says `held: true`",
   },
   shell: {
     keeps: false,

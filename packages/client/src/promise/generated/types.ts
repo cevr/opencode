@@ -545,6 +545,16 @@ export type SkillInfo = {
   content: string
 }
 
+export type SessionInboxSyntheticAdmitted = {
+  id: SessionMessageID
+  sessionID: SessionID
+  time: { created: number }
+  type: "synthetic"
+  payload: SessionInboxSyntheticPayload
+  delivery: SessionInboxDelivery
+  held?: boolean | null
+}
+
 export type SessionInboxSynthetic = {
   id: SessionMessageID
   sessionID: SessionID
@@ -3663,7 +3673,7 @@ export type SessionSyntheticInput = {
   readonly resume?: boolean | null | undefined
 }
 
-export type SessionSyntheticOutput = { data: SessionInboxSynthetic }["data"]
+export type SessionSyntheticOutput = { data: SessionInboxSyntheticAdmitted }["data"]
 
 export type SessionShellInput = {
   readonly sessionID: string
