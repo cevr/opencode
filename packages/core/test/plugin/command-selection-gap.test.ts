@@ -7,12 +7,14 @@ import { describe, expect } from "bun:test"
 import { Deferred, Effect, Exit, Fiber, Layer } from "effect"
 import { Agent } from "@opencode/core/agent"
 import { Database } from "@opencode/core/database/database"
+import { Location } from "@opencode/core/location"
 import { Model } from "@opencode/core/model"
 import { Session } from "@opencode/core/session"
 import { SessionAdmission } from "@opencode/core/session/admission"
 import { SessionStore } from "@opencode/core/session/store"
 import { dump } from "../fixture/admission-model"
 import { commandLayer, project, sequence } from "../fixture/command-selection"
+import { location } from "../fixture/location"
 import { testEffect } from "../lib/effect"
 
 /** Runs once, at the first read of the session made while a selection is pending on it. */
@@ -243,14 +245,19 @@ describe("the gap between a command's selection and its prompt", () => {
     }),
   )
 
-  it.live("two locations loaded: a selection's reminder is written once, by its own location's plan", () =>
+  it.live("two locations loaded: only the selection's own location reacts and writes a Plan reminder", () =>
     Effect.gen(function* () {
       const one = yield* project()
       const two = yield* project()
-      // Both locations' plugins are loaded (each has run a command) before the selection.
       yield* sequence(two.id, "m2")
       yield* sequence(one.id, "m2")
+      // The reminder's idempotency could otherwise conceal a second location reacting.
+      const foreign: string[] = []
+      yield* SessionAdmission.onSelection((event) => Effect.sync(() => void foreign.push(event.type))).pipe(
+        Effect.provideService(Location.Service, Location.Service.of(location(two.location))),
+      )
       expect(yield* sequence(one.id, "pick")).toEqual(["agent-switched", "synthetic", "user", "assistant", "idle"])
+      expect(foreign).toEqual([])
     }),
   )
 
