@@ -36,7 +36,7 @@ async function setup() {
   mkdirSync(control, { recursive: true })
   await writeProject(project)
   const file = path.join(dir, "opencode.db")
-  const runtime = ManagedRuntime.make(commandLayer([Database.node.replace(Database.configured({ path: file }))]))
+  const runtime = ManagedRuntime.make(commandLayer([], file))
   const session = await runtime.runPromise(create(project))
   const read = <A>(effect: Effect.Effect<A, unknown, Session.Service | Database.Service>) =>
     runtime.runPromise(effect as Effect.Effect<A, never, Session.Service | Database.Service>)

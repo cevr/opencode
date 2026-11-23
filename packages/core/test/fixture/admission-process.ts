@@ -12,7 +12,6 @@ import path from "node:path"
 import { Cause, Effect, Exit, Layer, ManagedRuntime } from "effect"
 import { Bus } from "@opencode/core/bus"
 import { Command } from "@opencode/core/command"
-import { Database } from "@opencode/core/database/database"
 import { Session } from "@opencode/core/session"
 import { SessionAdmission } from "@opencode/core/session/admission"
 import { SessionEvent } from "@opencode/core/session/event"
@@ -64,7 +63,7 @@ const store = SessionStore.node.replace(
 /** A plugin's command whose prompt was refused: the command plugin reports it as its execution's failure. */
 const refusedCommand = (error: unknown) => error instanceof Command.ExecutionError && /archived/i.test(error.message)
 
-const runtime = ManagedRuntime.make(commandLayer([store, Database.node.replace(Database.configured({ path: file }))]))
+const runtime = ManagedRuntime.make(commandLayer([store], file))
 
 const command = Effect.gen(function* () {
   const sessions = yield* Session.Service

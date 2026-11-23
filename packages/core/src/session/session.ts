@@ -140,9 +140,12 @@ export const make = Effect.fn("Session.make")(function* () {
   // their rules and in that order, each its own event; then the selection's reactions (SessionAdmission.onSelection)
   // write theirs, before the input it is admitted with. Inside `together`.
   const applySelection = Effect.fnUntraced(function* (
-    session: SessionSchema.Info,
+    sessionID: SessionSchema.ID,
     select: SessionAdmission.Selection | undefined,
   ) {
+    // Read inside the transaction: a concurrent command's selection, committed first, is the one this compares to.
+    const session = yield* store.get(sessionID)
+    if (!session) return
     const published: SessionAdmission.SelectionEvent[] = []
     const agent = select?.agent
     if (agent !== undefined) {
@@ -166,7 +169,7 @@ export const make = Effect.fn("Session.make")(function* () {
       published.push(
         yield* bus.publish(SessionEvent.ModelSelected, { sessionID: session.id, model, previous: session.model }),
       )
-    yield* SessionAdmission.react(database.db, session.location, published)
+    yield* SessionAdmission.react(session.location, published)
   })
   // Fork (synthetic-archived): a selection its command's execute made and no prompt carried, published when the
   // command returns, in one transaction checked under the admission's rule first: refused (archived, not the user's)
@@ -179,8 +182,7 @@ export const make = Effect.fn("Session.make")(function* () {
       sessionID,
       Effect.gen(function* () {
         yield* SessionAdmission.guard({ store, sessionID, rule: input.rule })
-        const session = yield* store.get(sessionID)
-        if (session) yield* applySelection(session, input.selection)
+        yield* applySelection(sessionID, input.selection)
       }),
     ).pipe(
       Effect.catchDefect((defect) => (defect instanceof SessionAdmission.Refused ? Effect.void : Effect.die(defect))),
@@ -274,7 +276,7 @@ export const make = Effect.fn("Session.make")(function* () {
                 before: revert,
               })
               const admit = selecting
-                ? together(sessionID, applySelection(session, input.select).pipe(Effect.andThen(enqueue)))
+                ? together(sessionID, applySelection(sessionID, input.select).pipe(Effect.andThen(enqueue)))
                 : enqueue
               return yield* source ? SessionAdmission.refused(store, sessionID, admit) : admit
             }).pipe(

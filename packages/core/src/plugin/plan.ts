@@ -9,6 +9,7 @@ import { Effect, Stream } from "effect"
 import path from "path"
 import { Permission } from "../permission.js"
 import { SessionAdmission } from "../session/admission.js"
+import { SessionMessage } from "@opencode/schema/session-message"
 
 const plan = Agent.ID.make("plan")
 
@@ -74,21 +75,23 @@ export const Plugin = define({
     })
 
     // Fork (synthetic-archived): a command's selection is written in its prompt's admitting transaction; the reminder
-    // is written inside it, where this subscriber would have put it (before the prompt), and the subscriber skips it.
+    // is written inside it, where this subscriber would have put it (before the prompt). Its ID is the event's, so the
+    // subscriber's own admission of it, after the commit, finds that row and writes nothing (first admission wins).
     yield* SessionAdmission.onSelection((event) => {
-      if (event.type !== "session.agent.selected") return Effect.succeed(false)
+      if (event.type !== "session.agent.selected") return Effect.void
       const text = switchReminder(event, enterReminder)
-      if (!text) return Effect.succeed(false)
-      return ctx.session.synthetic({ sessionID: event.data.sessionID, text, resume: false }).pipe(Effect.as(true))
+      if (!text) return Effect.void
+      return ctx.session.synthetic({ sessionID: event.data.sessionID, id: reminderID(event), text, resume: false })
     })
     yield* ctx.event.subscribe({ types: ["session.created", "session.agent.selected"] }).pipe(
       Stream.runForEach((event) => {
-        if (SessionAdmission.reacted(event.id)) return Effect.void
         const text = switchReminder(event, enterReminder)
         if (!text) return Effect.void
         return ctx.session
           .synthetic({
             sessionID: event.data.sessionID,
+            // Fork (synthetic-archived): one reminder per event (SessionAdmission.onSelection above).
+            id: reminderID(event),
             text,
             resume: false,
           })
@@ -102,6 +105,11 @@ export const Plugin = define({
     )
   }),
 })
+
+// Fork (synthetic-archived): the reminder's message ID, derived from the event it answers (suffixed: the event's own
+// message, an agent-switched one, already takes `msg_<event>`).
+const reminderID = (event: { readonly id: string }) =>
+  SessionMessage.ID.make(`${event.id.replace(/^evt_/, "msg_")}_plan`)
 
 function switchReminder(
   event: SessionEvent.Created | SessionEvent.AgentSelected,

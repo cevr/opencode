@@ -44,38 +44,27 @@ export function managesTransactionsNatively(client: SqlClient): client is Native
 }
 
 // Fork feature (synthetic-archived): work to run once the outermost transaction of a connection commits (the bus's
-// routing of the events it wrote), as effect/sql's `afterCommit` does for transactions it opens itself, and work that
-// undoes an in-memory effect if the transaction, or the savepoint it was made in, rolls back (`onRollback`). One level
-// per transaction or savepoint: a released savepoint hands both lists to its parent; a rolled-back one drops its
-// commit work and runs its undo work.
-type Level = { readonly commit: Array<Effect.Effect<void>>; readonly rollback: Array<Effect.Effect<void>> }
-const afterCommitLevels = new WeakMap<object, Array<Level>>()
+// routing of the events it wrote), as effect/sql's `afterCommit` does for transactions it opens itself. One level per
+// transaction or savepoint: a released savepoint hands its work to its parent, a rolled-back one drops it.
+const afterCommitLevels = new WeakMap<object, Array<Array<Effect.Effect<void>>>>()
 
 function openLevel(connection: object, id: number) {
-  if (id === 0) afterCommitLevels.set(connection, [{ commit: [], rollback: [] }])
-  else afterCommitLevels.get(connection)?.push({ commit: [], rollback: [] })
+  if (id === 0) afterCommitLevels.set(connection, [[]])
+  else afterCommitLevels.get(connection)?.push([])
 }
 
-/** Closes a level; answers the work to run once the connection is released (the commit's, or a rollback's undo, last first). */
+/** Closes a level; the outermost one, committed, answers its work, to run once the connection is released. */
 function closeLevel(connection: object, id: number, committed: boolean): Array<Effect.Effect<void>> {
   const levels = afterCommitLevels.get(connection)
   if (!levels) return []
-  const level = levels.pop() ?? { commit: [], rollback: [] }
+  const work = levels.pop() ?? []
   if (id !== 0) {
-    const parent = levels.at(-1)
-    if (!committed) return level.rollback.toReversed()
-    parent?.commit.push(...level.commit)
-    parent?.rollback.push(...level.rollback)
+    if (committed) levels.at(-1)?.push(...work)
     return []
   }
   afterCommitLevels.delete(connection)
-  return committed ? level.commit : level.rollback.toReversed()
+  return committed ? work : []
 }
-
-const currentLevel = (client: SqlClient) =>
-  Effect.map(Effect.serviceOption(client.transactionService), (option) =>
-    option._tag === "Some" ? afterCommitLevels.get(option.value[0])?.at(-1) : undefined,
-  )
 
 /**
  * Runs `effect` once the outermost transaction open on the current fiber commits; at once when none is open. Dropped
@@ -83,22 +72,11 @@ const currentLevel = (client: SqlClient) =>
  */
 export function afterCommit(client: SqlClient, effect: Effect.Effect<void>): Effect.Effect<void> {
   if (managesTransactionsNatively(client)) return client.afterCommit(effect)
-  return Effect.flatMap(currentLevel(client), (level) => {
+  return Effect.flatMap(Effect.serviceOption(client.transactionService), (option) => {
+    const levels = option._tag === "Some" ? afterCommitLevels.get(option.value[0]) : undefined
+    const level = levels?.at(-1)
     if (!level) return effect
-    level.commit.push(effect)
-    return Effect.void
-  })
-}
-
-/**
- * Runs `undo` if the transaction open on the current fiber, or the savepoint it is registered in, rolls back; never
- * when it commits, nor when none is open. For an in-memory effect made inside a transaction that only its commit may
- * keep. A natively managed client (Durable Object SQLite) offers no rollback callback: there `undo` is not run.
- */
-export function onRollback(client: SqlClient, undo: Effect.Effect<void>): Effect.Effect<void> {
-  if (managesTransactionsNatively(client)) return Effect.void
-  return Effect.flatMap(currentLevel(client), (level) => {
-    if (level) level.rollback.push(undo)
+    level.push(effect)
     return Effect.void
   })
 }
@@ -269,7 +247,7 @@ export class EffectSQLiteSession<TRelations extends AnyRelations> extends SQLite
                         )
 
                     // Fork (synthetic-archived): run the work registered for after the outermost commit only once it
-                    // committed; a rolled-back level drops that work and runs its undo work.
+                    // committed; a rolled-back level drops its own.
                     return finalize.pipe(
                       Effect.onExit((done) =>
                         Effect.sync(() => {
@@ -286,10 +264,8 @@ export class EffectSQLiteSession<TRelations extends AnyRelations> extends SQLite
             return (
               scope === undefined ? transaction : transaction.pipe(Effect.onExit((exit) => Scope.close(scope, exit)))
             ).pipe(
-              // Fork (synthetic-archived): after the commit (or the rollback, its undo work) and the connection's release.
-              Effect.onExit(() =>
-                Effect.forEach(after.splice(0), (work) => Effect.ignoreCause(work), { discard: true }),
-              ),
+              // Fork (synthetic-archived): after the commit and the connection's release, as the bus routed before.
+              Effect.tap(() => Effect.forEach(after.splice(0), (work) => Effect.ignoreCause(work), { discard: true })),
             )
           }),
         )

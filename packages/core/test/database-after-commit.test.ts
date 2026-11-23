@@ -1,14 +1,15 @@
-// Fork feature (synthetic-archived): the drizzle session's after-commit and rollback work. Work registered with
-// `afterCommit` runs once the outermost transaction commits and never after a rollback; `onRollback` work (the undo of
-// an in-memory effect made inside) runs when its transaction or savepoint rolls back, last first, and never on commit.
+// Fork feature (synthetic-archived): the drizzle session's after-commit work. Work registered with `afterCommit` runs
+// once the outermost transaction commits, in order, and never after a rollback: a savepoint that rolls back drops its
+// own, one released hands it to its parent. It is the only in-memory effect path inside a transaction: nothing is done
+// in memory there that a rollback would have to undo, so no driver needs a rollback callback.
 import { describe, expect } from "bun:test"
 import { Data, Effect } from "effect"
 import { Database } from "@opencode/core/database/database"
-import { afterCommit, onRollback } from "@opencode/core/database/drizzle/effect-sqlite/session"
-import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
+import { afterCommit } from "@opencode/core/database/drizzle/effect-sqlite/session"
 import { testEffect } from "./lib/effect"
+import { databaseLayer } from "./fixture/command-selection"
 
-const it = testEffect(AppNodeBuilder.build(Database.node))
+const it = testEffect(databaseLayer())
 
 class Abort extends Data.TaggedError("Abort")<{}> {}
 
@@ -18,25 +19,25 @@ const recorder = () => {
   return { log, note }
 }
 
-describe("a transaction's after-commit and rollback work", () => {
-  it.effect("committed: the commit work runs after it, the undo work never", () =>
+describe("a transaction's after-commit work", () => {
+  it.effect("committed: runs after it, in order", () =>
     Effect.gen(function* () {
       const { db } = yield* Database.Service
       const { log, note } = recorder()
       yield* db.transaction(
         () =>
           Effect.gen(function* () {
-            yield* afterCommit(db.$client, note("committed"))
-            yield* onRollback(db.$client, note("undone"))
+            yield* afterCommit(db.$client, note("first"))
+            yield* afterCommit(db.$client, note("second"))
             yield* note("inside")
           }),
         { behavior: "immediate" },
       )
-      expect(log).toEqual(["inside", "committed"])
+      expect(log).toEqual(["inside", "first", "second"])
     }),
   )
 
-  it.effect("rolled back: the undo work runs, last first; the commit work never", () =>
+  it.effect("rolled back: never runs", () =>
     Effect.gen(function* () {
       const { db } = yield* Database.Service
       const { log, note } = recorder()
@@ -45,30 +46,27 @@ describe("a transaction's after-commit and rollback work", () => {
           () =>
             Effect.gen(function* () {
               yield* afterCommit(db.$client, note("committed"))
-              yield* onRollback(db.$client, note("undo first"))
-              yield* onRollback(db.$client, note("undo second"))
               return yield* new Abort()
             }),
           { behavior: "immediate" },
         )
         .pipe(Effect.ignore)
-      expect(log).toEqual(["undo second", "undo first"])
+      expect(log).toEqual([])
     }),
   )
 
-  it.effect("a savepoint rolled back inside a committed transaction: its undo runs, the outer commit work runs", () =>
+  it.effect("a savepoint rolled back inside a committed transaction: its work dropped, the outer's runs", () =>
     Effect.gen(function* () {
       const { db } = yield* Database.Service
       const { log, note } = recorder()
       yield* db.transaction(
         () =>
           Effect.gen(function* () {
-            yield* afterCommit(db.$client, note("outer committed"))
+            yield* afterCommit(db.$client, note("outer"))
             yield* db
               .transaction(() =>
                 Effect.gen(function* () {
-                  yield* afterCommit(db.$client, note("inner committed"))
-                  yield* onRollback(db.$client, note("inner undone"))
+                  yield* afterCommit(db.$client, note("inner"))
                   return yield* new Abort()
                 }),
               )
@@ -76,11 +74,11 @@ describe("a transaction's after-commit and rollback work", () => {
           }),
         { behavior: "immediate" },
       )
-      expect(log).toEqual(["inner undone", "outer committed"])
+      expect(log).toEqual(["outer"])
     }),
   )
 
-  it.effect("a released savepoint inside a rolled-back transaction: its undo runs with the outer one's", () =>
+  it.effect("a released savepoint inside a rolled-back transaction: nothing runs", () =>
     Effect.gen(function* () {
       const { db } = yield* Database.Service
       const { log, note } = recorder()
@@ -88,23 +86,21 @@ describe("a transaction's after-commit and rollback work", () => {
         .transaction(
           () =>
             Effect.gen(function* () {
-              yield* onRollback(db.$client, note("outer undone"))
-              yield* db.transaction(() => onRollback(db.$client, note("inner undone")))
+              yield* db.transaction(() => afterCommit(db.$client, note("inner")))
               return yield* new Abort()
             }),
           { behavior: "immediate" },
         )
         .pipe(Effect.ignore)
-      expect(log).toEqual(["inner undone", "outer undone"])
+      expect(log).toEqual([])
     }),
   )
 
-  it.effect("outside a transaction: after-commit work runs at once, undo work never", () =>
+  it.effect("outside a transaction: runs at once", () =>
     Effect.gen(function* () {
       const { db } = yield* Database.Service
       const { log, note } = recorder()
       yield* afterCommit(db.$client, note("now"))
-      yield* onRollback(db.$client, note("undone"))
       expect(log).toEqual(["now"])
     }),
   )
