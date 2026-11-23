@@ -1,11 +1,7 @@
 /* oxlint-disable */
-import * as Context from "effect/Context"
 import * as Effect from "effect/Effect"
-import * as Exit from "effect/Exit"
-import * as Scope from "effect/Scope"
-import type { SqlClient } from "effect/sql/SqlClient"
+import { BeginTransaction, type SqlClient } from "effect/sql/SqlClient"
 import type { SqlError } from "effect/sql/SqlError"
-import { StorageFailure } from "../../storage-failure.js"
 import type { EffectCacheShape } from "drizzle-orm/cache/core/cache-effect"
 import type { WithCacheConfig } from "drizzle-orm/cache/core/types"
 import type { EffectDrizzleQueryError } from "drizzle-orm/effect-core/errors"
@@ -43,42 +39,12 @@ export function managesTransactionsNatively(client: SqlClient): client is Native
   return (client as SqlClient & { readonly transactionStatements?: boolean }).transactionStatements === false
 }
 
-// Fork feature (synthetic-archived): work to run once the outermost transaction of a connection commits (the bus's
-// routing of the events it wrote). Effect's own `afterCommit` belongs to transactions the client opens, so Drizzle
-// tracks those it opens with SQL itself: a released savepoint hands its work to its parent, a rolled-back one drops it.
-const afterCommitLevels = new WeakMap<object, Array<Array<Effect.Effect<void>>>>()
-
-function openLevel(connection: object, id: number) {
-  if (id === 0) afterCommitLevels.set(connection, [[]])
-  else afterCommitLevels.get(connection)?.push([])
-}
-
-/** Closes a level; the outermost one, committed, answers its work, to run once the connection is released. */
-function closeLevel(connection: object, id: number, committed: boolean): Array<Effect.Effect<void>> {
-  const levels = afterCommitLevels.get(connection)
-  if (!levels) return []
-  const work = levels.pop() ?? []
-  if (id !== 0) {
-    if (committed) levels.at(-1)?.push(...work)
-    return []
-  }
-  afterCommitLevels.delete(connection)
-  return committed ? work : []
-}
-
 /**
  * Runs `effect` once the outermost transaction open on the current fiber commits; at once when none is open. Dropped
  * when that transaction, or the savepoint it was registered in, rolls back.
  */
 export function afterCommit(client: SqlClient, effect: Effect.Effect<void>): Effect.Effect<void> {
-  if (managesTransactionsNatively(client)) return client.afterCommit(effect)
-  return Effect.flatMap(Effect.serviceOption(client.transactionService), (option) => {
-    const levels = option._tag === "Some" ? afterCommitLevels.get(option.value[0]) : undefined
-    const level = levels?.at(-1)
-    if (!level) return effect
-    level.push(effect)
-    return Effect.void
-  })
+  return client.afterCommit(effect)
 }
 
 export type EffectSQLiteRunResult = readonly never[]
@@ -172,121 +138,17 @@ export class EffectSQLiteSession<TRelations extends AnyRelations> extends SQLite
     return Effect.serviceOption(this.client.transactionService).pipe(Effect.map((option) => option._tag === "Some"))
   }
 
-  private executeTransactionStatement(connection: Effect.Success<SqlClient["reserve"]>, query: string) {
-    return connection.executeUnprepared(query, [], undefined).pipe(Effect.asVoid)
-  }
-
-  private withTransaction<A, E, R>(effect: Effect.Effect<A, E, R>, config: SQLiteTransactionConfig | undefined) {
-    if (managesTransactionsNatively(this.client)) return this.client.withTransaction(effect)
-    return Effect.uninterruptibleMask((restore) =>
-      Effect.withFiber<A, E | SqlError, R>((fiber) => {
-        const services = fiber.context
-        const connectionOption = Context.getOption(services, this.client.transactionService)
-        const connection: Effect.Effect<
-          readonly [Scope.Closeable | undefined, Effect.Success<SqlClient["reserve"]>],
-          SqlError
-        > =
-          connectionOption._tag === "Some"
-            ? Effect.succeed([undefined, connectionOption.value[0]] as const)
-            : Scope.make().pipe(
-                Effect.flatMap((scope) =>
-                  Scope.provide(this.client.reserve, scope).pipe(
-                    Effect.map((connection) => [scope, connection] as const),
-                    Effect.catch((error) =>
-                      Scope.close(scope, Exit.fail(error)).pipe(Effect.andThen(Effect.fail(error))),
-                    ),
-                  ),
-                ),
-              )
-        const id = connectionOption._tag === "Some" ? connectionOption.value[1] + 1 : 0
-        const after: Array<Effect.Effect<void>> = []
-
-        return connection.pipe(
-          Effect.flatMap(([scope, connection]) => {
-            const transaction = this.executeTransactionStatement(
-              connection,
-              id === 0 ? `begin ${config?.behavior ?? "deferred"}` : `savepoint effect_sql_${id}`,
-            ).pipe(
-              // Fork (synthetic-archived): a level of after-commit work for this transaction or savepoint.
-              Effect.tap(() => Effect.sync(() => openLevel(connection, id))),
-              Effect.flatMap(() =>
-                Effect.provideContext(
-                  restore(effect),
-                  Context.add(services, this.client.transactionService, [connection, id]),
-                ).pipe(
-                  Effect.exit,
-                  Effect.flatMap((exit) => {
-                    const finalize = Exit.isSuccess(exit)
-                      ? id === 0
-                        ? this.executeTransactionStatement(connection, "commit").pipe(
-                            // SQLite keeps the transaction open after deferred constraint commit failures.
-                            Effect.catch((error) =>
-                              this.executeTransactionStatement(connection, "rollback").pipe(
-                                Effect.catch(() => Effect.void),
-                                Effect.andThen(Effect.fail(error)),
-                              ),
-                            ),
-                          )
-                        : this.executeTransactionStatement(connection, `release savepoint effect_sql_${id}`)
-                      : (id === 0
-                          ? this.executeTransactionStatement(connection, "rollback")
-                          : this.executeTransactionStatement(connection, `rollback to savepoint effect_sql_${id}`).pipe(
-                              Effect.andThen(
-                                this.executeTransactionStatement(connection, `release savepoint effect_sql_${id}`),
-                              ),
-                            )
-                        ).pipe(
-                          // After errors such as SQLITE_FULL, SQLite rolls the whole transaction back itself, so this
-                          // rollback has nothing to undo and fails. Report the body's error, not that one. Any other
-                          // rollback failure still fails.
-                          Effect.catch((error) =>
-                            Exit.isFailure(exit) && StorageFailure.rolledBack(exit.cause)
-                              ? Effect.void
-                              : Effect.fail(error),
-                          ),
-                        )
-
-                    // Fork (synthetic-archived): run the work registered for after the outermost commit only once it
-                    // committed; a rolled-back level drops its own.
-                    return finalize.pipe(
-                      Effect.onExit((done) =>
-                        Effect.sync(() => {
-                          after.push(...closeLevel(connection, id, Exit.isSuccess(exit) && Exit.isSuccess(done)))
-                        }),
-                      ),
-                      Effect.flatMap(() => exit),
-                    )
-                  }),
-                ),
-              ),
-            )
-
-            return (
-              scope === undefined ? transaction : transaction.pipe(Effect.onExit((exit) => Scope.close(scope, exit)))
-            ).pipe(
-              // Fork (synthetic-archived): after the commit and the connection's release, as the bus routed before.
-              Effect.tap(() => Effect.forEach(after.splice(0), (work) => Effect.ignoreCause(work), { discard: true })),
-            )
-          }),
-        )
-      }),
-    )
-  }
-
   override transaction<A, E, R>(
     transaction: (tx: EffectSQLiteTransaction<TRelations>) => Effect.Effect<A, E, R>,
     config?: SQLiteTransactionConfig,
   ): Effect.Effect<A, E | SqlError, R> {
     const { dialect, relations } = this
 
-    return this.withTransaction(
-      Effect.gen({ self: this }, function* () {
-        const tx = new EffectSQLiteTransaction<TRelations>(dialect, this, relations)
-
-        return yield* transaction(tx)
-      }),
-      config,
-    )
+    // The SQL client owns transaction identity, nesting and after-commit work for
+    // both raw SQL and Drizzle. Native transactions and savepoints ignore BEGIN.
+    return this.client
+      .withTransaction(Effect.suspend(() => transaction(new EffectSQLiteTransaction(dialect, this, relations))))
+      .pipe(Effect.provideService(BeginTransaction, `begin ${config?.behavior ?? "deferred"}`))
   }
 }
 

@@ -715,7 +715,7 @@ export function configured(options?: Options) {
                   strictOwner: options?.strictOwner,
                 })
                 if (committed && options?.publish) {
-                  yield* notify(committed.event, true)
+                  yield* afterCommit(db.$client, notify(committed.event, true))
                 }
               }),
             )
