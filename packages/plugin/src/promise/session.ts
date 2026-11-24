@@ -78,17 +78,20 @@ export type SessionModelOrigin = "explicit" | "default" | "agent" | "fallback"
 
 /**
  * One durable Step of the Session's agent loop, as routing sees it. `id` stays the same while the Step is held,
- * refused or retried, and changes for the next Step (after a completed tool call, say) and after a restart, which
- * routes the unfinished Step again from attempt 1. Only the Session runner's primary requests carry a Step.
+ * refused or retried, and across a restart, which continues the unfinished Step: the next server first waits out a
+ * hold the previous one set, then routes the Step at its next attempt. `id` changes for the next Step (after a
+ * completed tool call, say). Only the Session runner's primary requests carry a Step.
  */
 export interface SessionRouteStep {
   readonly id: string
   /** 1 for the Step's first resolution, then one more each time the Step re-enters routing. */
   readonly attempt: number
   /**
-   * The model the Step's previous attempt was routed to. `sent` is true when that attempt may have reached the
-   * provider (an ordinary failure being retried, a provider overflow, a cut-off stream). The host then keeps this
-   * attempt on that provider: a hook may defer it, but a change of provider is ignored.
+   * The Step's send history. Once an attempt may have reached its provider (an ordinary failure being retried, a
+   * provider overflow, a cut-off stream, an attempt a restart interrupted), every later attempt of the Step carries
+   * that model with `sent` true, through holds, refusals and restarts: the host keeps the Step on that provider, so a
+   * hook may defer it but a change of provider is ignored. Until then it is the model of the last attempt a refusal
+   * proved unsent, with `sent` false, and absent before any attempt.
    */
   readonly previous?: { readonly model: Model.Ref; readonly sent: boolean }
 }

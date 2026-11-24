@@ -15,6 +15,7 @@ import { SessionMessageTable, SessionPartTable, SessionTable } from "./sql.js"
 import { fromRow } from "./info.js"
 import { SessionOutline } from "./outline.js"
 import { LiveToolMetadata } from "./runner/live-tool-metadata.js"
+import { SessionStepRoute } from "./step-route.js"
 
 const ListInputBase = {
   workspaceID: Workspace.ID.pipe(Schema.optional),
@@ -112,7 +113,10 @@ export interface Interface {
    * down mid-turn.
    */
   readonly claim: (sessionID: Session.ID) => Effect.Effect<void>
-  /** Releases the claim and resets resume accounting. Terminal events call this on commit. */
+  /**
+   * Releases the claim, resets resume accounting and drops the unfinished Step's routing state (a hold or a provider
+   * pin, see SessionStepRoute) with it. Terminal events call this on commit.
+   */
   readonly release: (sessionID: Session.ID) => Effect.Effect<void>
   /**
    * Release abandoned claims when the child's parent was deleted.
@@ -438,9 +442,10 @@ const layer = Layer.effect(
           .where(eq(SessionTable.id, sessionID))
           .run()
           .pipe(Effect.orDie)
+        yield* SessionStepRoute.clear(db, [sessionID])
       }),
-      releaseOrphanedChildClaims: Effect.fn("SessionStore.releaseOrphanedChildClaims")(() =>
-        db
+      releaseOrphanedChildClaims: Effect.fn("SessionStore.releaseOrphanedChildClaims")(function* () {
+        const released = yield* db
           .update(SessionTable)
           .set({ time_suspended: null, resume_attempts: 0, time_updated: sql`${SessionTable.time_updated}` })
           .where(
@@ -449,9 +454,14 @@ const layer = Layer.effect(
               notInArray(SessionTable.parent_id, db.select({ id: SessionTable.id }).from(SessionTable)),
             ),
           )
-          .run()
-          .pipe(Effect.orDie, Effect.asVoid),
-      ),
+          .returning({ id: SessionTable.id })
+          .all()
+          .pipe(Effect.orDie)
+        yield* SessionStepRoute.clear(
+          db,
+          released.map((row) => row.id),
+        )
+      }),
       countResume: Effect.fn("SessionStore.countResume")(function* (sessionID) {
         const row = yield* db
           .update(SessionTable)

@@ -29,6 +29,7 @@ import { Project } from "@opencode/schema/project"
 import { AbsolutePath, RelativePath } from "../schema.js"
 import type { SessionSchema } from "./schema.js"
 import { SessionHistory } from "./history.js"
+import { SessionStepRoute } from "./step-route.js"
 import { ProjectTable } from "../project/sql.js"
 
 type DatabaseService = Database.Interface["db"]
@@ -972,6 +973,8 @@ const layer = Layer.effectDiscard(
       Effect.gen(function* () {
         yield* SessionBlob.releaseSession(db, event.data.sessionID)
         yield* db.delete(SessionTable).where(eq(SessionTable.id, event.data.sessionID)).run().pipe(Effect.orDie)
+        // Its claim goes with the row, and so does the unfinished Step's routing state.
+        yield* SessionStepRoute.clear(db, [event.data.sessionID])
       }),
     )
     yield* bus.project(SessionEvent.AgentSelected, (event) =>

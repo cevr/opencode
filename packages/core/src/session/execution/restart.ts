@@ -22,6 +22,7 @@ import { SessionEvent } from "../event.js"
 import { SessionExecution } from "../execution.js"
 import { SessionHistory } from "../history.js"
 import { SessionSchema } from "../schema.js"
+import { SessionStepRoute } from "../step-route.js"
 import { SessionStore } from "../store.js"
 import { ImageNotice } from "../../image/notice.js"
 import { ShellResult } from "../../shell/result.js"
@@ -116,6 +117,9 @@ export const layer = (options?: Options) =>
           )
           return false
         }
+        // A held Step sent nothing the model could have started on: it resumes as the same Step at its hold's end,
+        // with the conversation as it was, so it takes no restart notice.
+        if ((yield* SessionStepRoute.read(db, sessionID))?.hold) return true
         yield* bus.publish(SessionEvent.Synthetic, {
           sessionID,
           text: CONTINUE_AFTER_SERVER_RESTART,
