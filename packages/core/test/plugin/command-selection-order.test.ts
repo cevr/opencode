@@ -20,7 +20,6 @@ describe("a command's selection writes upstream's messages in upstream's order",
       expect(yield* sequence(session.id, "pick")).toEqual([
         "agent-switched",
         "model-switched",
-        "synthetic",
         "user",
         "assistant",
         "idle",
@@ -31,7 +30,7 @@ describe("a command's selection writes upstream's messages in upstream's order",
   it.live("from plan, then its prompt", () =>
     Effect.gen(function* () {
       const session = yield* project("plan")
-      expect(yield* sequence(session.id, "leave")).toEqual(["agent-switched", "synthetic", "user", "assistant", "idle"])
+      expect(yield* sequence(session.id, "leave")).toEqual(["agent-switched", "user", "assistant", "idle"])
     }),
   )
 
@@ -46,9 +45,8 @@ describe("a command's selection writes upstream's messages in upstream's order",
     Effect.gen(function* () {
       const session = yield* project()
       expect(yield* sequence(session.id, "select")).toEqual(["agent-switched", "model-switched"])
-      // The reminder waits in the inbox for the next turn.
       const sessions = yield* Session.Service
-      expect((yield* sessions.inbox(session.id)).map((item) => item.type)).toEqual(["synthetic"])
+      expect(yield* sessions.inbox(session.id)).toEqual([])
     }),
   )
 })

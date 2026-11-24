@@ -166,10 +166,10 @@ describe("two processes over one database: an archive and a plugin's command", (
     const info = await run.info()
     expect(String(info.agent)).toBe("plan")
     expect(info.time.archived).toBeDefined()
-    // Admitted in upstream's order: the selection, then its reminder and the prompt (delivered, or waiting in the inbox
+    // Admitted in upstream's order: the selection, then the prompt (delivered, or waiting in the inbox
     // when the archive landed before the turn took them).
     const written = [...(await run.messages()), ...(await run.inbox())]
-    expect(written.slice(0, 4)).toEqual(["agent-switched", "model-switched", "synthetic", "user"])
+    expect(written.slice(0, 3)).toEqual(["agent-switched", "model-switched", "user"])
     await run.dispose()
   }, 120_000)
 

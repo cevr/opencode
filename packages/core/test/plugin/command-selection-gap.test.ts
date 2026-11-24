@@ -12,6 +12,7 @@ import { Model } from "@opencode/core/model"
 import { Session } from "@opencode/core/session"
 import { SessionAdmission } from "@opencode/core/session/admission"
 import { SessionStore } from "@opencode/core/session/store"
+import { SessionMessage } from "@opencode/schema/session-message"
 import { dump } from "../fixture/admission-model"
 import { commandLayer, project, sequence } from "../fixture/command-selection"
 import { location } from "../fixture/location"
@@ -129,7 +130,7 @@ describe("the gap between a command's selection and its prompt", () => {
             }),
           )
           const types = yield* sequence(session.id, "pick", SessionAdmission.userCommand(session.id))
-          expect(types.slice(0, 4)).toEqual(["agent-switched", "model-switched", "synthetic", "user"])
+          expect(types.slice(0, 3)).toEqual(["agent-switched", "model-switched", "user"])
         }),
       )
       expect(yield* Deferred.await(waited)).toBe(true)
@@ -166,51 +167,78 @@ describe("the gap between a command's selection and its prompt", () => {
   )
 
   it.live(
-    "refused after plan's reminder ran: nothing kept, rows or memory; the same selection later writes it once",
+    "refused after a reaction wrote a synthetic row: nothing kept, rows or memory; the same selection later writes it once",
     () =>
       Effect.gen(function* () {
         const session = yield* project()
         const sessions = yield* Session.Service
         const { db } = yield* Database.Service
         const rows = yield* dump(db, session.id)
-        // plan.ts's reaction (registered first, at the plugin's load) writes its reminder for the agent's event; this
-        // one then refuses the model's, after it: the whole admission rolls back.
+        const reminder = (event: SessionAdmission.SelectionEvent) =>
+          event.type === "session.agent.selected"
+            ? sessions.synthetic({
+                sessionID: event.data.sessionID,
+                id: SessionMessage.ID.make(`${event.id.replace(/^evt_/, "msg_")}_react`),
+                text: "Selection reminder",
+                resume: false,
+              })
+            : Effect.void
         const exit = yield* Effect.scoped(
-          SessionAdmission.onSelection((event) =>
-            event.type === "session.model.selected"
-              ? Effect.fail(new SessionAdmission.ArchivedError({ sessionID: session.id }))
-              : Effect.void,
-          ).pipe(Effect.andThen(sessions.command({ sessionID: session.id, command: "pick", text: "x" })), Effect.exit),
+          Effect.gen(function* () {
+            yield* SessionAdmission.onSelection(reminder)
+            yield* SessionAdmission.onSelection((event) =>
+              event.type === "session.model.selected"
+                ? Effect.fail(new SessionAdmission.ArchivedError({ sessionID: session.id }))
+                : Effect.void,
+            )
+            return yield* sessions.command({ sessionID: session.id, command: "pick", text: "x" }).pipe(Effect.exit)
+          }),
         )
         expect(Exit.isFailure(exit)).toBe(true)
         expect(yield* dump(db, session.id)).toBe(rows)
-        // Admitted later in the same process: the reminder is written once, in upstream's place.
-        expect(yield* sequence(session.id, "pick")).toEqual([
-          "agent-switched",
-          "model-switched",
-          "synthetic",
-          "user",
-          "assistant",
-          "idle",
-        ])
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            yield* SessionAdmission.onSelection(reminder)
+            expect(yield* sequence(session.id, "pick")).toEqual([
+              "agent-switched",
+              "model-switched",
+              "synthetic",
+              "user",
+              "assistant",
+              "idle",
+            ])
+          }),
+        )
       }),
   )
 
   it.live(
-    "the reminder is a row named by its event: admitting it again (the subscriber, a restart) writes nothing",
+    "a reaction's row named by its event: admitting it again (a subscriber, a restart) writes nothing",
     () =>
       Effect.gen(function* () {
         const session = yield* project()
         const sessions = yield* Session.Service
         const { db } = yield* Database.Service
-        yield* sequence(session.id, "pick")
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            yield* SessionAdmission.onSelection((event) =>
+              event.type === "session.agent.selected"
+                ? sessions.synthetic({
+                    sessionID: event.data.sessionID,
+                    id: SessionMessage.ID.make(`${event.id.replace(/^evt_/, "msg_")}_react`),
+                    text: "Selection reminder",
+                    resume: false,
+                  })
+                : Effect.void,
+            )
+            yield* sequence(session.id, "pick")
+          }),
+        )
         const messages = yield* sessions.messages({ sessionID: session.id, order: "asc" })
         const selected = messages.find((message) => message.type === "agent-switched")
         const reminder = messages.find((message) => message.type === "synthetic")
         expect(selected && reminder).toBeTruthy()
-        // The reminder's ID is the selection event's, suffixed (plan.ts `reminderID`): a process that lost its memory after the
-        // commit derives it again from the row's event and finds the row.
-        expect(String(reminder!.id)).toBe(`${String(selected!.id)}_plan`)
+        expect(String(reminder!.id)).toBe(`${String(selected!.id)}_react`)
         const rows = yield* dump(db, session.id)
         yield* sessions.synthetic({
           sessionID: session.id,
@@ -222,7 +250,7 @@ describe("the gap between a command's selection and its prompt", () => {
       }),
   )
 
-  it.live("two commands selecting at once in one session: the transaction decides, one switch and one reminder", () =>
+  it.live("two commands selecting at once in one session: the transaction decides, one switch", () =>
     Effect.gen(function* () {
       const session = yield* project()
       const sessions = yield* Session.Service
@@ -240,23 +268,27 @@ describe("the gap between a command's selection and its prompt", () => {
       const all = [...types, ...inbox]
       expect(all.filter((type) => type === "agent-switched")).toHaveLength(1)
       expect(all.filter((type) => type === "model-switched")).toHaveLength(1)
-      expect(all.filter((type) => type === "synthetic")).toHaveLength(1)
+      expect(all.filter((type) => type === "synthetic")).toHaveLength(0)
       expect(all.filter((type) => type === "user")).toHaveLength(2)
     }),
   )
 
-  it.live("two locations loaded: only the selection's own location reacts and writes a Plan reminder", () =>
+  it.live("two locations loaded: only the selection's own location reacts", () =>
     Effect.gen(function* () {
       const one = yield* project()
       const two = yield* project()
       yield* sequence(two.id, "m2")
       yield* sequence(one.id, "m2")
-      // The reminder's idempotency could otherwise conceal a second location reacting.
+      const local: string[] = []
       const foreign: string[] = []
+      yield* SessionAdmission.onSelection((event) => Effect.sync(() => void local.push(event.type))).pipe(
+        Effect.provideService(Location.Service, Location.Service.of(location(one.location))),
+      )
       yield* SessionAdmission.onSelection((event) => Effect.sync(() => void foreign.push(event.type))).pipe(
         Effect.provideService(Location.Service, Location.Service.of(location(two.location))),
       )
-      expect(yield* sequence(one.id, "pick")).toEqual(["agent-switched", "synthetic", "user", "assistant", "idle"])
+      expect(yield* sequence(one.id, "pick")).toEqual(["agent-switched", "system", "user", "assistant", "idle"])
+      expect(local).toEqual(["session.agent.selected"])
       expect(foreign).toEqual([])
     }),
   )

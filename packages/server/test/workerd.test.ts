@@ -3,6 +3,7 @@ import { Effect, Layer } from "effect"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { Environment } from "@opencode/core/environment/index"
 import { Location } from "@opencode/core/location"
+import { Identity } from "@opencode/core/machine/identity"
 import { AbsolutePath } from "@opencode/core/schema"
 import { Npm } from "@opencode/util/npm"
 import { makeDurableObjectStorage } from "../../core/test/fixture/durable-object-storage"
@@ -49,12 +50,12 @@ it.effect("fails Npm.add with a clear workerd error instead of running the insta
   ),
 )
 
-it.effect("leaves hostsServer and searchable unset on the workerd environment", () =>
+it.effect("marks the workerd environment non-local and omits rg", () =>
   Effect.gen(function* () {
     const environment = yield* Environment.Service
     expect(environment.id).toBe(Environment.localID)
-    expect(environment.hostsServer).toBeUndefined()
-    expect(environment.searchable).toBeUndefined()
+    expect(environment.local).toBe(false)
+    expect(environment.rg).toBeUndefined()
   }).pipe(
     Effect.provide(
       AppNodeBuilder.build(Environment.node, [
@@ -65,4 +66,17 @@ it.effect("leaves hostsServer and searchable unset on the workerd environment", 
       ]),
     ),
   ),
+)
+
+it.effect("persists machine Identity in Durable Object KV storage without filesystem access", () =>
+  Effect.gen(function* () {
+    const storage = makeDurableObjectStorage()
+    const layer = AppNodeBuilder.build(Identity.node, ServerWorkerd.replacements({ storage }))
+    const first = yield* Effect.flatMap(Identity.Service, (id) => id.publicKey()).pipe(Effect.provide(layer))
+    expect(first.length).toBe(32)
+
+    const restarted = AppNodeBuilder.build(Identity.node, ServerWorkerd.replacements({ storage }))
+    const second = yield* Effect.flatMap(Identity.Service, (id) => id.publicKey()).pipe(Effect.provide(restarted))
+    expect(second).toEqual(first)
+  }),
 )
