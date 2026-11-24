@@ -367,13 +367,20 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           const sessionID = route.data.sessionID
           const current = sessionSelection(sessionID)
           const same = current?.providerID === model.providerID && current.modelID === model.modelID
-          setSessionDraft(
-            sessionID,
+          const next =
             same && current
               ? carry
                 ? current
                 : { providerID: current.providerID, modelID: current.modelID, variant: current.variant }
-              : preferredSelection(model),
+              : preferredSelection(model)
+          // An agent switch that lands on the Session's own model and variant changes nothing about it: the
+          // Session's recorded provenance stands, so a pick is never committed back as a client default.
+          const durable = carry ? durableSelection(sessionID) : undefined
+          setSessionDraft(
+            sessionID,
+            durable && selectionKey({ ...durable, origin: undefined }) === selectionKey({ ...next, origin: undefined })
+              ? durable
+              : next,
           )
           return true
         }

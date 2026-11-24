@@ -31,7 +31,13 @@ test("uses the last configured model and variant ahead of recents", async () => 
         ])
     },
   })
-  expect(setup.local.model.selection()).toEqual({ providerID: "provider", modelID: "second", variant: "high" })
+  // A configured model is the client's default, not a pick.
+  expect(setup.local.model.selection()).toEqual({
+    providerID: "provider",
+    modelID: "second",
+    variant: "high",
+    origin: "default",
+  })
 })
 
 test("switching agents restores their model and variant within the session", async () => {
@@ -48,7 +54,13 @@ test("switching agents restores their model and variant within the session", asy
   expect(setup.local.model.selection()).toEqual({ providerID: "provider", modelID: "first", variant: "low" })
   setup.local.agent.move(1)
   expect(setup.local.agent.current()?.id).toBe("plan")
-  expect(setup.local.model.selection()).toEqual({ providerID: "provider", modelID: "second", variant: "low" })
+  // The plan agent's own model is derived, not picked; the session's pick of first keeps its provenance below.
+  expect(setup.local.model.selection()).toEqual({
+    providerID: "provider",
+    modelID: "second",
+    variant: "low",
+    origin: "default",
+  })
   setup.local.model.set({ providerID: "provider", modelID: "third" })
   setup.local.model.variant.set("high")
   setup.local.agent.move(-1)
@@ -174,6 +186,90 @@ test("a subagent's session keeps its own subagent agent, so a message sent to it
   // The agents to pick from stay the primary ones.
   expect(setup.local.agent.list().map((item) => item.id)).toEqual(["build"])
 })
+
+test("a model selection event moves the model and its provenance together, both ways", async () => {
+  await using setup = await renderLocal({
+    models: [model("first"), model("second")],
+    sessions: [{ ...session("ses_first", { providerID: "provider", id: "first" }), modelOrigin: "default" }],
+    fetch: selectionMessage,
+  })
+  await setup.data.session.sync("ses_first")
+  setup.route.navigate({ type: "session", sessionID: "ses_first" })
+  expect(setup.local.model.selection()).toEqual({
+    providerID: "provider",
+    modelID: "first",
+    variant: undefined,
+    origin: "default",
+  })
+  // default → explicit: the server omits the origin of a pick.
+  await publishModel(setup, "second")
+  expect(setup.data.session.get("ses_first")?.modelOrigin).toBeUndefined()
+  expect(setup.local.model.selection()).toEqual({ providerID: "provider", modelID: "second", variant: undefined })
+  // explicit → default.
+  await publishModel(setup, "first", "default")
+  expect(setup.data.session.get("ses_first")?.modelOrigin).toBe("default")
+  expect(setup.local.model.selection()).toEqual({
+    providerID: "provider",
+    modelID: "first",
+    variant: undefined,
+    origin: "default",
+  })
+})
+
+test("a same-model agent switch keeps the session's pick explicit through its acknowledgment", async () => {
+  await using setup = await renderLocal({
+    models: [model("first"), model("second")],
+    agents: [agent("build"), agent("plan")],
+    sessions: [session("ses_first", { providerID: "provider", id: "first" })],
+    fetch: selectionMessage,
+  })
+  await setup.data.session.sync("ses_first")
+  setup.route.navigate({ type: "session", sessionID: "ses_first" })
+  setup.local.agent.set("plan")
+  // The composer commits this selection: a client default here would record the pick as one.
+  const selected = setup.local.model.selection()
+  expect(selected).toEqual({ providerID: "provider", modelID: "first", variant: undefined })
+  setup.local.model.trackSessionCommit(
+    "ses_first",
+    { providerID: "provider", id: "first", ...(selected?.origin ? { origin: selected.origin } : {}) },
+    "plan",
+  )
+  await publishSelection(setup, "plan", "first", false)
+  expect(setup.local.model.selection()).toEqual({ providerID: "provider", modelID: "first", variant: undefined })
+})
+
+test("a speed choice is a pick while an automatic choice stays the client's default", async () => {
+  const fast = {
+    ...model("first-fast"),
+    experimental: { speed: { base: "first", id: "fast", faster: true } },
+  }
+  await using setup = await renderLocal({
+    models: [model("first"), fast],
+    sessions: [{ ...session("ses_first", { providerID: "provider", id: "first" }), modelOrigin: "default" }],
+  })
+  // A new session's automatic choice is a default.
+  expect(setup.local.model.selection()?.origin).toBe("default")
+  await setup.data.session.sync("ses_first")
+  setup.route.navigate({ type: "session", sessionID: "ses_first" })
+  expect(setup.local.model.selection()?.origin).toBe("default")
+  setup.local.model.speed.set("fast")
+  expect(setup.local.model.selection()).toEqual({ providerID: "provider", modelID: "first-fast", variant: undefined })
+})
+
+async function publishModel(setup: Awaited<ReturnType<typeof renderLocal>>, modelID: string, origin?: "default") {
+  setup.events.emit({
+    id: `evt_${crypto.randomUUID()}_${modelID}`,
+    type: "session.model.selected",
+    created: 2,
+    durable: { aggregateID: "ses_first", seq: 2, version: 1 },
+    data: { sessionID: "ses_first", model: { providerID: "provider", id: modelID }, ...(origin ? { origin } : {}) },
+  })
+  await setup.waitFor(async () => {
+    await Bun.sleep(10)
+    const session = setup.data.session.get("ses_first")
+    return session?.model?.id === modelID && session.modelOrigin === origin
+  })
+}
 
 async function publishSelection(
   setup: Awaited<ReturnType<typeof renderLocal>>,
