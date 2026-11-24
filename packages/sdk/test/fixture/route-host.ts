@@ -30,6 +30,8 @@ export type Answer =
   | { readonly text: string }
   | { readonly status: number }
   | { readonly tool: string; readonly input: object }
+  /** The request reached the provider, which starts its answer and never finishes it: the attempt is in flight. */
+  | { readonly hang: true }
 
 export interface Policy {
   resolve?: (event: SessionModelResolve) => void
@@ -63,6 +65,7 @@ export const fixture = async (policy: Policy, answer: (sent: Sent, index: number
       const result = answer(sent, sends.length - 1)
       if ("status" in result)
         return new Response(JSON.stringify({ error: { message: "synthetic" } }), { status: result.status })
+      if ("hang" in result) return hang(body.model, String(sends.length))
       return sse(body.model, result, String(sends.length))
     },
   })
@@ -165,6 +168,19 @@ const sse = (model: string, result: Answer, id: string) => {
       chunk({}, call ? "tool_calls" : "stop") +
       line({ ...meta, choices: [], usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 } }) +
       "data: [DONE]\n\n",
+    { headers: { "content-type": "text/event-stream" } },
+  )
+}
+
+const hang = (model: string, id: string) => {
+  const meta = { id: `fixture_${id}`, object: "chat.completion.chunk", created: 1, model }
+  const first = `data: ${JSON.stringify({ ...meta, choices: [{ index: 0, delta: { role: "assistant", content: "" } }] })}\n\n`
+  return new Response(
+    new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(first))
+      },
+    }),
     { headers: { "content-type": "text/event-stream" } },
   )
 }
