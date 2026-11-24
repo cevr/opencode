@@ -1350,6 +1350,38 @@ describe("Session.create", () => {
     }),
   )
 
+  for (const { ref, origin, expectedOrigin, switches } of [
+    { ref: "same", origin: undefined, expectedOrigin: "default", switches: 0 },
+    { ref: "same", origin: "default", expectedOrigin: "default", switches: 0 },
+    { ref: "same", origin: "explicit", expectedOrigin: "explicit", switches: 1 },
+    { ref: "different", origin: undefined, expectedOrigin: "explicit", switches: 1 },
+    { ref: "different", origin: "default", expectedOrigin: "default", switches: 1 },
+    { ref: "different", origin: "explicit", expectedOrigin: "explicit", switches: 1 },
+  ] as const) {
+    it.effect(`sets a ${ref} model ref with ${origin ?? "absent"} origin`, () =>
+      Effect.gen(function* () {
+        const session = yield* Session.Service
+        const previous = Model.Ref.make({
+          id: Model.ID.make("sonnet"),
+          providerID: Provider.ID.anthropic,
+          variant: Model.VariantID.make("default"),
+        })
+        const created = yield* session.create({ location, model: previous, modelOrigin: "default" })
+        const model = ref === "same" ? previous : Model.Ref.make({ ...previous, variant: Model.VariantID.make("high") })
+
+        yield* session.switchModel({ sessionID: created.id, model, origin })
+
+        const updated = yield* session.get(created.id)
+        expect(updated.model).toEqual(model)
+        expect(updated.modelOrigin ?? "explicit").toBe(expectedOrigin)
+        const messages = yield* session.messages({ sessionID: created.id, order: "asc" })
+        const modelSwitched = messages.filter((item) => item.type === "model-switched")
+        expect(modelSwitched).toHaveLength(switches)
+        if (switches) expect(modelSwitched[0]).toMatchObject({ model, previous })
+      }),
+    )
+  }
+
   it.effect("treats an omitted variant as the default variant", () =>
     Effect.gen(function* () {
       const session = yield* Session.Service

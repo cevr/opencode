@@ -219,6 +219,39 @@ test("an automatic primary request routes to another provider without changing t
   }
 }, 20_000)
 
+test("picking the current default pins it when the routing default moves", async () => {
+  let configuredDefault = ALPHA
+  const f = await start(
+    {
+      resolve: (event) => {
+        if (event.kind === "primary" && event.origin !== "explicit") event.model = configuredDefault
+      },
+    },
+    () => say("done"),
+  )
+  try {
+    const location = { directory: f.work }
+    const pinned = await f.host.session.create({ location, model: ALPHA, modelOrigin: "default" })
+    const carried = await f.host.session.create({ location, model: ALPHA, modelOrigin: "default" })
+    await f.host.session.switchModel({ sessionID: pinned.id, model: ALPHA, origin: "explicit" })
+    await f.host.session.switchModel({ sessionID: carried.id, model: ALPHA })
+    expect((await f.host.session.get({ sessionID: pinned.id })).modelOrigin ?? "explicit").toBe("explicit")
+    expect((await f.host.session.get({ sessionID: carried.id })).modelOrigin).toBe("default")
+
+    configuredDefault = BETA
+    await f.host.session.prompt({ sessionID: pinned.id, text: "use my pick" })
+    await settle(f, pinned.id)
+    await f.host.session.prompt({ sessionID: carried.id, text: "use the default" })
+    await settle(f, carried.id)
+    expect(f.sends.map((sent) => [sent.provider, sent.model])).toEqual([
+      ["alpha", ALPHA.id],
+      ["beta", BETA.id],
+    ])
+  } finally {
+    await f.close()
+  }
+}, 20_000)
+
 test("an explicit selection is reported as explicit; a client default and an unavailable one are told apart", async () => {
   const f = await start(
     {
@@ -253,7 +286,7 @@ test("an explicit selection is reported as explicit; a client default and an una
     ])
 
     // Picking the same model the client had recorded as its default records the pick.
-    await f.host.session.switchModel({ sessionID: managed.id, model: GONE })
+    await f.host.session.switchModel({ sessionID: managed.id, model: GONE, origin: "explicit" })
     expect((await f.host.session.get({ sessionID: managed.id })).modelOrigin).toBeUndefined()
     await f.host.session.switchModel({ sessionID: managed.id, model: ALPHA, origin: "default" })
     expect((await f.host.session.get({ sessionID: managed.id })).modelOrigin).toBe("default")

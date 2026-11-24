@@ -114,14 +114,14 @@ export const make = Effect.fn("Session.make")(function* () {
   const publishModelSelection = Effect.fnUntraced(function* (
     session: SessionSchema.Info,
     model: Model.Ref,
-    origin: Model.SelectionOrigin = "explicit",
+    origin?: Model.SelectionOrigin,
   ) {
-    // Picking the model a client had recorded as its default makes it explicit, so the same ref still records.
+    // Reasserting the same ref without an origin is not a pick. A stated origin can change even when the ref does not.
     if (
       session.model?.providerID === model.providerID &&
       session.model.id === model.id &&
       (session.model.variant ?? "default") === (model.variant ?? "default") &&
-      (session.modelOrigin ?? "explicit") === origin
+      (origin === undefined || (session.modelOrigin ?? "explicit") === origin)
     )
       return
     return yield* bus.publish(SessionEvent.ModelSelected, {

@@ -1990,7 +1990,7 @@
                         "type": "null"
                       }
                     ],
-                    "description": "How model was chosen: explicit (a pick; the default when omitted) or default (the client's implicit default)."
+                    "description": "Explicit for a pick, default for the client's implicit selection. If omitted, an unchanged ref keeps its origin and a changed ref is explicit."
                   }
                 },
                 "required": ["model"],

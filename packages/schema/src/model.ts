@@ -47,6 +47,8 @@ export interface Ref extends Schema.Schema.Type<typeof Ref> {}
 /**
  * How a Session's stored model selection was made. `explicit`: a user's or caller's pick. `default`: a client recorded
  * its implicit default, not a pick. A selection stored without one is explicit.
+ * A model-set operation whose purpose is choosing a model states `explicit`; one merely carrying a ref without
+ * knowing its origin leaves origin unstated, so reasserting the same ref preserves its recorded origin.
  */
 export const SelectionOrigin = Schema.Literals(["explicit", "default"]).annotate({
   identifier: "Model.SelectionOrigin",

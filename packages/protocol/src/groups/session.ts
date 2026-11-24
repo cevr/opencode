@@ -339,7 +339,7 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
           model: Model.Ref,
           origin: Model.SelectionOrigin.pipe(Schema.optional).annotate({
             description:
-              "How model was chosen: explicit (a pick; the default when omitted) or default (the client's implicit default).",
+              "Explicit for a pick, default for the client's implicit selection. If omitted, an unchanged ref keeps its origin and a changed ref is explicit.",
           }),
         }),
         success: HttpApiSchema.NoContent,
