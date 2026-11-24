@@ -50,7 +50,13 @@ export async function createAppFixture(
     experimental: { "new-designs": false, ...base.experimental },
     theme: { name: "opencode-classic", ...base.theme },
   })
-  const server = Bun.serve({ port: 0, fetch: (request) => calls.fetch(request) })
+  const server = Bun.serve({
+    port: 0,
+    fetch(request, server) {
+      if (new URL(request.url).pathname === "/api/event") server.timeout(request, 0)
+      return calls.fetch(request)
+    },
+  })
   const task = Effect.runPromise(
     run({
       app: { name: "test", version: input.version ?? "test", channel: "test" },

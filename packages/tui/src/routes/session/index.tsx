@@ -1379,7 +1379,7 @@ export function Session(props: {
         name: "compact",
       },
       run: () => {
-        const selection = local.model.current()
+        const selection = local.model.selection()
         void data.session
           .compact({
             sessionID: route.sessionID,
@@ -1387,9 +1387,10 @@ export function Session(props: {
               ? {
                   providerID: selection.providerID,
                   id: selection.modelID,
-                  variant: local.model.variant.current(),
+                  variant: selection.variant,
                 }
               : undefined,
+            modelOrigin: selection && (selection.origin ?? "explicit"),
           })
           .catch((error) => toast.show({ message: errorMessage(error), variant: "error" }))
         dialog.clear()

@@ -18,6 +18,7 @@ import type {
   McpServer,
   ModelInfo,
   ModelRef,
+  ModelSelectionOrigin,
   PermissionSavedInfo,
   PermissionRequest,
   PermissionReplyInput,
@@ -1935,7 +1936,7 @@ export function createData(config: CreateDataInput) {
         if (fresh) track(creating, id, request)
         return { id, request }
       },
-      compact(input: { sessionID: string; model?: ModelRef }) {
+      compact(input: { sessionID: string; model?: ModelRef; modelOrigin?: ModelSelectionOrigin }) {
         const active = compacting.get(input.sessionID)
         if (active) return active.request
         // A known pending control ID may be consumed while setup waits. Propose
@@ -1957,7 +1958,8 @@ export function createData(config: CreateDataInput) {
         // settles so its older response cannot resurrect a queued row.
         const observed = new Set<string>()
         const request = sendAdmission(input.sessionID, async () => {
-          if (input.model) await api().session.switchModel({ sessionID: input.sessionID, model: input.model })
+          if (input.model)
+            await api().session.switchModel({ sessionID: input.sessionID, model: input.model, origin: input.modelOrigin })
           return api().session.compact({ sessionID: input.sessionID, id })
         })
           .then((item) => {

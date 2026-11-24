@@ -4,8 +4,13 @@ import { createData, type CreateDataInput } from "../src/solid"
 import { OpenCode, type OpenCodeEvent, type SessionInboxCompaction, type SessionInboxInfo } from "../src/promise"
 
 test("admits compaction before model setup and serializes the following prompt", async () => {
-  using fixture = setup()
-  const compact = fixture.data.session.compact({ sessionID, model: { providerID: "demo", id: "model" } })
+  const model = { providerID: "demo", id: "model" }
+  const selection = Promise.withResolvers<unknown>()
+  using fixture = setup(async (request) => {
+    if (request.url.endsWith("/model")) selection.resolve(await request.json())
+    return undefined
+  })
+  const compact = fixture.data.session.compact({ sessionID, model, modelOrigin: "default" })
   const proposed = fixture.data.session.pending.list(sessionID)[0]
   expect(proposed).toMatchObject({ type: "compaction", sessionID })
   expect(fixture.calls).toEqual([])
@@ -16,6 +21,7 @@ test("admits compaction before model setup and serializes the following prompt",
   expect(fixture.data.session.message.list(sessionID)).toMatchObject([{ type: "user", text: "Follow up" }])
   await wait(() => fixture.calls.length === 1)
   expect(fixture.calls).toEqual(["model"])
+  expect(await selection.promise).toEqual({ model, origin: "default" })
   fixture.model.resolve()
   await wait(() => fixture.calls.length === 2)
   expect(fixture.calls).toEqual(["model", "compact"])
