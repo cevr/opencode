@@ -5,6 +5,8 @@
 // base to measure upstream's sequences.
 import { describe, expect } from "bun:test"
 import { Effect } from "effect"
+import { Model } from "@opencode/core/model"
+import { Provider } from "@opencode/core/provider"
 import { Session } from "@opencode/core/session"
 import { commandLayer, project, sequence } from "../fixture/command-selection"
 import { testEffect } from "../lib/effect"
@@ -47,6 +49,32 @@ describe("a command's selection writes upstream's messages in upstream's order",
       // The reminder waits in the inbox for the next turn.
       const sessions = yield* Session.Service
       expect((yield* sessions.inbox(session.id)).map((item) => item.type)).toEqual(["synthetic"])
+    }),
+  )
+})
+
+describe("a command keeps its model choice and origin together", () => {
+  it.live("a config command explicitly picks the same model the client had set as a default", () =>
+    Effect.gen(function* () {
+      const session = yield* project()
+      const sessions = yield* Session.Service
+      const model = Model.Ref.make({ id: Model.ID.make("m2"), providerID: Provider.ID.make("test") })
+      yield* sessions.switchModel({ sessionID: session.id, model, origin: "default" })
+      expect(yield* sequence(session.id, "m2")).toEqual(["model-switched", "user", "assistant", "idle"])
+      const selected = yield* sessions.get(session.id)
+      expect(selected.model).toEqual({ ...model, variant: Model.VariantID.make("default") })
+      expect(selected.modelOrigin).toBeUndefined()
+    }),
+  )
+
+  it.live("a plugin reads the last choice inside its command and keeps its origin when the command returns", () =>
+    Effect.gen(function* () {
+      const session = yield* project()
+      const sessions = yield* Session.Service
+      yield* sessions.command({ sessionID: session.id, command: "choose-default", text: "" })
+      const selected = yield* sessions.get(session.id)
+      expect(selected.model?.id).toBe(Model.ID.make("m2"))
+      expect(selected.modelOrigin).toBe("default")
     }),
   )
 })

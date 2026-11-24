@@ -111,26 +111,32 @@ export const make = Effect.fn("Session.make")(function* () {
     if (current === input.agent) return
     yield* bus.publish(SessionEvent.AgentSelected, { sessionID, agent: input.agent, previous: session.agent })
   })
+  const publishModelSelection = Effect.fnUntraced(function* (
+    session: SessionSchema.Info,
+    model: Model.Ref,
+    origin: Model.SelectionOrigin = "explicit",
+  ) {
+    // Picking the model a client had recorded as its default makes it explicit, so the same ref still records.
+    if (
+      session.model?.providerID === model.providerID &&
+      session.model.id === model.id &&
+      (session.model.variant ?? "default") === (model.variant ?? "default") &&
+      (session.modelOrigin ?? "explicit") === origin
+    )
+      return
+    return yield* bus.publish(SessionEvent.ModelSelected, {
+      sessionID: session.id,
+      model,
+      ...(origin === "default" ? { origin } : {}),
+      previous: session.model,
+    })
+  })
   const switchModel = Effect.fn("Session.switchModel")(function* (
     sessionID: SessionSchema.ID,
     input: { model: Model.Ref; origin?: Model.SelectionOrigin },
   ) {
     const session = yield* get(sessionID)
-    const origin = input.origin ?? "explicit"
-    // Picking the model a client had recorded as its default makes it explicit, so the same ref still records.
-    if (
-      session.model?.providerID === input.model.providerID &&
-      session.model.id === input.model.id &&
-      (session.model.variant ?? "default") === (input.model.variant ?? "default") &&
-      (session.modelOrigin ?? "explicit") === origin
-    )
-      return
-    yield* bus.publish(SessionEvent.ModelSelected, {
-      sessionID,
-      model: input.model,
-      ...(origin === "default" ? { origin } : {}),
-      previous: session.model,
-    })
+    yield* publishModelSelection(session, input.model, input.origin)
   })
   // Fork (synthetic-archived): one write transaction for a command's selection and what it is admitted with, holding
   // the session's publish lock first (so its own publishes inside need no other lock and are routed after the commit,
@@ -166,17 +172,10 @@ export const make = Effect.fn("Session.make")(function* () {
         )
     }
     const model = select?.model
-    if (
-      model !== undefined &&
-      !(
-        session.model?.providerID === model.providerID &&
-        session.model.id === model.id &&
-        (session.model.variant ?? "default") === (model.variant ?? "default")
-      )
-    )
-      published.push(
-        yield* bus.publish(SessionEvent.ModelSelected, { sessionID: session.id, model, previous: session.model }),
-      )
+    if (model !== undefined) {
+      const event = yield* publishModelSelection(session, model.ref, model.origin)
+      if (event) published.push(event)
+    }
     yield* SessionAdmission.react(session.location, published)
   })
   // Fork (synthetic-archived): a selection its command's execute made and no prompt carried, published when the

@@ -88,6 +88,17 @@ const plugin = `export default {
           globalThis.__selectionRead = { ...globalThis.__selectionRead, [input.sessionID]: JSON.stringify(seen) }
         },
       })
+      editor.add({
+        name: "choose-default",
+        execute: async (input) => {
+          const model = { providerID: "test", id: "m2" }
+          await ctx.session.switchModel({ sessionID: input.sessionID, model })
+          await ctx.session.switchModel({ sessionID: input.sessionID, model, origin: "default" })
+          const seen = await ctx.session.get({ sessionID: input.sessionID })
+          if (seen.model?.id !== "m2" || seen.modelOrigin !== "default")
+            throw new Error("plugin did not read back its staged model and origin")
+        },
+      })
     })
   },
 }

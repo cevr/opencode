@@ -602,9 +602,17 @@ export const make = Effect.fn("PluginHost.make")(function* (plugin: Pick<Interfa
       // admitting transaction, or when the command returns.
       get: (input) =>
         Effect.all([sessions.get(input.sessionID), SessionAdmission.pendingSelection(input.sessionID)]).pipe(
-          Effect.map(([info, selection]) =>
-            selection ? { ...info, agent: selection.agent ?? info.agent, model: selection.model ?? info.model } : info,
-          ),
+          Effect.map(([info, selection]) => {
+            if (!selection) return info
+            return {
+              ...info,
+              agent: selection.agent ?? info.agent,
+              ...(selection.model && {
+                model: selection.model.ref,
+                modelOrigin: selection.model.origin === "default" ? selection.model.origin : undefined,
+              }),
+            }
+          }),
         ),
       remove: (input) => sessions.remove(input.sessionID),
       switchAgent: (input) =>
@@ -614,7 +622,7 @@ export const make = Effect.fn("PluginHost.make")(function* (plugin: Pick<Interfa
           ),
         ),
       switchModel: (input) =>
-        SessionAdmission.defer(input.sessionID, { model: input.model }).pipe(
+        SessionAdmission.defer(input.sessionID, { model: { ref: input.model, origin: input.origin } }).pipe(
           Effect.flatMap((deferred) =>
             deferred ? sessions.get(input.sessionID).pipe(Effect.asVoid) : sessions.switchModel(input),
           ),

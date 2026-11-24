@@ -161,7 +161,10 @@ export const pluginSource = Effect.fnUntraced(function* (sessionID: SessionSchem
 })
 
 /** The agent and model a command's execute selected for its session (ctx.session.switchAgent / switchModel). */
-export type Selection = { agent?: Agent.ID; model?: Model.Ref }
+export type Selection = {
+  agent?: Agent.ID
+  model?: { readonly ref: Model.Ref; readonly origin?: Model.SelectionOrigin }
+}
 
 /** The selections pending on each command extent, for that extent's own session. */
 const pending = new WeakMap<UserCommand.Mark, Selection>()
