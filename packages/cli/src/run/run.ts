@@ -134,6 +134,7 @@ async function execute(input: RunCommandInput, prepared: Prepared, endpoint: End
     files: prepared.files.flatMap((file) => ("attachment" in file ? [file.attachment] : [])),
     agent: target.agent,
     model: target.model,
+    modelOrigin: explicit ? "explicit" : undefined,
     thinking: input.thinking ?? false,
     format: input.format,
     auto: input.auto ?? false,

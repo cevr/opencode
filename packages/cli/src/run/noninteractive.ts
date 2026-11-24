@@ -25,6 +25,7 @@ type Input = {
   files: { uri: string; name: string }[]
   agent?: string
   model?: ModelRef
+  modelOrigin?: "explicit"
   thinking: boolean
   format: "default" | "json"
   auto: boolean
@@ -210,7 +211,8 @@ export async function runNonInteractivePrompt(input: Input) {
   const lifecycle = async () => {
     // admitting
     if (input.agent) await input.client.session.switchAgent({ sessionID: input.sessionID, agent: input.agent })
-    if (input.model) await input.client.session.switchModel({ sessionID: input.sessionID, model: input.model })
+    if (input.model)
+      await input.client.session.switchModel({ sessionID: input.sessionID, model: input.model, origin: input.modelOrigin })
     if (input.signal.aborted) return
     // A failed stream rejects whatever wait is pending, since no further end could be seen.
     consume().catch((error) => state.ended.reject(error))

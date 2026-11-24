@@ -100,7 +100,12 @@ export const Plugin = define({
                   const session = yield* ctx.session.get({ sessionID: input.sessionID })
                   if (session.agent !== agent) yield* ctx.session.switchAgent({ sessionID: input.sessionID, agent })
                 }
-                if (model !== undefined) yield* ctx.session.switchModel({ sessionID: input.sessionID, model })
+                if (model !== undefined)
+                  yield* ctx.session.switchModel({
+                    sessionID: input.sessionID,
+                    model,
+                    origin: command.model === undefined ? undefined : "explicit",
+                  })
                 yield* ctx.session.prompt({
                   ...input.prompt,
                   sessionID: input.sessionID,

@@ -17,11 +17,13 @@ async fn switches_model_effort_and_mode_against_the_warm_catalog() {
         acp.request("session/set_config_option", json!({ "sessionId": session_id, "configId": config, "value": value }))
     };
 
+    let picked_default = set("model", "test/test-model").await.unwrap();
     let selected_model = set("model", "test/second-model").await.unwrap();
     let selected_effort = set("effort", "medium").await.unwrap();
     let selected_mode = set("mode", "plan").await.unwrap();
     acp.request("session/set_mode", json!({ "sessionId": session_id, "modeId": "build" })).await.unwrap();
 
+    assert_eq!(current_value(&picked_default, "model"), "test/test-model");
     assert_eq!(current_value(&selected_model, "model"), "test/second-model");
     assert_eq!(current_value(&selected_model, "effort"), "default");
     assert_eq!(current_value(&selected_effort, "effort"), "medium");
@@ -29,8 +31,9 @@ async fn switches_model_effort_and_mode_against_the_warm_catalog() {
     assert_eq!(
         acp.server.state().selections,
         vec![
-            json!({ "sessionID": session_id, "model": { "providerID": "test", "id": "second-model" } }),
-            json!({ "sessionID": session_id, "model": { "providerID": "test", "id": "second-model", "variant": "medium" } }),
+            json!({ "sessionID": session_id, "model": { "providerID": "test", "id": "test-model", "variant": "default" }, "origin": "explicit" }),
+            json!({ "sessionID": session_id, "model": { "providerID": "test", "id": "second-model" }, "origin": "explicit" }),
+            json!({ "sessionID": session_id, "model": { "providerID": "test", "id": "second-model", "variant": "medium" }, "origin": "explicit" }),
             json!({ "sessionID": session_id, "agent": "plan" }),
             json!({ "sessionID": session_id, "agent": "build" }),
         ]

@@ -790,6 +790,11 @@ describe("SubagentTool", () => {
             variant: Model.VariantID.make("default"),
           })
 
+          const model = Model.Ref.make({ id: overrideModel.id, providerID: overrideModel.providerID })
+          yield* sessions.switchModel({ sessionID: child.id, model, origin: "default" })
+          yield* call("call-override-same", { sessionID: child.id, model: "test/override" })
+          expect((yield* sessions.get(child.id)).modelOrigin ?? "explicit").toBe("explicit")
+
           const failures = [
             ["not-a-ref", 'Invalid model "not-a-ref". Use "providerID/modelID" or "providerID/modelID#variant".'],
             ["test/missing", 'Model "test/missing" is not available. Use the models tool to see what is available.'],

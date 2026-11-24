@@ -293,7 +293,7 @@ export class VoiceTools {
         (session.model?.variant && offered.includes(session.model.variant) ? session.model.variant : undefined)
 
       await api.session.switchModel(
-        { sessionID, model: { id: model.id, providerID: model.providerID, variant } },
+        { sessionID, model: { id: model.id, providerID: model.providerID, variant }, origin: "explicit" },
         options,
       )
 

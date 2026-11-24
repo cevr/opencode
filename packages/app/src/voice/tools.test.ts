@@ -47,6 +47,7 @@ function setup(
   const sessions = [
     session("ses_here", "HERE", {
       model: { id: "claude-opus-4", providerID: "anthropic", variant: "high" },
+      modelOrigin: "default",
     } as Partial<SessionInfo>),
     session("ses_desktop", "DESKTOP"),
     session("ses_old", "OLD", { time: { created: 1, updated: 1, archived: 2 } }),
@@ -241,8 +242,24 @@ describe("models", () => {
     })
     expect((await voice.run("switch_model", { model: "google/gemini-2.5-pro" })).variant).toBe("default")
     expect(voice.calls.switched).toEqual([
-      { sessionID: "ses_here", model: { id: "gpt-5", providerID: "openai", variant: "high" } },
-      { sessionID: "ses_here", model: { id: "gemini-2.5-pro", providerID: "google", variant: undefined } },
+      { sessionID: "ses_here", model: { id: "gpt-5", providerID: "openai", variant: "high" }, origin: "explicit" },
+      {
+        sessionID: "ses_here",
+        model: { id: "gemini-2.5-pro", providerID: "google", variant: undefined },
+        origin: "explicit",
+      },
+    ])
+  })
+
+  test("switch_model pins the current default when the user names that same ref", async () => {
+    const voice = setup()
+    await voice.run("switch_model", { model: "anthropic/claude-opus-4" })
+    expect(voice.calls.switched).toEqual([
+      {
+        sessionID: "ses_here",
+        model: { id: "claude-opus-4", providerID: "anthropic", variant: "high" },
+        origin: "explicit",
+      },
     ])
   })
 

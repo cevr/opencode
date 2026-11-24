@@ -10,6 +10,14 @@ async function serve(directory: string) {
   const prompted = Promise.withResolvers<void>()
   const interrupted = Promise.withResolvers<void>()
   const location = { directory, project: { id: "project", directory, canonical: directory } }
+  const session = {
+    id: "ses_1",
+    projectID: "project",
+    location: { directory },
+    cost: 0,
+    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+    time: { created: 1, updated: 1 },
+  }
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -22,16 +30,17 @@ async function serve(directory: string) {
         return Response.json({ version: "test", pid: 0, urls: [], paths: { tmp: directory } })
       if (request.method === "GET" && url.pathname === "/api/location") return Response.json(location)
       if (request.method === "POST" && url.pathname === "/api/session")
+        return Response.json({ data: session })
+      if (request.method === "GET" && url.pathname === "/api/session/ses_1")
         return Response.json({
           data: {
-            id: "ses_1",
-            projectID: "project",
-            location: { directory },
-            cost: 0,
-            tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
-            time: { created: 1, updated: 1 },
+            ...session,
+            model: { providerID: "test", id: "default-model" },
+            modelOrigin: "default",
           },
         })
+      if (request.method === "POST" && url.pathname === "/api/session/ses_1/model")
+        return new Response(null, { status: 204 })
       if (url.pathname === "/api/event")
         return new Response(
           new ReadableStream({
@@ -94,6 +103,28 @@ test("run sends the message as typed with regular file attachments", async () =>
       text:
         `say hello world it's "quoted"\n\n<file name="context.txt">\nattached context\n</file>` +
         (process.platform === "win32" ? "" : `\n\n<file name="linked.txt">\nattached context\n</file>`),
+    })
+  } finally {
+    child.kill("SIGKILL")
+    await child.exited
+    await fake.server.stop(true)
+  }
+}, 30_000)
+
+test.each([false, true])("run only pins the continued default if --model is supplied (%s)", async (pick) => {
+  await using directory = await tmpdir()
+  const fake = await serve(directory.path)
+  const child = spawnRun(
+    fake.server.url.toString(),
+    directory.path,
+    ["--session", "ses_1", ...(pick ? ["--model", "test/default-model"] : []), "hello"],
+    "ignore",
+  )
+  try {
+    await fake.prompted
+    expect(fake.requests.find((request) => request.path === "/api/session/ses_1/model")?.body).toEqual({
+      model: { providerID: "test", id: "default-model" },
+      ...(pick ? { origin: "explicit" } : {}),
     })
   } finally {
     child.kill("SIGKILL")

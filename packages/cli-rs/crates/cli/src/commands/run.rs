@@ -98,6 +98,7 @@ async fn execute(
 
     let client = &server.client;
     let explicit = target::parse_model(args.model.as_deref())?;
+    let explicit_model = explicit.is_some();
     let worktree = match args.worktree() {
         None => None,
         Some(name) => {
@@ -149,6 +150,7 @@ async fn execute(
         files,
         agent: target.agent,
         model: target.model,
+        explicit_model,
         thinking: args.thinking,
         json,
         auto: args.permissions.auto(),

@@ -11,18 +11,21 @@ describe("acp catalog and config options over the wire", () => {
     const set = (configId: string, value: string) =>
       acp.request("session/set_config_option", { sessionId, configId, value })
 
+    const pickedDefault = await set("model", "test/test-model")
     const selectedModel = await set("model", "test/second-model")
     const selectedEffort = await set("effort", "medium")
     const selectedMode = await set("mode", "plan")
     await acp.request("session/set_mode", { sessionId, modeId: "build" })
 
+    expect(currentValue(pickedDefault, "model")).toBe("test/test-model")
     expect(currentValue(selectedModel, "model")).toBe("test/second-model")
     expect(currentValue(selectedModel, "effort")).toBe("default")
     expect(currentValue(selectedEffort, "effort")).toBe("medium")
     expect(currentValue(selectedMode, "mode")).toBe("plan")
     expect(acp.server.selections).toEqual([
-      { sessionID: sessionId, model: { providerID: "test", id: secondModel.id } },
-      { sessionID: sessionId, model: { providerID: "test", id: secondModel.id, variant: "medium" } },
+      { sessionID: sessionId, model: { providerID: "test", id: "test-model", variant: "default" }, origin: "explicit" },
+      { sessionID: sessionId, model: { providerID: "test", id: secondModel.id }, origin: "explicit" },
+      { sessionID: sessionId, model: { providerID: "test", id: secondModel.id, variant: "medium" }, origin: "explicit" },
       { sessionID: sessionId, agent: "plan" },
       { sessionID: sessionId, agent: "build" },
     ])

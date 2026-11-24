@@ -100,7 +100,7 @@ test("custom commands commit the captured agent, model and variant before execut
     await setup.waitFor(() => mutations.length === 2)
     expect(mutations[1]).toEqual({
       type: "model",
-      body: { model: { providerID: "demo", id: "second", variant: "low" } },
+      body: { model: { providerID: "demo", id: "second", variant: "low" }, origin: "explicit" },
     })
     model.resolve(new Response(null, { status: 204 }))
     await setup.waitFor(() => mutations.length === 3)

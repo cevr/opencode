@@ -185,7 +185,7 @@ export const make = Effect.fnUntraced(function* (input: {
       yield* Ref.update(attached.selection, (selection) => ({ ...selection, ...change }))
       yield* (
         "model" in change
-          ? input.client.session.switchModel({ sessionID: attached.id, model: change.model })
+          ? input.client.session.switchModel({ sessionID: attached.id, model: change.model, origin: "explicit" })
           : input.client.session.switchAgent({ sessionID: attached.id, agent: change.modeID })
       ).pipe(Effect.catch(ACPClient.classify))
     }),

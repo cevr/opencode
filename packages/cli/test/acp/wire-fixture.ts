@@ -90,6 +90,7 @@ const CreateBody = Schema.Struct({
 const UpdateBody = Schema.Struct({ permissions: Schema.optional(Permissions), metadata: Schema.optional(Metadata) })
 const ModelBody = Schema.Struct({
   model: Schema.Struct({ providerID: Schema.String, id: Schema.String, variant: Schema.optional(Schema.String) }),
+  origin: Schema.optional(Schema.Literals(["explicit", "default"])),
 })
 const AgentBody = Schema.Struct({ agent: Schema.String })
 const ReplyBody = Schema.Struct({ decision: Schema.Literals(["once", "always", "reject"]) })
@@ -106,7 +107,7 @@ type Submission =
 type PromptSubmission = Extract<Submission, { readonly kind: "prompt" }>
 
 type Selection =
-  | { readonly sessionID: string; readonly model: typeof ModelBody.Type.model }
+  | ({ readonly sessionID: string } & typeof ModelBody.Type)
   | { readonly sessionID: string; readonly agent: string }
 
 const ChildSession = {
@@ -808,7 +809,7 @@ function startServer(options: WireOptions, changed: () => void) {
       },
       "/api/session/:sessionID/model": {
         POST: body(ModelBody, (req, input) => {
-          fake.selections.push({ sessionID: req.params.sessionID, model: input.model })
+          fake.selections.push({ sessionID: req.params.sessionID, ...input })
           return noContent()
         }),
       },

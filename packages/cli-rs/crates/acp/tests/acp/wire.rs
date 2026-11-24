@@ -543,7 +543,7 @@ impl Server {
                 json_response(200, json!({ "data": data, "cursor": cursor }))
             }
             ("POST", ["api", "session", id, "model"]) => {
-                self.state().selections.push(json!({ "sessionID": id, "model": body["model"] }));
+                self.state().selections.push(json!({ "sessionID": id, "model": body["model"], "origin": body["origin"] }));
                 no_content()
             }
             ("POST", ["api", "session", id, "agent"]) => {

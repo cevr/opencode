@@ -39,6 +39,7 @@ pub struct Input {
     pub agent: Option<String>,
     /// The model, with the variant.
     pub model: Option<ModelRef>,
+    pub explicit_model: bool,
     pub thinking: bool,
     pub json: bool,
     pub auto: bool,
@@ -205,7 +206,10 @@ impl Run {
             // The TS key order, `{ providerID, id, variant }`; the generated `ModelRef` puts `id` first.
             let input = SessionSwitchModelInput { session_id: session.clone(), ..Default::default() };
             let mut call = Client::session_switch_model_call(&input).map_err(|error| error.error_message())?;
-            call.json(&json!({ "model": json_object! { "providerID": model.provider_id.0, "id": model.id, "variant"?: &model.variant } }))
+            call.json(&json_object! {
+                "model": json_object! { "providerID": model.provider_id.0, "id": model.id, "variant"?: &model.variant },
+                "origin"?: self.input.explicit_model.then_some("explicit"),
+            })
             .map_err(|error| error.error_message())?;
             client.empty(call).await.map_err(|error| error.error_message())?;
         }
@@ -1124,6 +1128,43 @@ fn part_id(event_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use opencode_api::memory::{Memory, Route};
+    use std::sync::Arc;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn named_model_is_an_explicit_pick() {
+        let memory = Memory::new(vec![Route::json(
+            "POST",
+            "/api/session/ses_default/model",
+            404,
+            &json!({ "_tag": "SessionNotFoundError", "message": "stop before prompt admission" }),
+        )]);
+        let client = Client::with_transport("http://test", Arc::new(memory.clone())).unwrap();
+        let (_signal, signal) = watch::channel(false);
+        let result = tokio::task::LocalSet::new()
+            .run_until(run(Input {
+                client,
+                session_id: "ses_default".into(),
+                directory: "/project".into(),
+                message: "run with the current default".into(),
+                files: vec![],
+                agent: None,
+                model: Some(ModelRef { provider_id: ProviderID("test".into()), id: "default-model".into(), variant: None }),
+                explicit_model: true,
+                thinking: false,
+                json: false,
+                auto: false,
+                standalone: false,
+                signal,
+                exit: Rc::new(Cell::new(0)),
+            }))
+            .await;
+        assert!(result.is_err());
+        assert_eq!(
+            memory.requests().into_iter().find(|request| request.path == "/api/session/ses_default/model").unwrap().body,
+            Some(json!({ "model": { "providerID": "test", "id": "default-model" }, "origin": "explicit" })),
+        );
+    }
 
     fn idle(id: &str, outcome: &str, error: Option<Value>) -> Value {
         json_object! { "id": id, "type": "idle", "outcome": outcome, "error"?: error }

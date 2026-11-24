@@ -334,7 +334,9 @@ impl Sessions {
         let session_id = SessionID(attached.id.clone());
         check(match change {
             Change::Model(model) => {
-                self.client.session_switch_model(&SessionSwitchModelInput { session_id, model }).await
+                let mut call = check(Client::session_switch_model_call(&SessionSwitchModelInput { session_id, model }))?;
+                check(call.field("origin", "explicit"))?;
+                self.client.empty(call).await
             }
             Change::Mode(agent) => {
                 self.client.session_switch_agent(&SessionSwitchAgentInput { session_id, agent: AgentID(agent) }).await

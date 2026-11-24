@@ -162,7 +162,13 @@ export const Plugin = {
                 const retitled = input.description.trim() !== "" && existing.title !== input.description
                 yield* Effect.all([
                   switched ? sessions.switchAgent({ sessionID: existing.id, agent: agent.id }) : Effect.void,
-                  model === undefined ? Effect.void : sessions.switchModel({ sessionID: existing.id, model }),
+                  model === undefined
+                    ? Effect.void
+                    : sessions.switchModel({
+                        sessionID: existing.id,
+                        model,
+                        origin: override === undefined ? undefined : "explicit",
+                      }),
                   retitled ? sessions.rename({ sessionID: existing.id, title: input.description }) : Effect.void,
                 ]).pipe(
                   Effect.mapError(

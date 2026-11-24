@@ -1371,10 +1371,9 @@ export function Prompt(props: PromptProps) {
     }
     const commitModel = () => {
       const model = { providerID: selection.providerID, id: selection.modelID, variant }
-      const origin = selection.origin
-      const cancelCommit = local.model.trackSessionCommit(target, { ...model, origin }, agent.id)
+      const cancelCommit = local.model.trackSessionCommit(target, { ...model, origin: selection.origin }, agent.id)
       return client.api.session
-        .switchModel({ sessionID: target, model, ...(origin ? { origin } : {}) })
+        .switchModel({ sessionID: target, model, origin: selection.origin ?? "explicit" })
         .catch((error) => {
           cancelCommit()
           throw new Error(`Failed to switch model: ${errorMessage(error)}`, { cause: error })
