@@ -2239,7 +2239,7 @@ test("free usage limit offers OpenCode Go once per 24h, transitions Subscribe to
   releaseOAuth()
   await promptResent.promise
   await setup.waitForFrame((frame) => !frame.includes("GOGO-1234") && frame.includes("GLM-5 Go"))
-  expect(switchedModels).toEqual([{ model: { providerID: "opencode-go", id: "glm-5-go" } }])
+  expect(switchedModels).toEqual([{ model: { providerID: "opencode-go", id: "glm-5-go" }, origin: "explicit" }])
   expect(resentPrompts).toHaveLength(1)
   expect(resentPrompts[0]).toMatchObject({
     text: "Queued follow-up",
@@ -2596,7 +2596,7 @@ test("free usage limit Subscribe handles mid-auth/mid-sync Escape, sync failure,
   await promptResent.promise
   await setup.waitForFrame((frame) => !frame.includes("Free limit reached") && frame.includes("GLM-5 Go"))
   expect(oauthConnectCalls).toBe(oauthCallsBeforeAlreadyConnected)
-  expect(switchedModels).toEqual([{ model: { providerID: "opencode-go", id: "glm-5-go" } }])
+  expect(switchedModels).toEqual([{ model: { providerID: "opencode-go", id: "glm-5-go" }, origin: "explicit" }])
   expect(resentPrompts).toHaveLength(1)
   expect(resentPrompts[0]).toMatchObject({ text: "Refactor the parser" })
 
