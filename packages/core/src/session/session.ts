@@ -113,16 +113,24 @@ export const make = Effect.fn("Session.make")(function* () {
   })
   const switchModel = Effect.fn("Session.switchModel")(function* (
     sessionID: SessionSchema.ID,
-    input: { model: Model.Ref },
+    input: { model: Model.Ref; origin?: Model.SelectionOrigin },
   ) {
     const session = yield* get(sessionID)
+    const origin = input.origin ?? "explicit"
+    // Picking the model a client had recorded as its default makes it explicit, so the same ref still records.
     if (
       session.model?.providerID === input.model.providerID &&
       session.model.id === input.model.id &&
-      (session.model.variant ?? "default") === (input.model.variant ?? "default")
+      (session.model.variant ?? "default") === (input.model.variant ?? "default") &&
+      (session.modelOrigin ?? "explicit") === origin
     )
       return
-    yield* bus.publish(SessionEvent.ModelSelected, { sessionID, model: input.model, previous: session.model })
+    yield* bus.publish(SessionEvent.ModelSelected, {
+      sessionID,
+      model: input.model,
+      ...(origin === "default" ? { origin } : {}),
+      previous: session.model,
+    })
   })
   // Fork (synthetic-archived): one write transaction for a command's selection and what it is admitted with, holding
   // the session's publish lock first (so its own publishes inside need no other lock and are routed after the commit,

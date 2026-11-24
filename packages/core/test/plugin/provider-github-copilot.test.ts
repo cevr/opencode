@@ -726,6 +726,8 @@ describe("GithubCopilotPlugin", () => {
             sessionID,
             agent: Agent.ID.make("build"),
             kind,
+            origin: "explicit",
+            available: true,
             model: Model.Ref.make({ providerID: Provider.ID.githubCopilot, id: Model.ID.make("auto") }),
           })
           .pipe(Effect.map((event) => (event.model.id === "auto" ? undefined : String(event.model.id))))

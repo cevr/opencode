@@ -92,6 +92,8 @@ type CreateBaseInput = {
   title?: string
   agent?: Agent.ID
   model?: Model.Ref
+  /** How `model` was chosen; absent means explicit. */
+  modelOrigin?: Model.SelectionOrigin
   metadata?: SessionSchema.Metadata
   permissions?: Permission.Ruleset
 }
@@ -203,7 +205,12 @@ export interface Interface {
     follow?: boolean
   }) => Stream.Stream<SessionEvent.DurableEvent | EventLog.Synced, NotFoundError>
   readonly switchAgent: (input: { sessionID: SessionSchema.ID; agent: Agent.ID }) => Effect.Effect<void, NotFoundError>
-  readonly switchModel: (input: { sessionID: SessionSchema.ID; model: Model.Ref }) => Effect.Effect<void, NotFoundError>
+  readonly switchModel: (input: {
+    sessionID: SessionSchema.ID
+    model: Model.Ref
+    /** How `model` was chosen; absent means explicit. */
+    origin?: Model.SelectionOrigin
+  }) => Effect.Effect<void, NotFoundError>
   readonly rename: (input: { sessionID: SessionSchema.ID; title: string }) => Effect.Effect<void, NotFoundError>
   readonly archive: (sessionID: SessionSchema.ID) => Effect.Effect<void, NotFoundError>
   readonly unarchive: (sessionID: SessionSchema.ID) => Effect.Effect<void, NotFoundError>
@@ -330,6 +337,7 @@ const layer = Layer.effect(
               metadata: input.metadata ?? parent?.metadata,
               permissions: input.permissions ?? parent?.permissions,
               model: input.model,
+              ...(input.model && input.modelOrigin === "default" ? { modelOrigin: input.modelOrigin } : {}),
             },
             { location },
           )

@@ -358,9 +358,12 @@ const layer = Layer.unwrap(
       select: (session) =>
         Effect.sync(() => {
           const selected = session.model?.id === "replacement" ? replacementModel : state.currentModel
+          const info = Model.Info.default(Provider.ID.make(selected.provider), Model.ID.make(selected.id))
           return {
-            info: Model.Info.default(Provider.ID.make(selected.provider), Model.ID.make(selected.id)),
+            info,
+            ref: Model.Ref.make({ providerID: info.providerID, id: info.id }),
             variant: session.model?.variant,
+            origin: "explicit" as const,
           }
         }),
       resolve: (session) =>

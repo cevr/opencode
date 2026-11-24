@@ -8,6 +8,7 @@ import { Job } from "../job.js"
 import { Instance } from "../instance/service.js"
 import { KV } from "../kv.js"
 import { makeGlobalNode } from "@opencode/util/effect/app-node"
+import type { StepFailedError } from "./error.js"
 import { SessionEvent } from "./event.js"
 import { SessionInbox } from "./inbox.js"
 import { SubagentReport } from "./execution/subagent-report.js"
@@ -29,9 +30,10 @@ export interface Interface {
    * Continues a turn a dead server left claimed (the restart sweep's resume). Unlike `resume` it is not new work:
    * it never ends a stop. A Session stopped when its turn's first drain begins (marked before the sweep looked, or
    * after) is never drained: the turn settles as the stop's user interruption, claim released and the stop's one
-   * report given, and `recover` succeeds.
+   * report given, and `recover` succeeds. `recovery.onRunnable` is the restart's deferred budget charge for a turn it
+   * found waiting: every drain of the run carries it to the runner (SessionRunner `onRunnable`).
    */
-  readonly recover: (sessionID: SessionSchema.ID) => Effect.Effect<void, SessionRunner.RunError>
+  readonly recover: (sessionID: SessionSchema.ID, recovery?: Recovery) => Effect.Effect<void, SessionRunner.RunError>
   /** Registers newly recorded work. Repeated wakeups may coalesce. */
   readonly wake: (sessionID: SessionSchema.ID) => Effect.Effect<void>
   /**
@@ -59,6 +61,16 @@ export interface Interface {
   readonly stop: (sessionID: SessionSchema.ID) => Effect.Effect<boolean>
   /** Whether the Session was stopped and not resumed since. */
   readonly stopped: (sessionID: SessionSchema.ID) => Effect.Effect<boolean>
+}
+
+/** How the restart sweep (SessionRestart) recovered a claim. */
+export interface Recovery {
+  /**
+   * Present when the claimed turn was waiting (a held Step) and the boot left its recovery budget uncharged: the
+   * runner runs it once, as the turn leaves that wait for its first runnable work. It charges the budget and fails
+   * the turn once the budget is spent. Idempotent.
+   */
+  readonly onRunnable?: Effect.Effect<void, StepFailedError>
 }
 
 /** The KV key prefix of a stopped Session's mark. */
@@ -141,6 +153,8 @@ export const layer = Layer.effect(
     })
     // Sessions a `recover` asked to run: their next run's first drain checks the stop mark before running the turn.
     const recovering = new Set<SessionSchema.ID>()
+    // A recovered waiting turn's deferred budget charge, carried to each drain of its run until the run settles.
+    const onRunnable = new Map<SessionSchema.ID, Effect.Effect<void, StepFailedError>>()
     // Why a Session's execution is being interrupted, read from the coordinator once it exists.
     let interruption: (sessionID: SessionSchema.ID) => InterruptReason | undefined = () => undefined
     const drain = Effect.fnUntraced(function* (
@@ -160,6 +174,7 @@ export const layer = Layer.effect(
           promotable,
           stepped,
           interruption: () => interruption(sessionID),
+          onRunnable: onRunnable.get(sessionID),
         }),
       ).pipe(
         Effect.provideServiceEffect(CodeModeJob.Current, background),
@@ -216,6 +231,7 @@ export const layer = Layer.effect(
         reportLifecycle(
           sessionID,
           Effect.gen(function* () {
+            onRunnable.delete(sessionID)
             const outcome = terminal(exit, reason)
             if (outcome.type === "interrupted" && outcome.reason === "shutdown") {
               subagentReport.clear(sessionID)
@@ -263,8 +279,11 @@ export const layer = Layer.effect(
       resume: (sessionID) => kv.remove(STOPPED + sessionID).pipe(Effect.andThen(coordinator.run(sessionID))),
       // Only a run's first drain consumes the flag (see `drain`). One left by a recover that joined a running
       // period is read by the next run's first drain, after a resume removed the mark or as the stop it is.
-      recover: (sessionID) =>
-        Effect.sync(() => void recovering.add(sessionID)).pipe(
+      recover: (sessionID, recovery) =>
+        Effect.sync(() => {
+          recovering.add(sessionID)
+          if (recovery?.onRunnable) onRunnable.set(sessionID, recovery.onRunnable)
+        }).pipe(
           Effect.andThen(coordinator.run(sessionID)),
           // A stop that settled the recovered turn is its outcome, not an interruption of the caller.
           Effect.catchCause((cause) =>

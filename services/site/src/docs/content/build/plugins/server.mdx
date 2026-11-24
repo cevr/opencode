@@ -1501,9 +1501,35 @@ Generation options depend on the selected protocol and model:
 
 Experimental. Runs whenever a Session resolves the model for a request, before anything is built for it. `model` starts
 as the selected model; change it to serve this request with another model from the same provider, including one hidden
-from the model picker. The Session keeps its selected model; the request and the assistant message use the new one.
-`kind` says which request is resolving, so a router can skip titles or route again after compaction. A model from
-another provider fails as unavailable.
+from the model picker, or with a model another provider offers in the Session's location, which then serves with that
+provider's credentials, hooks, tools and history rendering. The Session keeps its selected model; the request and the
+assistant message use the new one. `kind` says which request is resolving, so a router can skip titles or route again
+after compaction. A model another provider does not offer fails as unavailable.
+
+`origin` says where `model` came from: `explicit` (the Session's selection, a pick), `default` (the Session's selection,
+recorded by a client from its implicit default, as the TUI does), `agent` (the agent's configured model) or `fallback`
+(the host's default). `available` is false when that model is not offered; an unavailable model fails the request
+unless a hook changes it.
+
+The agent loop's primary requests also carry `step`: an `id` that stays the same while the Step is held, refused or
+retried, its `attempt`, and the `previous` attempt's model with whether it may have reached the provider. A hook may set
+`defer: { reason, until }` to hold the Step instead: nothing is built or sent, nothing fails, the Session shows the
+reason as the Step's retry state, and the Step routes again at `until` (at least a second later) in the same execution.
+Cancelling the Session ends the wait. The hold is durable: a server that restarts during it continues the same Step,
+waits out the rest of the hold without a restart notice, and only then routes it again. Restarts during a hold do not
+count toward the limit on how often an interrupted turn is resumed; the Step leaving its hold does, so a turn that keeps
+failing after its hold still stops at that limit. Once an attempt may have
+reached its provider, `previous` keeps that model with `sent` true for the rest of the Step, through holds, refusals and
+restarts, and a change of provider is ignored: an ambiguous send is retried where it went.
+
+```ts
+await ctx.session.hook("experimental.model.resolve", (event) => {
+  if (event.kind !== "primary" || event.origin === "explicit") return
+  const route = admit(event.model, event.step)
+  if (route.wait) event.defer = { reason: route.reason, until: route.until }
+  else event.model = route.model
+})
+```
 
 ```ts
 await ctx.session.hook(
@@ -1539,6 +1565,12 @@ it.
 Both hooks run for every request a session issues. `event.kind` says which flow issued it: `"primary"` for the agent
 loop, `"compaction"` for checkpoint summaries, `"title"` for title generation, and `"generate"` for transient
 `ctx.session.generate` calls. Use it instead of the agent ID to tell auxiliary requests apart.
+
+A primary request carries its `step`, and `http.request` may set `refuse: { reason, until? }` to keep that request off
+the network. The Step then routes again, at once or after `until`, with `step.previous.sent` false, and nothing is
+recorded as failed. A refusal is honored only before any request of the attempt was sent; after one was, and on any other
+kind, it fails the request like a transport error. A hook that throws still fails the request. `experimental.ws.send`
+takes the same `refuse` for a WebSocket frame.
 
 ```ts
 await ctx.session.hook("http.request", (event) => {

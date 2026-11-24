@@ -29,6 +29,7 @@ import { Project } from "@opencode/schema/project"
 import { AbsolutePath, RelativePath } from "../schema.js"
 import type { SessionSchema } from "./schema.js"
 import { SessionHistory } from "./history.js"
+import { SessionStepRoute } from "./step-route.js"
 import { ProjectTable } from "../project/sql.js"
 
 type DatabaseService = Database.Interface["db"]
@@ -48,6 +49,10 @@ type Usage = {
 }
 
 const ForkBatchSize = 500
+
+// The model column's JSON carries a default origin beside the ref, so older rows read as explicit without a migration.
+const storedModel = (model: Model.Ref | undefined, origin: Model.SelectionOrigin | undefined) =>
+  model && origin === "default" ? { ...model, origin } : model
 
 const insertParts = (db: DatabaseService, rows: ReadonlyArray<typeof SessionPartTable.$inferInsert>) =>
   Effect.forEach(
@@ -883,7 +888,7 @@ const layer = Layer.effectDiscard(
             path: event.data.subpath,
             title: event.data.title,
             agent: event.data.agent,
-            model: event.data.model,
+            model: storedModel(event.data.model, event.data.modelOrigin),
             metadata: event.data.metadata,
             permission: event.data.permissions,
             version: event.data.version,
@@ -968,6 +973,8 @@ const layer = Layer.effectDiscard(
       Effect.gen(function* () {
         yield* SessionBlob.releaseSession(db, event.data.sessionID)
         yield* db.delete(SessionTable).where(eq(SessionTable.id, event.data.sessionID)).run().pipe(Effect.orDie)
+        // Its claim goes with the row, and so does the unfinished Step's routing state.
+        yield* SessionStepRoute.clear(db, [event.data.sessionID])
       }),
     )
     yield* bus.project(SessionEvent.AgentSelected, (event) =>
@@ -979,7 +986,10 @@ const layer = Layer.effectDiscard(
     yield* bus.project(SessionEvent.ModelSelected, (event) =>
       Effect.gen(function* () {
         yield* run(db, event)
-        yield* setSession(db, event.data.sessionID, { model: event.data.model, time_updated: event.created })
+        yield* setSession(db, event.data.sessionID, {
+          model: storedModel(event.data.model, event.data.origin),
+          time_updated: event.created,
+        })
       }),
     )
     yield* bus.project(SessionEvent.Renamed, (event) =>

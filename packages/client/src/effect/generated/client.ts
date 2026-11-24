@@ -470,6 +470,7 @@ const EndpointSessionCreate = (raw: RawClient["server.session"]) => (input?: Ses
         title: input?.["title"],
         agent: input?.["agent"],
         model: input?.["model"],
+        modelOrigin: input?.["modelOrigin"],
         location: input?.["location"],
         metadata: input?.["metadata"],
         permissions: input?.["permissions"],
@@ -518,9 +519,10 @@ const EndpointSessionSwitchAgent = (raw: RawClient["server.session"]) => (input:
 
 const EndpointSessionSwitchModel = (raw: RawClient["server.session"]) => (input: SessionSwitchModelInput) =>
   preserveEffect<SessionSwitchModelOutput>()(
-    raw["session.switchModel"]({ params: { sessionID: input["sessionID"] }, payload: { model: input["model"] } }).pipe(
-      Effect.mapError(mapClientError),
-    ),
+    raw["session.switchModel"]({
+      params: { sessionID: input["sessionID"] },
+      payload: { model: input["model"], origin: input["origin"] },
+    }).pipe(Effect.mapError(mapClientError)),
   )
 
 const EndpointSessionUpdate = (raw: RawClient["server.session"]) => (input: SessionUpdateInput) =>

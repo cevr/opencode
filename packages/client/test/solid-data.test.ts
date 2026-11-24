@@ -165,6 +165,57 @@ test("keeps the previous model in a live variant notice until the projected mess
   }
 })
 
+test("a model selection event replaces the session's model and its provenance together", async () => {
+  const listeners = new Set<Parameters<CreateDataInput["event"]["listen"]>[0]>()
+  const api = OpenCode.make({
+    baseUrl: "http://opencode.local",
+    fetch: async (input, init) => {
+      const request = input instanceof Request ? input : new Request(input, init)
+      if (new URL(request.url).pathname === "/api/session/ses_refresh")
+        return Response.json({
+          data: { ...session(0), model: { providerID: "provider", id: "first" }, modelOrigin: "default" },
+        })
+      return Response.json({ data: [], cursor: {} })
+    },
+  })
+  const setup = createRoot((dispose) => ({
+    data: createData({
+      api: () => api,
+      directory: "/project",
+      event: {
+        on: () => () => {},
+        listen(handler) {
+          listeners.add(handler)
+          return () => listeners.delete(handler)
+        },
+      },
+    }),
+    dispose,
+  }))
+  const select = (id: string, origin?: "default") => {
+    const event: OpenCodeEvent = {
+      id: `evt_${id}`,
+      created: 2,
+      type: "session.model.selected",
+      durable: { aggregateID: "ses_refresh", seq: 1, version: 1 },
+      data: { sessionID: "ses_refresh", model: { providerID: "provider", id }, ...(origin ? { origin } : {}) },
+    }
+    listeners.forEach((listener) => listener({ name: event.type, details: event }))
+    const info = setup.data.session.get("ses_refresh")
+    return { model: info?.model?.id, origin: info?.modelOrigin }
+  }
+  try {
+    await setup.data.session.sync("ses_refresh")
+    expect(setup.data.session.get("ses_refresh")?.modelOrigin).toBe("default")
+    // default → explicit: an event without an origin is a pick.
+    expect(select("second")).toEqual({ model: "second", origin: undefined })
+    // explicit → default.
+    expect(select("first", "default")).toEqual({ model: "first", origin: "default" })
+  } finally {
+    setup.dispose()
+  }
+})
+
 test("reconciles a stale running tool when execution settles", async () => {
   const listeners = new Set<Parameters<CreateDataInput["event"]["listen"]>[0]>()
   let completed = false

@@ -1128,6 +1128,17 @@
                       }
                     ]
                   },
+                  "modelOrigin": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/Model.SelectionOrigin"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "How model was chosen: explicit (a pick; the default when omitted) or default (the client's implicit default)."
+                  },
                   "location": {
                     "anyOf": [
                       {
@@ -1969,6 +1980,17 @@
                 "properties": {
                   "model": {
                     "$ref": "#/components/schemas/Model.Ref"
+                  },
+                  "origin": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/Model.SelectionOrigin"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "How model was chosen: explicit (a pick; the default when omitted) or default (the client's implicit default)."
                   }
                 },
                 "required": ["model"],
@@ -22782,6 +22804,10 @@
         "required": ["id", "providerID"],
         "additionalProperties": false
       },
+      "Model.SelectionOrigin": {
+        "type": "string",
+        "enum": ["explicit", "default"]
+      },
       "Model.Settings": {
         "type": "object",
         "properties": {
@@ -25030,6 +25056,9 @@
           },
           "model": {
             "$ref": "#/components/schemas/Model.Ref"
+          },
+          "modelOrigin": {
+            "$ref": "#/components/schemas/Model.SelectionOrigin"
           },
           "cost": {
             "$ref": "#/components/schemas/Money.USD"
@@ -29515,6 +29544,9 @@
               "model": {
                 "$ref": "#/components/schemas/Model.Ref"
               },
+              "modelOrigin": {
+                "$ref": "#/components/schemas/Model.SelectionOrigin"
+              },
               "metadata": {
                 "$ref": "#/components/schemas/Session.Metadata"
               },
@@ -30317,6 +30349,9 @@
               },
               "model": {
                 "$ref": "#/components/schemas/Model.Ref"
+              },
+              "origin": {
+                "$ref": "#/components/schemas/Model.SelectionOrigin"
               },
               "previous": {
                 "$ref": "#/components/schemas/Model.Ref"

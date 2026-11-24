@@ -225,7 +225,7 @@ describe("SessionModelRequest HTTP hooks", () => {
         }),
       )
       const bound: Array<{ url: string; headers: Record<string, string> }> = []
-      const frames: string[] = []
+      const frames: Array<string | undefined> = []
       const websocketTransport = SessionModelTransport.Service.of({
         bind: (_sessionID, interceptor) => ({
           execute: () =>
@@ -271,6 +271,157 @@ describe("SessionModelRequest HTTP hooks", () => {
         "send:primary:create",
         "receive:primary:created",
       ])
+    }),
+  )
+})
+
+describe("SessionModelRequest send refusal", () => {
+  const step = { id: "step_refusal", attempt: 1 }
+  const post = HttpClientRequest.post("https://example.test/v1/chat/completions").pipe(
+    HttpClientRequest.bodyText('{"messages":[]}', "application/json"),
+  )
+  const sendAll = (http: NonNullable<SessionModelRequest.Prepared["options"]["http"]>, count: number) =>
+    Effect.gen(function* () {
+      const reached: string[] = []
+      const results: string[] = []
+      for (let index = 0; index < count; index++) {
+        const exit = yield* http(post, (request) =>
+          Effect.sync(() => {
+            reached.push(request.url)
+            return HttpClientResponse.fromWeb(request, new Response("{}", { status: 200 }))
+          }),
+        ).pipe(Effect.exit)
+        results.push(exit._tag)
+      }
+      return { reached, results }
+    })
+
+  it.effect("keeps a refused primary request off the network and latches the refusal for the attempt", () =>
+    Effect.gen(function* () {
+      const hooks = yield* PluginHooks.Service
+      const seen: unknown[] = []
+      yield* hooks.register("session", "http.request", (event) =>
+        Effect.sync(() => {
+          seen.push(event.step)
+          event.refuse = { reason: "held at dispatch", until: 5_000 }
+        }),
+      )
+      const requests = yield* SessionModelRequest.Service.pipe(Effect.provide(SessionModelRequest.layer))
+      const prepared = yield* requests.primary({
+        session,
+        agent: Agent.ID.make("build"),
+        model,
+        system: [],
+        messages: [],
+        step,
+      })
+      const sent = yield* sendAll(prepared.options.http!, 2)
+
+      expect(sent.reached).toEqual([])
+      expect(sent.results).toEqual(["Failure", "Failure"])
+      expect(prepared.refused?.()).toEqual({ reason: "held at dispatch", until: 5_000 })
+      // The latched refusal never asks the hook again, so a later answer cannot let a send through.
+      expect(seen).toEqual([step])
+    }).pipe(Effect.provideService(SessionModelTransport.Service, transport)),
+  )
+
+  it.effect("treats a refusal after a send, or without a Step, as an ordinary failure", () =>
+    Effect.gen(function* () {
+      const hooks = yield* PluginHooks.Service
+      let refuse = false
+      yield* hooks.register("session", "http.request", (event) =>
+        Effect.sync(() => {
+          if (refuse) event.refuse = { reason: "late" }
+        }),
+      )
+      const requests = yield* SessionModelRequest.Service.pipe(Effect.provide(SessionModelRequest.layer))
+      const after = yield* requests.primary({
+        session,
+        agent: Agent.ID.make("build"),
+        model,
+        system: [],
+        messages: [],
+        step,
+      })
+      const first = yield* sendAll(after.options.http!, 1)
+      refuse = true
+      const second = yield* sendAll(after.options.http!, 1)
+      expect([first.results, second.results]).toEqual([["Success"], ["Failure"]])
+      expect(first.reached.length + second.reached.length).toBe(1)
+      expect(after.refused?.()).toBeUndefined()
+
+      for (const kind of ["title", "generate"] as const) {
+        const prepared = yield* requests[kind]({
+          session,
+          agent: Agent.ID.make("build"),
+          model,
+          system: [],
+          messages: [],
+          step,
+        })
+        const sent = yield* sendAll(prepared.options.http!, 1)
+        expect(sent.reached).toEqual([])
+        expect(prepared.refused?.()).toBeUndefined()
+      }
+    }).pipe(Effect.provideService(SessionModelTransport.Service, transport)),
+  )
+
+  it.effect("refuses a WebSocket frame through the interceptor and records the refusal", () =>
+    Effect.gen(function* () {
+      const hooks = yield* PluginHooks.Service
+      yield* hooks.register("session", "experimental.ws.send", (event) =>
+        Effect.sync(() => {
+          if (event.step) event.refuse = { reason: "socket held" }
+        }),
+      )
+      const frames: Array<string | undefined> = []
+      const websocketTransport = SessionModelTransport.Service.of({
+        bind: (_sessionID, interceptor) => ({
+          execute: () =>
+            Effect.gen(function* () {
+              frames.push(yield* interceptor!.send!("create"))
+              frames.push(yield* interceptor!.send!("again"))
+              return { frames: Stream.empty, complete: Effect.void }
+            }),
+        }),
+        close: () => Effect.void,
+        closeAll: Effect.void,
+      })
+      const requests = yield* SessionModelRequest.Service.pipe(
+        Effect.provide(SessionModelRequest.layer),
+        Effect.provideService(SessionModelTransport.Service, websocketTransport),
+      )
+      const websocketModel = SessionRunnerModel.resolved(OpenAIChat.route.model({ id: "gpt-5.5", provider: "test" }), {
+        capabilities: { tools: true, input: ["text"], output: ["text"] },
+        cost: [],
+        limit: { context: 200_000, output: 32_000 },
+        transport: "websocket",
+      })
+      const held = yield* requests.primary({
+        session,
+        agent: Agent.ID.make("build"),
+        model: websocketModel,
+        system: [],
+        messages: [],
+        webSocket: "session",
+        step,
+      })
+      yield* held.options.webSocket!.execute({} as never)
+      expect(frames).toEqual([undefined, undefined])
+      expect(held.refused?.()).toEqual({ reason: "socket held" })
+
+      frames.length = 0
+      const plain = yield* requests.primary({
+        session,
+        agent: Agent.ID.make("build"),
+        model: websocketModel,
+        system: [],
+        messages: [],
+        webSocket: "session",
+      })
+      yield* plain.options.webSocket!.execute({} as never)
+      expect(frames).toEqual(["create", "again"])
+      expect(plain.refused?.()).toBeUndefined()
     }),
   )
 })

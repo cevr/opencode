@@ -2,7 +2,10 @@ export * as SessionRunnerLLM from "./llm.js"
 
 import { Message } from "@opencode/ai/effect"
 import { and, desc, eq, inArray, sql } from "drizzle-orm"
-import { Cause, Effect, Exit, FiberMap, Layer } from "effect"
+import { Cause, Clock, Duration, Effect, Exit, FiberMap, Layer } from "effect"
+import type { SessionRouteStep } from "@opencode/plugin/effect/session"
+import type { Agent } from "@opencode/schema/agent"
+import type { Model } from "@opencode/schema/model"
 import { Database } from "../../database/database.js"
 import { Bus } from "../../bus.js"
 import { LocationLifecycle } from "../../location-lifecycle.js"
@@ -19,6 +22,7 @@ import { SessionModelTransport } from "../model-transport.js"
 import { SessionMessage } from "../message.js"
 import { SessionSchema } from "../schema.js"
 import { SessionStore } from "../store.js"
+import { SessionStepRoute } from "../step-route.js"
 import { SessionMessageTable } from "../sql.js"
 import { SessionTitle } from "../title.js"
 import { toSessionError } from "../to-session-error.js"
@@ -38,7 +42,20 @@ import { MAX_STEPS_PROMPT } from "./max-steps.js"
 const CONTINUE_AFTER_OUTPUT_LIMIT =
   "Your last response hit the output token limit (stop reason: length). Do not apologize, recap, or repeat yourself. Break the remaining work into smaller pieces."
 
+// The shortest wait of a held Step, so a hook that holds or refuses with a past time cannot spin.
+const HOLD_MIN_MS = 1_000
+
 type DrainInput = Parameters<Interface["drain"]>[0]
+
+/** Where a Step starts: a new one, or one a restart left unfinished (see SessionStepRoute). */
+interface StepState {
+  readonly route: SessionRouteStep
+  readonly message: SessionMessage.ID
+  readonly holds: number
+}
+
+/** Resolves where the next Step starts; a recovered waiting turn is charged its recovery as it leaves the wait. */
+type Begin = Effect.Effect<StepState, StepFailedError>
 
 const layer = Layer.effect(
   Service,
@@ -68,6 +85,8 @@ const layer = Layer.effect(
       let entering = true
       let stepped = input.stepped ?? false
       const promotable = input.promotable ?? "input"
+      // A recovered waiting turn charges its recovery budget as it leaves the wait (SessionRestart).
+      const runnable = input.onRunnable ?? Effect.void
       // Input this drain starts on. A continuation carries none: it goes on with a turn already started.
       const pending = continuing || stepped ? undefined : yield* SessionInbox.nextPromotable(db, sessionID, "input")
       if (!force && !continuing && !stepped) {
@@ -87,7 +106,7 @@ const layer = Layer.effect(
       yield* settleStaleCompactions(sessionID)
       yield* settleStaleToolCalls(sessionID)
 
-      const advanceToStep = Effect.fn("SessionRunner.advanceToStep")(() =>
+      const advanceToStep = Effect.fn("SessionRunner.advanceToStep")((begin: Begin) =>
         Effect.uninterruptibleMask((restore) =>
           Effect.gen(function* () {
             while (true) {
@@ -108,7 +127,9 @@ const layer = Layer.effect(
                     sessionID,
                     entering || !continuing ? "input" : "steer",
                   )
-                  if (next?.type === "compaction")
+                  if (next?.type === "compaction") {
+                    // A compaction is runnable work: a recovered waiting turn is charged before it is delivered.
+                    yield* runnable
                     yield* bus.publishAll([
                       [SessionEvent.InboxDelivered, { sessionID, inboxID: next.id }],
                       [
@@ -116,6 +137,7 @@ const layer = Layer.effect(
                         { sessionID, reason: next.payload.reason ?? "manual", inputID: next.id },
                       ],
                     ])
+                  }
                   if (next?.type === "move")
                     yield* restore(
                       Effect.gen(function* () {
@@ -203,7 +225,8 @@ const layer = Layer.effect(
               }
               const ready = yield* restore(
                 Effect.gen(function* () {
-                  const selected = yield* prepareContext(sessionID)
+                  const state = yield* begin
+                  const selected = yield* prepareContext(sessionID, state.route)
                   const promoted = yield* SessionInbox.promote(
                     db,
                     bus,
@@ -218,7 +241,8 @@ const layer = Layer.effect(
                       onlyIfMissing: true,
                     })
                   if (promoted > 0) step = 1
-                  return { _tag: "Ready" as const, context: yield* context.load(selected) }
+                  // The Step loads its model and history itself, so a routing hold waits there, after delivery.
+                  return { _tag: "Ready" as const, selection: selected, state }
                 }),
               )
               if (ready) return ready
@@ -227,10 +251,41 @@ const layer = Layer.effect(
         ),
       )
 
+      // Only the drain's first Step can be one a shutdown or crash left unfinished.
+      let first = true
       while (true) {
-        const next = yield* advanceToStep()
+        let state: StepState | undefined
+        // Resolved once per Step, as it is about to route: a Step the claim's record names continues as itself (same
+        // routing id, send history and hold), and a held one first waits out its hold, before anything routes or
+        // sends for it again. Any other Step is new; its routing identity doubles as its first assistant message.
+        // The end of that wait is where a recovered waiting turn becomes runnable, so its recovery is charged there,
+        // before anything routes.
+        const begin = Effect.suspend(() => {
+          if (state) return Effect.succeed(state)
+          const recover = first
+          first = false
+          return (recover ? SessionStepRoute.read(db, sessionID) : Effect.succeed(undefined)).pipe(
+            Effect.tap((resumed) => (resumed?.hold ? awaitHold(sessionID, resumed, resumed.hold) : Effect.void)),
+            Effect.tap(() => runnable),
+            Effect.map((resumed): StepState => {
+              const stepID = SessionMessage.ID.create()
+              return resumed
+                ? {
+                    route: resumed.next,
+                    // A held Step's message is still empty; one an attempt may have written to stays as it is.
+                    message: resumed.hold ? resumed.message : stepID,
+                    holds: resumed.holds,
+                  }
+                : { route: { id: stepID, attempt: 1 }, message: stepID, holds: 0 }
+            }),
+            Effect.tap((resolved) => Effect.sync(() => (state = resolved))),
+          )
+        })
+        const next = yield* advanceToStep(begin)
         if (next._tag !== "Ready") return next
-        continuing = yield* runStep(next.context, step, input.interruption)
+        continuing = yield* runStep(next.selection, step, next.state, input.interruption)
+        // Completed: the next Step routes on its own.
+        yield* SessionStepRoute.clear(db, [sessionID])
         stepped = true
         step++
         force = false
@@ -238,37 +293,122 @@ const layer = Layer.effect(
       }
     })
 
-    const prepareContext = Effect.fn("SessionRunner.prepareContext")(function* (sessionID: SessionSchema.ID) {
+    const prepareContext = Effect.fn("SessionRunner.prepareContext")(function* (
+      sessionID: SessionSchema.ID,
+      route: SessionRouteStep,
+    ) {
       // Plugins can reload mid-turn; each step and retry must read the settled agents, models and skills.
       yield* plugins.awaitActivation
-      const selected = yield* context.select(sessionID)
+      const selected = yield* context.select(sessionID, { step: route })
       // A blocked initial instruction baseline must leave admitted input pending.
       yield* InstructionState.prepare(db, bus, selected.instructions, sessionID)
       return selected
     })
 
     /** Owns logical Step policy; each attempt owns its streaming, tools, and durable settlement. */
+    // The one host wait for a held Step: shown as the Step's retry state, interruptible. A Step recovered after a
+    // restart waits out the rest of its hold here too, so its deadline outlives the process that set it.
+    const awaitHold = Effect.fnUntraced(function* (
+      sessionID: SessionSchema.ID,
+      state: Pick<StepState, "message" | "holds">,
+      hold: NonNullable<SessionStepRoute.Record["hold"]>,
+    ) {
+      const now = yield* Clock.currentTimeMillis
+      // A recovered hold that already ended has nothing left to show or wait for.
+      if (hold.until <= now) return
+      yield* bus.publish(SessionEvent.Step.Started, {
+        sessionID,
+        agent: hold.agent,
+        model: hold.model,
+        assistantMessageID: state.message,
+        started: now,
+      })
+      yield* bus.publish(SessionEvent.RetryScheduled, {
+        sessionID,
+        assistantMessageID: state.message,
+        attempt: state.holds,
+        at: hold.until,
+        error: { type: "route.deferred", message: hold.reason },
+      })
+      if (hold.until > now) yield* Effect.sleep(Duration.millis(hold.until - now))
+    })
+
     const runStep = Effect.fn("SessionRunner.runStep")(function* (
-      first: SessionContext.Loaded,
+      first: SessionContext.Selection,
       step: number,
+      state: StepState,
       interruption: DrainInput["interruption"],
     ) {
       const sessionID = first.session.id
-      let assistantMessageID = SessionMessage.ID.create()
+      let assistantMessageID = state.message
       const retry = yield* SessionRunnerRetry.make(bus, sessionID)
-      let initial: SessionContext.Loaded | undefined = first
+      let initial: SessionContext.Selection | undefined = first
       let recoverOverflow = true
       let recoverContinuation = true
       let retryAttempt: number | undefined
+      // Routing identity of this Step across holds, refusals, retries and restarts.
+      let route = state.route
+      let holds = state.holds
+      // The model of the Step's last attempt that may have reached its provider. Sticky: a later hold, refusal or
+      // routing decision never clears it, so every later attempt of the Step stays on that provider.
+      let pinned = route.previous?.sent ? route.previous.model : undefined
+      const reroute = (attempt?: { readonly model: Model.Ref; readonly sent: boolean }) => {
+        if (attempt?.sent) pinned = attempt.model
+        const previous = pinned ? { model: pinned, sent: true } : (attempt ?? route.previous)
+        route = { id: route.id, attempt: route.attempt + 1, ...(previous ? { previous } : {}) }
+      }
+      const persist = (hold?: SessionStepRoute.Record["hold"]) =>
+        SessionStepRoute.write(db, sessionID, {
+          next: route,
+          message: assistantMessageID,
+          holds,
+          ...(hold ? { hold } : {}),
+        })
+      let immediate = false
+      // Holds the Step until `until` (at least HOLD_MIN_MS away), recorded before the wait so a restart honors it.
+      const hold = Effect.fnUntraced(function* (input: {
+        readonly agent: Agent.ID
+        readonly model: Model.Ref
+        readonly reason: string
+        readonly until?: number
+      }) {
+        immediate = false
+        const now = yield* Clock.currentTimeMillis
+        const until = Math.ceil(Math.max(input.until ?? now, now + HOLD_MIN_MS))
+        holds++
+        const held = { until, reason: input.reason, model: input.model, agent: input.agent }
+        yield* persist(held)
+        yield* awaitHold(sessionID, { message: assistantMessageID, holds }, held)
+      })
       while (true) {
         // Reuse boundary preparation once; retries refresh context without delivering more input.
-        const loaded = initial ?? (yield* prepareContext(sessionID).pipe(Effect.flatMap(context.load)))
+        const selection = initial ?? (yield* prepareContext(sessionID, route))
         initial = undefined
+        const routed = yield* context
+          .load(selection)
+          .pipe(
+            Effect.catchTag("SessionRunnerModel.RouteDeferred", (held) =>
+              Effect.succeed({ _tag: "Held" as const, held }),
+            ),
+          )
+        if ("_tag" in routed) {
+          // Nothing was attempted: the Step's send history (`previous`) carries over unchanged.
+          reroute()
+          yield* hold({
+            agent: selection.agent.id,
+            model: routed.held.model,
+            reason: routed.held.reason,
+            until: routed.held.until,
+          })
+          continue
+        }
+        const loaded = routed
         const estimate = SessionCompaction.estimatePrompt(loaded)
         const compacted = yield* compaction.compact({ reason: "auto", context: loaded, estimate })
         if (compacted.status === "failed") return yield* new StepFailedError({ error: compacted.error })
         if (compacted.status === "completed") {
           assistantMessageID = SessionMessage.ID.create()
+          reroute()
           continue
         }
         yield* compaction.precompute(Effect.succeed(loaded), estimate)
@@ -294,6 +434,7 @@ const layer = Layer.effect(
             toolChoice: stepLimitReached ? "none" : undefined,
             webSocket: "session",
             inputTokens: estimate,
+            step: route,
           })
           .pipe(
             // The hook event holds every message from before images are bounded, screenshots included, and is a separate
@@ -303,9 +444,17 @@ const layer = Layer.effect(
               request: prepared.request,
               options: prepared.options,
               retry: prepared.retry,
+              refused: prepared.refused,
               executeTool: prepared.executeTool,
             })),
           )
+        // Written ahead: until this attempt is known not sent, a restart treats it as possibly sent and pins its
+        // provider for the rest of the Step.
+        yield* SessionStepRoute.write(db, sessionID, {
+          next: { id: route.id, attempt: route.attempt + 1, previous: { model: loaded.model.ref, sent: true } },
+          message: assistantMessageID,
+          holds,
+        })
         const outcome = yield* steps.attempt({
           isLocationClosed: lifecycle.isClosed,
           interruption,
@@ -356,6 +505,16 @@ const layer = Layer.effect(
               assistantMessageID,
             })
             if (outcome.freshAssistant) assistantMessageID = SessionMessage.ID.create()
+            reroute({ model: loaded.model.ref, sent: true })
+          }),
+          Refused: Effect.fnUntraced(function* (outcome) {
+            reroute({ model: loaded.model.ref, sent: false })
+            // One immediate re-route per hold, so a refusing plugin cannot spin the Step.
+            if (outcome.refusal.until !== undefined || immediate)
+              return yield* hold({ agent: loaded.agent.id, model: loaded.model.ref, ...outcome.refusal })
+            immediate = true
+            // Known not sent: a restart from here may still route this Step anywhere its pin allows.
+            yield* persist()
           }),
           OutputLimit: Effect.fn("SessionRunner.continueOutputLimit")(function* (outcome) {
             // The current response is included. User input or any other finish breaks the streak.
@@ -387,13 +546,16 @@ const layer = Layer.effect(
             if (outcome.needsContinuation) return true
             yield* bus.publish(SessionEvent.Synthetic, { sessionID, text: CONTINUE_AFTER_OUTPUT_LIMIT })
             assistantMessageID = SessionMessage.ID.create()
+            reroute({ model: loaded.model.ref, sent: true })
           }),
           Compacted: Effect.fnUntraced(function* () {
             recoverOverflow = false
             assistantMessageID = SessionMessage.ID.create()
+            reroute({ model: loaded.model.ref, sent: true })
           }),
           RecoverFull: Effect.fnUntraced(function* () {
             recoverContinuation = false
+            reroute({ model: loaded.model.ref, sent: true })
           }),
         })
         if (completed !== undefined) return completed

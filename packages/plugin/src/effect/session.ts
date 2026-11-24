@@ -69,16 +69,74 @@ export interface SessionTitle extends SessionRequest {
 export type SessionRequestKind = "primary" | "compaction" | "title" | "generate"
 
 /**
+ * Where the model a resolution starts from came from. `explicit`: the Session's own selection, made by a user or
+ * caller (a selection recorded without provenance counts as explicit). `default`: the Session's selection, recorded by a
+ * client from its implicit default rather than a pick. `agent`: no Session selection; the agent's configured model.
+ * `fallback`: neither; the host's default model.
+ */
+export type SessionModelOrigin = "explicit" | "default" | "agent" | "fallback"
+
+/**
+ * One durable Step of the Session's agent loop, as routing sees it. `id` stays the same while the Step is held,
+ * refused or retried, and across a restart, which continues the unfinished Step: the next server first waits out a
+ * hold the previous one set, then routes the Step at its next attempt. `id` changes for the next Step (after a
+ * completed tool call, say). Only the Session runner's primary requests carry a Step.
+ */
+export interface SessionRouteStep {
+  readonly id: string
+  /** 1 for the Step's first resolution, then one more each time the Step re-enters routing. */
+  readonly attempt: number
+  /**
+   * The Step's send history. Once an attempt may have reached its provider (an ordinary failure being retried, a
+   * provider overflow, a cut-off stream, an attempt a restart interrupted), every later attempt of the Step carries
+   * that model with `sent` true, through holds, refusals and restarts: the host keeps the Step on that provider, so a
+   * hook may defer it but a change of provider is ignored. Until then it is the model of the last attempt a refusal
+   * proved unsent, with `sent` false, and absent before any attempt.
+   */
+  readonly previous?: { readonly model: Model.Ref; readonly sent: boolean }
+}
+
+/**
+ * Holds a Step instead of sending it. Nothing is sent and nothing fails: the Step waits, interruptibly, in the same
+ * execution and re-enters routing at `until` (epoch milliseconds). While it waits the Session shows `reason` as the
+ * Step's retry state. The host waits at least one second, so a past `until` cannot spin.
+ */
+export interface SessionRouteDefer {
+  readonly reason: string
+  readonly until: number
+}
+
+/**
+ * Refuses one concrete send. The host does not send it, settles nothing as failed, and re-enters routing for the
+ * Step: at `until` when given (held as {@link SessionRouteDefer}), else at once. Honored only before any request of
+ * the attempt reached the network; after one did, a refusal fails the attempt like any transport failure.
+ */
+export interface SessionRouteRefuse {
+  readonly reason: string
+  readonly until?: number
+}
+
+/**
  * Runs whenever a Session resolves the model for a request, before anything is built for it. `model` starts as the
- * Session's or agent's selection; change it to serve this request with another model from the same provider, including
- * models hidden from the picker. The Session keeps its selection, and the request and its records use the new model.
- * Router models such as GitHub Copilot's Auto use it. Experimental.
+ * Session's or agent's selection, `origin` says which, and `available` whether that model is offered in the Session's
+ * location (an unavailable one fails the request unless a hook changes it). Change `model` to serve this request with
+ * another model: from the same provider, including models hidden from the picker, or an offered model from another
+ * provider, which then serves with that provider's own credentials, hooks, tools and history rendering. The Session
+ * keeps its selection, and the request and its records use the new model. Router models such as GitHub Copilot's
+ * Auto use it.
+ *
+ * The runner's primary requests carry `step` and, before anything is built, may set `defer` to hold the Step (see
+ * {@link SessionRouteDefer}); `defer` is ignored on other requests. Experimental.
  */
 export interface SessionModelResolve {
   readonly sessionID: Session.ID
   readonly agent: Agent.ID
   readonly kind: SessionRequestKind
+  readonly origin: SessionModelOrigin
+  readonly available: boolean
+  readonly step?: SessionRouteStep
   model: Model.Ref
+  defer?: SessionRouteDefer
 }
 
 export interface SessionModelRequest {
@@ -90,12 +148,19 @@ export interface SessionModelRequest {
   headers: Record<string, string>
 }
 
+/**
+ * Each concrete HTTP request, just before it is sent. A primary request of the runner carries its `step` and may set
+ * `refuse` to keep this request from being sent (see {@link SessionRouteRefuse}); elsewhere `refuse` fails the request.
+ * A hook that throws fails the request as before.
+ */
 export interface SessionHttpRequest {
   readonly sessionID: Session.ID
   readonly agent: Agent.ID
   readonly model: Model.Ref
   readonly kind: SessionRequestKind
+  readonly step?: SessionRouteStep
   request: Request
+  refuse?: SessionRouteRefuse
 }
 
 export interface SessionHttpResponse {
@@ -123,14 +188,18 @@ export interface SessionWebSocketHandshake {
 /**
  * Outbound frame about to be written to the Session's socket, after the provider driver has built
  * it. Replacing `frame` sends the replacement verbatim; the driver still tracks state from the
- * provider's replies, so a rewrite that changes protocol meaning is on the plugin. Experimental.
+ * provider's replies, so a rewrite that changes protocol meaning is on the plugin. Setting `refuse` keeps the frame
+ * from being written and closes the socket (see {@link SessionRouteRefuse}); only a primary request with a `step`
+ * honors it. Experimental.
  */
 export interface SessionWebSocketSend {
   readonly sessionID: Session.ID
   readonly agent: Agent.ID
   readonly model: Model.Ref
   readonly kind: SessionRequestKind
+  readonly step?: SessionRouteStep
   frame: string
+  refuse?: SessionRouteRefuse
 }
 
 /**

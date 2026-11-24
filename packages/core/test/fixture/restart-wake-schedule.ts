@@ -415,7 +415,7 @@ function build(
         return SessionExecution.Service.of({
           ...real,
           wake: (sessionID) => frozen(real.wake(sessionID)),
-          recover: (sessionID) => frozen(real.recover(sessionID)),
+          recover: (sessionID, recovery) => frozen(real.recover(sessionID, recovery)),
           resume: (sessionID) => frozen(real.resume(sessionID)),
         })
       }),

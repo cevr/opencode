@@ -203,6 +203,10 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
           title: Schema.String.pipe(Schema.optional),
           agent: Agent.ID.pipe(Schema.optional),
           model: Model.Ref.pipe(Schema.optional),
+          modelOrigin: Model.SelectionOrigin.pipe(Schema.optional).annotate({
+            description:
+              "How model was chosen: explicit (a pick; the default when omitted) or default (the client's implicit default).",
+          }),
           location: Location.PublicRef.pipe(Schema.optional).annotate({
             description: "Defaults to the server's working directory. Ignored when parentID is set.",
           }),
@@ -331,7 +335,13 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
     .add(
       HttpApiEndpoint.post("session.switchModel", "/api/session/:sessionID/model", {
         params: { sessionID: Session.ID },
-        payload: Schema.Struct({ model: Model.Ref }),
+        payload: Schema.Struct({
+          model: Model.Ref,
+          origin: Model.SelectionOrigin.pipe(Schema.optional).annotate({
+            description:
+              "How model was chosen: explicit (a pick; the default when omitted) or default (the client's implicit default).",
+          }),
+        }),
         success: HttpApiSchema.NoContent,
         error: SessionNotFoundError,
       }).annotateMerge(

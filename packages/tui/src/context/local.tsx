@@ -129,7 +129,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             if (route.data.type === "session") setAgentStore("draftBySession", route.data.sessionID, { agent: id })
             // Retain both selections while agent and model commits arrive separately.
             const selected = changed && route.data.type === "session" ? model.current() : undefined
-            if (selected) model.set(selected)
+            if (selected) model.set(selected, { carry: true })
           })
         },
         move(direction: 1 | -1) {
@@ -157,7 +157,8 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     const agent = createAgent()
 
     function createModel() {
-      type ModelSelection = ModelPreferenceModel & { variant?: string }
+      // `origin: "default"` marks a selection the composer derived (agent model, configured or recent model), not a pick.
+      type ModelSelection = ModelPreferenceModel & { variant?: string; origin?: "default" }
       const [preferences, setPreferences] = createStore<ModelPreference & { ready: boolean }>({
         ready: false,
         recent: [],
@@ -187,7 +188,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       const repository = createModelPreferenceRepository(path.join(paths.state, "model.json"))
       const pendingSelectionCommits = new Map<string, { agentID: string; selection: string }>()
       const selectionKey = (value: ModelSelection) =>
-        `${modelPreferenceKey(value)}:${normalizeModelVariant(value.variant) ?? "default"}`
+        `${modelPreferenceKey(value)}:${normalizeModelVariant(value.variant) ?? "default"}:${value.origin ?? "explicit"}`
 
       function applyPreferences(value: ModelPreference) {
         batch(() => {
@@ -249,11 +250,26 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         )
       })
 
-      const currentSelection = createMemo<ModelSelection | undefined>(() => {
-        if (route.data.type === "session") return sessionSelection(route.data.sessionID)
+      // Mirrors newSessionModel's order: only a pick for this location and agent, or --model, is explicit.
+      const newSessionOrigin = createMemo<ModelSelection["origin"]>(() => {
+        const a = agent.current()
+        const picked = a && selectionState.newSessionModelByLocationAgent[locationAgentKey(a.id)]
+        if (picked && isModelValid(picked)) return undefined
+        if (a?.model && isModelValid({ providerID: a.model.providerID, modelID: a.model.id })) return "default"
+        if (args.model && isModelValid(parse(args.model))) return undefined
+        return "default"
+      })
+
+      const newSessionSelection = () => {
         const model = newSessionModel()
         if (!model) return
-        return preferredSelection(model)
+        const origin = newSessionOrigin()
+        return { ...preferredSelection(model), ...(origin ? { origin } : {}) }
+      }
+
+      const currentSelection = createMemo<ModelSelection | undefined>(() => {
+        if (route.data.type === "session") return sessionSelection(route.data.sessionID)
+        return newSessionSelection()
       })
 
       const currentModel = createMemo(() => {
@@ -293,12 +309,14 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       }
 
       function durableSelection(sessionID: string): ModelSelection | undefined {
-        const model = data.session.get(sessionID)?.model
+        const session = data.session.get(sessionID)
+        const model = session?.model
         if (!model) return
         return {
           providerID: model.providerID,
           modelID: model.id,
           variant: normalizeModelVariant(model.variant),
+          ...(session.modelOrigin === "default" ? { origin: "default" as const } : {}),
         }
       }
 
@@ -317,8 +335,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
               !info || info.variants.some((variant) => variant.id === selected.variant) ? selected.variant : undefined,
           }
         }
-        const model = newSessionModel()
-        return model && preferredSelection(model)
+        return newSessionSelection()
       }
 
       function setSessionSelection(sessionID: string, agentID: string, selection: ModelSelection | undefined) {
@@ -344,18 +361,30 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         )
       }
 
-      function selectModel(model: ModelPreferenceModel) {
+      // `carry` keeps the current selection's provenance (an agent switch); anything else is a pick.
+      function selectModel(model: ModelPreferenceModel, carry = false) {
         if (route.data.type === "session") {
           const sessionID = route.data.sessionID
           const current = sessionSelection(sessionID)
+          const same = current?.providerID === model.providerID && current.modelID === model.modelID
+          const next =
+            same && current
+              ? carry
+                ? current
+                : { providerID: current.providerID, modelID: current.modelID, variant: current.variant }
+              : preferredSelection(model)
+          // An agent switch that lands on the Session's own model and variant changes nothing about it: the
+          // Session's recorded provenance stands, so a pick is never committed back as a client default.
+          const durable = carry ? durableSelection(sessionID) : undefined
           setSessionDraft(
             sessionID,
-            current?.providerID === model.providerID && current.modelID === model.modelID
-              ? current
-              : preferredSelection(model),
+            durable && selectionKey({ ...durable, origin: undefined }) === selectionKey({ ...next, origin: undefined })
+              ? durable
+              : next,
           )
           return true
         }
+        if (carry) return true
         const current = agent.current()
         if (!current) return false
         setSelectionState("newSessionModelByLocationAgent", locationAgentKey(current.id), model)
@@ -408,12 +437,18 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             providerID: string
             id: string
             variant?: string
+            origin?: "default"
           },
           agentID: string,
         ) {
           const committed = {
             agentID,
-            selection: selectionKey({ providerID: value.providerID, modelID: value.id, variant: value.variant }),
+            selection: selectionKey({
+              providerID: value.providerID,
+              modelID: value.id,
+              variant: value.variant,
+              origin: value.origin,
+            }),
           }
           pendingSelectionCommits.set(sessionID, committed)
           // An unchanged model emits no event; the agent may be the only durable change.
@@ -499,10 +534,10 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           setPreferences("recent", recentModels(next, preferences.recent))
           void repository.addRecent(next).catch(() => undefined)
         },
-        set(model: { providerID: string; modelID: string }, options?: { recent?: boolean }) {
+        set(model: { providerID: string; modelID: string }, options?: { recent?: boolean; carry?: boolean }) {
           batch(() => {
             if (!isModelValid(model)) return
-            if (!selectModel(model)) return
+            if (!selectModel(model, options?.carry)) return
             if (options?.recent) {
               setPreferences("recent", recentModels(model, preferences.recent))
               void repository.addRecent(model).catch(() => undefined)
@@ -585,7 +620,13 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             batch(() => {
               setPreferences("speed", modelPreferenceKey(standard), value)
               void repository.saveSpeed(standard, value).catch(() => undefined)
-              if (route.data.type === "session") return setSessionDraft(route.data.sessionID, { ...m, modelID: target })
+              // Choosing a speed is a pick, so the session's selection stops being a client default.
+              if (route.data.type === "session")
+                return setSessionDraft(route.data.sessionID, {
+                  providerID: m.providerID,
+                  modelID: target,
+                  variant: m.variant,
+                })
               // A new session starts on the model, which runs at the speed just saved for it.
               const current = agent.current()
               if (current) setSelectionState("newSessionModelByLocationAgent", locationAgentKey(current.id), standard)

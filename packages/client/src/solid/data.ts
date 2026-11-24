@@ -978,8 +978,12 @@ export function createData(config: CreateDataInput) {
       }
       case "session.model.selected": {
         const previous = event.data.previous ?? store.session.info[event.data.sessionID]?.model
+        // Model and provenance move together: an event without an origin is an explicit pick, so it clears a default.
         if (store.session.info[event.data.sessionID])
-          setStore("session", "info", event.data.sessionID, "model", event.data.model)
+          setStore("session", "info", event.data.sessionID, {
+            model: event.data.model,
+            modelOrigin: event.data.origin === "default" ? "default" : undefined,
+          })
         if (!store.session.message[event.data.sessionID]) return
         message.insert(event.data.sessionID, {
           id: SessionMessage.ID.fromEvent(event.id),
@@ -1883,6 +1887,8 @@ export function createData(config: CreateDataInput) {
         title?: string
         agent?: string
         model?: ModelRef
+        /** How `model` was chosen; absent means explicit. */
+        modelOrigin?: "explicit" | "default"
         location?: LocationRef
         projectID?: string
       }) {
@@ -1899,6 +1905,7 @@ export function createData(config: CreateDataInput) {
             projectID: projectID ?? store.location[locationKey(location)]?.info?.project.id ?? "",
             agent: payload.agent,
             model: payload.model,
+            ...(payload.modelOrigin ? { modelOrigin: payload.modelOrigin } : {}),
             cost: 0,
             tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
             time: { created: now, updated: now },

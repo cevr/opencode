@@ -25,6 +25,8 @@ import type {
   SessionRequest,
   SessionRequestKind,
   SessionRequestMessage,
+  SessionRouteRefuse,
+  SessionRouteStep,
   SessionTitle,
 } from "@opencode/plugin/effect/session"
 import type { Agent } from "@opencode/schema/agent"
@@ -72,6 +74,11 @@ export interface Prepared<Event = SessionRequest> {
   readonly request: LLMRequest
   readonly options: StreamOptions
   readonly retry: (event: PluginHooks.Domains["session"]["retry"]) => Effect.Effect<void>
+  /**
+   * The refusal a send hook made before any request of this attempt reached the network, once it has. Every later
+   * send of the attempt is refused with it, so nothing goes out against the refusal.
+   */
+  readonly refused?: () => SessionRouteRefuse | undefined
   /** Runs a tool call against the tools this request advertised. */
   readonly executeTool: (
     input: Parameters<Tool.Snapshot["execute"]>[0],
@@ -88,6 +95,8 @@ export interface Input {
   readonly toolChoice?: LLM.LLMRequestInput["toolChoice"]
   /** Only the durable runner may use a stateful WebSocket. */
   readonly webSocket?: "session"
+  /** The runner's durable Step: its primary sends may be refused (see `Prepared.refused`). */
+  readonly step?: SessionRouteStep
   /** Prompt size, measured by the provider or estimated. The default output limit leaves room for it. */
   readonly inputTokens?: { readonly measured: number; readonly estimated: number }
 }
@@ -274,6 +283,8 @@ export const layer = Layer.effect(
       const session = input.session
       const model = input.model
       const scope = { sessionID: session.id, agent: input.agent, model: model.ref, kind }
+      // Only the runner's primary requests can be refused without failing: a refused Step re-enters routing.
+      const step = kind === "primary" ? input.step : undefined
       const tools = input.tools ?? {
         definitions: [],
         execute: () => new Tool.Error({ message: "Tools are not available for this request" }),
@@ -370,14 +381,33 @@ export const layer = Layer.effect(
         model: route === base.model.route ? base.model : LanguageModel.update(base.model, { route }),
         headers: Object.keys(modelHook.headers).length === 0 ? undefined : modelHook.headers,
       }
+      const gate: { sent: boolean; refused?: SessionRouteRefuse } = { sent: false }
+      // Undefined lets the send go out. Refusals after a send of this attempt are ordinary failures.
+      const refuse = (decision: SessionRouteRefuse | undefined) => {
+        if (gate.refused) return `Request refused before sending: ${gate.refused.reason}`
+        if (!decision) {
+          gate.sent = true
+          return
+        }
+        if (!step || gate.sent) return `Request refused: ${decision.reason}`
+        gate.refused = { reason: decision.reason, ...(decision.until === undefined ? {} : { until: decision.until }) }
+        return `Request refused before sending: ${decision.reason}`
+      }
       const hasHttpHooks =
         (yield* hooks.has("session", "http.request", model.ref.providerID)) ||
         (yield* hooks.has("session", "http.response", model.ref.providerID))
       const http: StreamOptions["http"] = hasHttpHooks
         ? (req, handler) =>
             Effect.gen(function* () {
+              if (gate.refused) return yield* Effect.fail(new Error(refuse(undefined)))
               const request = yield* HttpClientRequest.toWeb(req)
-              const before = yield* hooks.trigger("session", "http.request", { ...scope, request })
+              const before = yield* hooks.trigger("session", "http.request", {
+                ...scope,
+                ...(step ? { step } : {}),
+                request,
+              })
+              const refusal = refuse(before.refuse)
+              if (refusal !== undefined) return yield* Effect.fail(new Error(refusal))
               // A hook that kept the request object cannot have replaced its body, so the original body is sent as is.
               // Reading it back would hold a second full copy of the request, screenshots included, for the whole call.
               const sent =
@@ -418,9 +448,18 @@ export const layer = Layer.effect(
                     })
                     .pipe(Effect.map((event) => ({ url: event.url, headers: event.headers }))),
                 send: (frame) =>
-                  hooks
-                    .trigger("session", "experimental.ws.send", { ...scope, frame })
-                    .pipe(Effect.map((event) => event.frame)),
+                  gate.refused
+                    ? Effect.succeed(undefined)
+                    : hooks
+                        .trigger("session", "experimental.ws.send", { ...scope, ...(step ? { step } : {}), frame })
+                        .pipe(
+                          Effect.map((event) => {
+                            const refusal = refuse(event.refuse)
+                            if (refusal === undefined) return event.frame
+                            // Never written. Without a Step to re-route (or after a send), it is an ordinary failure.
+                            return undefined
+                          }),
+                        ),
                 receive: (frame) =>
                   hooks
                     .trigger("session", "experimental.ws.receive", { ...scope, frame })
@@ -436,6 +475,7 @@ export const layer = Layer.effect(
         options: { ...(http ? { http } : {}), ...(webSocket ? { webSocket } : {}) },
         retry: (event: Parameters<Prepared["retry"]>[0]) =>
           hooks.trigger("session", "retry", event).pipe(Effect.asVoid),
+        refused: () => gate.refused,
         // Permission.assert and the question tool throw declines as defects so tools cannot
         // catch them and turn a "no" into model-visible output. Recover them here as failures,
         // including declines a tool rethrew and its wrapper attached to a Tool.Error, as Promise
