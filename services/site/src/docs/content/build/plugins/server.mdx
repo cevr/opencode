@@ -1516,7 +1516,9 @@ retried, its `attempt`, and the `previous` attempt's model with whether it may h
 `defer: { reason, until }` to hold the Step instead: nothing is built or sent, nothing fails, the Session shows the
 reason as the Step's retry state, and the Step routes again at `until` (at least a second later) in the same execution.
 Cancelling the Session ends the wait. The hold is durable: a server that restarts during it continues the same Step,
-waits out the rest of the hold without a restart notice, and only then routes it again. Once an attempt may have
+waits out the rest of the hold without a restart notice, and only then routes it again. Restarts during a hold do not
+count toward the limit on how often an interrupted turn is resumed; the Step leaving its hold does, so a turn that keeps
+failing after its hold still stops at that limit. Once an attempt may have
 reached its provider, `previous` keeps that model with `sent` true for the rest of the Step, through holds, refusals and
 restarts, and a change of provider is ignored: an ambiguous send is retried where it went.
 

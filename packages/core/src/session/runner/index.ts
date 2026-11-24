@@ -40,6 +40,13 @@ export interface Interface {
     readonly stepped?: boolean
     /** Why the execution is being interrupted, once it is: `"user"` when someone stopped it. */
     readonly interruption?: () => "user" | "shutdown" | undefined
+    /**
+     * The turn is one a restart recovered while it was waiting (its Step held), with its recovery budget not yet
+     * charged (SessionExecution.Recovery). Run before the turn's first runnable work: once its recovered hold ends
+     * and before it routes, or before a compaction runs ahead of it. Idempotent; fails the turn once the budget is
+     * spent.
+     */
+    readonly onRunnable?: Effect.Effect<void, StepFailedError>
   }) => Effect.Effect<DrainResult, RunError>
 }
 

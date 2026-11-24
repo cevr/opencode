@@ -22,6 +22,7 @@ import { SessionEvent } from "../event.js"
 import { SessionExecution } from "../execution.js"
 import { SessionHistory } from "../history.js"
 import { SessionSchema } from "../schema.js"
+import { StepFailedError } from "../error.js"
 import { SessionStepRoute } from "../step-route.js"
 import { SessionStore } from "../store.js"
 import { ImageNotice } from "../../image/notice.js"
@@ -51,6 +52,9 @@ export interface Options {
 const DEFAULT_MAX_ATTEMPTS = 10
 
 type Notices = Pick<Session.Interface, "synthetic">
+
+/** How a recovered claim resumes; `onRunnable` is its deferred budget charge (see `prepareResume`). */
+type Resume = SessionExecution.Recovery
 
 export interface Interface {
   /**
@@ -102,11 +106,40 @@ export const layer = (options?: Options) =>
         if (owner && !owner.revert && !(yield* execution.stopped(sessionID))) yield* execution.wake(sessionID)
       })
 
+      /**
+       * The budget counts recovered turns that became runnable, never a boot that only found its turn waiting. A
+       * claim whose unfinished Step has a recorded hold (SessionStepRoute) is waiting: the boot charges nothing and
+       * returns the charge as `onRunnable`, which the runner runs once, as the recovered turn leaves that wait for its
+       * first runnable work, before it routes, compacts or sends anything. Any other claim is runnable at boot and is
+       * charged here. The hold's presence decides, never the clock: the boot and the runner read the same record, so
+       * a hold that ends between them still charges exactly once, at its end. The charge is durable before any
+       * runnable work, so a crash in that work is counted, and the next boot finds either the same hold (charged
+       * again at its end) or the attempt's written-ahead record (charged at boot).
+       */
       const prepareResume = Effect.fnUntraced(function* (sessionID: SessionSchema.ID) {
+        // A held Step sent nothing the model could have started on: it resumes as the same Step at its hold's end,
+        // with the conversation as it was, so it takes no restart notice.
+        if ((yield* SessionStepRoute.read(db, sessionID))?.hold) {
+          let charged = false
+          const onRunnable = Effect.suspend(() => {
+            if (charged) return Effect.void
+            charged = true
+            return store
+              .countResume(sessionID)
+              .pipe(
+                Effect.flatMap((attempts) =>
+                  attempts !== undefined && attempts > maxAttempts
+                    ? Effect.fail(new StepFailedError({ error: RESUME_EXHAUSTED }))
+                    : Effect.void,
+                ),
+              )
+          })
+          return { onRunnable } satisfies Resume
+        }
         // Durable before the resume runs, so a crash inside the resumed turn is
         // counted by the next sweep and the budget cannot be dodged.
         const attempts = yield* store.countResume(sessionID)
-        if (attempts === undefined) return false
+        if (attempts === undefined) return undefined
         if (attempts > maxAttempts) {
           // Terminalize instead: the release hook clears the claim and resets the
           // counter atomically with the terminal event.
@@ -115,18 +148,15 @@ export const layer = (options?: Options) =>
             { sessionID, error: RESUME_EXHAUSTED },
             { commit: () => store.release(sessionID) },
           )
-          return false
+          return undefined
         }
-        // A held Step sent nothing the model could have started on: it resumes as the same Step at its hold's end,
-        // with the conversation as it was, so it takes no restart notice.
-        if ((yield* SessionStepRoute.read(db, sessionID))?.hold) return true
         yield* bus.publish(SessionEvent.Synthetic, {
           sessionID,
           text: CONTINUE_AFTER_SERVER_RESTART,
           description: "Continuing after restart",
           metadata: { notice: "restart" },
         })
-        return true
+        return {} satisfies Resume
       })
 
       const restartMessage = (background: Job.Background, recovery: Exclude<Job.Recovery, { kind: "subagent" }>) => {
@@ -401,42 +431,45 @@ export const layer = (options?: Options) =>
         background: Job.Background,
         recovery: Extract<Job.Recovery, { kind: "subagent" }>,
         notices: Notices,
-      ): Effect.fn.Return<boolean> {
+      ): Effect.fn.Return<Resume | undefined> {
         const child = yield* store.get(recovery.childSessionID)
         if (!child || child.parentID !== recovery.parentSessionID || !(yield* store.get(recovery.parentSessionID))) {
           yield* jobs.completeBackground(background.notificationID)
-          return false
+          return undefined
         }
 
         if (background.status !== "running") {
           // Replay the settled report using the work captured with it.
           yield* deliverSubagentSafe(notices, background.notificationID, recovery, background)
-          return false
+          return undefined
         }
 
-        if (yield* execution.isActive(recovery.childSessionID)) return false
+        if (yield* execution.isActive(recovery.childSessionID)) return undefined
         if (yield* execution.stopped(recovery.childSessionID)) {
           // A stop the server died inside: no restart notice and no attempt. SubagentJob.restart's recover settles
           // it as the stop would have, through the execution, so its one cancelled report comes from the settlement.
-          return true
+          return {}
         }
         // prepareResume publishes Execution.Failed directly on the bus outside the
-        // coordinator, so the settle hook never reports an exhausted child.
-        if (!(yield* prepareResume(recovery.childSessionID))) {
+        // coordinator, so the settle hook never reports an exhausted child. A waiting child spent past its budget
+        // fails later, through its run, whose settlement gives the report.
+        const resume = yield* prepareResume(recovery.childSessionID)
+        if (!resume) {
           yield* deliverSubagentSafe(notices, background.notificationID, recovery, {
             status: "error",
             error: RESUME_EXHAUSTED.message,
           })
-          return false
+          return undefined
         }
         // Defer the start until every suspended session has counted its attempt; a fast
         // resumed child settling in Phase 1 would wake its parent past that budget.
-        return true
+        return resume
       })
 
       type ResumableSubagent = {
         readonly background: Job.Background
         readonly recovery: Extract<Job.Recovery, { kind: "subagent" }>
+        readonly resume: Resume
       }
 
       return Service.of({
@@ -523,7 +556,8 @@ export const layer = (options?: Options) =>
             Effect.fnUntraced(function* (background) {
               const recovery = background.recovery
               if (recovery.kind !== "subagent" || !(yield* recoverable(background))) return
-              if (yield* recoverSubagent(background, recovery, notices)) resumable.push({ background, recovery })
+              const resume = yield* recoverSubagent(background, recovery, notices)
+              if (resume) resumable.push({ background, recovery, resume })
             }),
             { discard: true },
           )
@@ -531,32 +565,34 @@ export const layer = (options?: Options) =>
           // A directly driven child can also settle and wake its parent. Account for every
           // claimed execution before starting any of them, leaving running jobs to SubagentJob.
           const resumed = yield* execution.active
-          const direct = yield* Effect.filter(
+          const direct: Array<readonly [SessionSchema.ID, Resume]> = []
+          yield* Effect.forEach(
             (yield* store.listSuspended()).filter((sessionID) => !resumed.has(sessionID) && !children.has(sessionID)),
             Effect.fnUntraced(function* (sessionID) {
               // A stop the server died inside gets no restart notice and no attempt: recover settles it as the stop
               // would have. The mark is read again at the turn's first drain, so a stop landing after this read holds
               // too, and a new task landing after it (a resume, which removes the mark) runs.
-              if (yield* execution.stopped(sessionID)) return true
-              return yield* prepareResume(sessionID)
+              const resume = (yield* execution.stopped(sessionID)) ? {} : yield* prepareResume(sessionID)
+              if (resume) direct.push([sessionID, resume])
             }),
+            { discard: true },
           )
           yield* Effect.forEach(
             direct,
-            Effect.fnUntraced(function* (sessionID) {
+            Effect.fnUntraced(function* ([sessionID, resume]) {
               suspended.delete(sessionID)
-              yield* execution.recover(sessionID).pipe(Effect.ignore, Effect.forkIn(scope))
+              yield* execution.recover(sessionID, resume).pipe(Effect.ignore, Effect.forkIn(scope))
             }),
             { concurrency: "unbounded", discard: true },
           )
 
           // Start children only now: their settlement reports wake parents, so the parent's
-          // restart budget must already be charged. SessionExecution's settle hook owns the
-          // report, so no jobs.wait observer is needed.
+          // restart budget must already be charged (or, for a waiting parent, deferred to its runnable work).
+          // SessionExecution's settle hook owns the report, so no jobs.wait observer is needed.
           yield* Effect.forEach(
             resumable,
-            Effect.fnUntraced(function* ({ background, recovery }) {
-              yield* SubagentJob.restart(jobs, execution, recovery, background.notificationID)
+            Effect.fnUntraced(function* ({ background, recovery, resume }) {
+              yield* SubagentJob.restart(jobs, execution, recovery, background.notificationID, resume)
               suspended.delete(recovery.childSessionID)
             }),
             { discard: true },

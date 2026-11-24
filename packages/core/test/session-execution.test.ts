@@ -22,6 +22,7 @@ import { SessionEvent } from "@opencode/core/session/event"
 import { SessionInbox } from "@opencode/core/session/inbox"
 import { SessionMessage } from "@opencode/core/session/message"
 import { SessionRunner } from "@opencode/core/session/runner/index"
+import { SessionStepRoute } from "@opencode/core/session/step-route"
 import { SessionInboxTable, SessionTable } from "@opencode/core/session/sql"
 import { SessionStore } from "@opencode/core/session/store"
 import { Shell } from "@opencode/core/shell"
@@ -37,6 +38,7 @@ import { ID } from "@opencode/core/model"
 import { Provider } from "@opencode/core/provider"
 import { daemonShells } from "./fixture/shell-daemon"
 import { Cause, Context, Deferred, Effect, Exit, Fiber, Layer, LayerMap, Logger, Schedule, Scope, Stream } from "effect"
+import { TestClock } from "effect/testing"
 import { eq } from "drizzle-orm"
 import { testEffect } from "./lib/effect"
 
@@ -787,6 +789,186 @@ describe("SessionExecution lifecycle", () => {
 
       expect(continued).toEqual([])
       expect(yield* attempts(database, sessionID)).toBe(0)
+      expect((yield* claims(database))[sessionID]).toBe(true)
+    }),
+  )
+})
+
+// The recovery budget counts recovered turns that became runnable. A boot that finds the turn's Step held is only a
+// wait: it is charged nothing, and its run is charged once, as it leaves the wait (SessionRunner `onRunnable`).
+// Every ordering of up to three boots, on the real SessionRestart sweep, SessionExecution and store, with a scripted
+// runner standing in for what each recovered run did before its host shut down:
+//   wait     the run only waited out its hold;
+//   cross    the run left the wait (or was runnable already) and stopped before writing its attempt ahead;
+//   attempt  as cross, then the Step's attempt was written ahead, so the record has no hold;
+//   hold     as cross, then the Step was held again (a new hold recorded).
+// A hold that already ended at boot is recovered the same way: the hold's presence decides, not the clock.
+describe("SessionRestart recovery budget across a held Step", () => {
+  const CAP = 2
+  type Action = "wait" | "cross" | "attempt" | "hold"
+  const actions: ReadonlyArray<Action> = ["wait", "cross", "attempt", "hold"]
+  const sequences = (length: number): Action[][] =>
+    length === 0 ? [[]] : sequences(length - 1).flatMap((prefix) => actions.map((action) => [...prefix, action]))
+
+  interface Boot {
+    /** The boot called the runner, and with a deferred charge. */
+    readonly drained: boolean
+    readonly deferred: boolean
+    readonly attempts: number
+    readonly claimed: boolean
+    readonly failures: number
+  }
+  // The model: a runnable claim is charged at boot; a waiting one when its run crosses. A charge past the cap fails
+  // the turn (at boot, before any run; at a crossing, through the run), releasing the claim and resetting the count.
+  const expected = (script: ReadonlyArray<Action>) => {
+    const boots: Boot[] = []
+    let held = true
+    let attempts = 0
+    let failures = 0
+    let done = false
+    for (const action of script) {
+      if (done) {
+        boots.push({ drained: false, deferred: false, attempts: 0, claimed: false, failures })
+        continue
+      }
+      const deferred = held
+      if (!deferred) attempts++
+      if (!deferred && attempts > CAP) {
+        failures++
+        done = true
+        boots.push({ drained: false, deferred, attempts: 0, claimed: false, failures })
+        continue
+      }
+      if (deferred && action !== "wait") attempts++
+      if (deferred && attempts > CAP) {
+        failures++
+        done = true
+        boots.push({ drained: true, deferred, attempts: 0, claimed: false, failures })
+        continue
+      }
+      if (action === "attempt") held = false
+      if (action === "hold") held = true
+      boots.push({ drained: true, deferred, attempts, claimed: true, failures })
+    }
+    return boots
+  }
+
+  const model = { id: ID.make("fake-model"), providerID: Provider.ID.make("fake") }
+  const record = (until: number): SessionStepRoute.Record => ({
+    next: { id: "step_held", attempt: 2 },
+    message: SessionMessage.ID.create(),
+    holds: 1,
+    hold: { until, reason: "held", model, agent: Agent.ID.make("build") },
+  })
+  // An attempt written ahead: the Step is runnable, its last attempt possibly sent.
+  const written: SessionStepRoute.Record = {
+    next: { id: "step_held", attempt: 3, previous: { model, sent: true } },
+    message: SessionMessage.ID.create(),
+    holds: 1,
+  }
+
+  for (const expired of [false, true]) {
+    it.effect(
+      `charges a held turn's recovery once it becomes runnable, never at boot (hold ${expired ? "ended" : "active"} at boot)`,
+      () =>
+        Effect.gen(function* () {
+          const database = yield* Database.Service
+          const bus = yield* Bus.Service
+          const store = yield* SessionStore.Service
+          const failures: SessionEvent.Execution.Failed[] = []
+          yield* bus.project(SessionEvent.Execution.Failed, (event) => Effect.sync(() => void failures.push(event)))
+          const scripts = [1, 2, 3].flatMap(sequences).filter((script) => {
+            // A run with no hold to wait on cannot only wait: drop scripts that would ask one to.
+            let held = true
+            for (const action of script) {
+              if (action === "wait" && !held) return false
+              if (action === "attempt") held = false
+              if (action === "hold") held = true
+            }
+            return true
+          })
+          let index = 0
+          for (const script of scripts) {
+            const sessionID = Session.ID.make(`ses_held_budget_${expired ? "ended" : "active"}_${index++}`)
+            yield* seedSessions(database, [sessionID], { time_suspended: Date.now() })
+            yield* SessionStepRoute.write(database.db, sessionID, record(Date.now() + (expired ? -1_000 : 60_000)))
+            const observed: Boot[] = []
+            for (const action of script) {
+              const reached = yield* Deferred.make<boolean>()
+              let drained = false
+              let deferred = false
+              const scope = yield* Scope.make()
+              const context = yield* buildExecution(
+                scope,
+                (input) =>
+                  Effect.gen(function* () {
+                    if (input.sessionID !== sessionID)
+                      return yield* Effect.die(`unexpected recovery of ${input.sessionID}`)
+                    drained = true
+                    deferred = input.onRunnable !== undefined
+                    if (action !== "wait") {
+                      const charged = yield* Effect.exit(input.onRunnable ?? Effect.void)
+                      if (Exit.isFailure(charged)) {
+                        yield* Deferred.succeed(reached, false)
+                        return yield* charged
+                      }
+                      if (action === "attempt") yield* SessionStepRoute.write(database.db, sessionID, written)
+                      if (action === "hold")
+                        yield* SessionStepRoute.write(database.db, sessionID, record(Date.now() + 60_000))
+                    }
+                    yield* Deferred.succeed(reached, true)
+                    return yield* Effect.never
+                  }),
+                { maxAttempts: CAP },
+              )
+              yield* Context.get(context, SessionRestart.Service).resumeSuspendedSessions
+              // A claim the sweep kept is recovered: its run reaches the scripted point (or fails its charge and settles).
+              if ((yield* claims(database))[sessionID]) {
+                const running = yield* Deferred.await(reached).pipe(Effect.timeout("5 seconds"), TestClock.withLive)
+                if (!running) yield* Context.get(context, SessionExecution.Service).awaitIdle(sessionID)
+              }
+              // The host shuts down: a graceful teardown keeps the claim, as a restart finds it.
+              yield* Scope.close(scope, Exit.void)
+              observed.push({
+                drained,
+                deferred,
+                attempts: (yield* attempts(database, sessionID)) ?? -1,
+                claimed: (yield* claims(database))[sessionID] ?? false,
+                failures: failures.filter((event) => event.data.sessionID === sessionID).length,
+              })
+            }
+            expect({ script, boots: observed }).toEqual({ script, boots: expected(script) })
+            // Settled, so the next script's boots recover only their own claim.
+            yield* store.release(sessionID)
+          }
+          expect(failures.every((event) => event.data.error.type === "aborted")).toBe(true)
+          expect(failures.length).toBeGreaterThan(0)
+        }),
+    )
+  }
+
+  it.effect("charges a held turn's recovery once however often its run reaches runnable work", () =>
+    Effect.gen(function* () {
+      const database = yield* Database.Service
+      const sessionID = Session.ID.make("ses_held_budget_once")
+      yield* seedSessions(database, [sessionID], { time_suspended: Date.now() })
+      yield* SessionStepRoute.write(database.db, sessionID, record(Date.now() + 60_000))
+      const charged = yield* Deferred.make<void>()
+      const scope = yield* Scope.make()
+      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
+      const context = yield* buildExecution(scope, (input) =>
+        Effect.gen(function* () {
+          // A compaction ahead of the Step, a reload, then the Step itself: each reaches runnable work.
+          yield* input.onRunnable ?? Effect.die("the held turn's run got no deferred charge")
+          yield* input.onRunnable ?? Effect.void
+          yield* input.onRunnable ?? Effect.void
+          yield* Deferred.succeed(charged, undefined)
+          return yield* Effect.never
+        }),
+      )
+      yield* Context.get(context, SessionRestart.Service).resumeSuspendedSessions
+      yield* Deferred.await(charged)
+      expect(yield* attempts(database, sessionID)).toBe(1)
       expect((yield* claims(database))[sessionID]).toBe(true)
     }),
   )

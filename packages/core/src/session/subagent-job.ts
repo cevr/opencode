@@ -22,15 +22,16 @@ export function start(jobs: Job.Interface, execution: SessionExecution.Interface
 
 /**
  * Restarts the job of a child a dead server left running, continuing its claimed turn. Not new work: it never ends
- * a stop of the child.
+ * a stop of the child. `resume` is how the restart sweep recovered the child's claim (SessionExecution.recover).
  */
 export function restart(
   jobs: Job.Interface,
   execution: SessionExecution.Interface,
   recovery: Recovery,
   notificationID: Job.Background["notificationID"],
+  resume?: SessionExecution.Recovery,
 ) {
-  return run(jobs, execution, execution.recover(recovery.childSessionID), recovery, notificationID)
+  return run(jobs, execution, execution.recover(recovery.childSessionID, resume), recovery, notificationID)
 }
 
 function run(

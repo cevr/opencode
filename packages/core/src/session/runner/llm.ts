@@ -54,6 +54,9 @@ interface StepState {
   readonly holds: number
 }
 
+/** Resolves where the next Step starts; a recovered waiting turn is charged its recovery as it leaves the wait. */
+type Begin = Effect.Effect<StepState, StepFailedError>
+
 const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -82,6 +85,8 @@ const layer = Layer.effect(
       let entering = true
       let stepped = input.stepped ?? false
       const promotable = input.promotable ?? "input"
+      // A recovered waiting turn charges its recovery budget as it leaves the wait (SessionRestart).
+      const runnable = input.onRunnable ?? Effect.void
       // Input this drain starts on. A continuation carries none: it goes on with a turn already started.
       const pending = continuing || stepped ? undefined : yield* SessionInbox.nextPromotable(db, sessionID, "input")
       if (!force && !continuing && !stepped) {
@@ -101,7 +106,7 @@ const layer = Layer.effect(
       yield* settleStaleCompactions(sessionID)
       yield* settleStaleToolCalls(sessionID)
 
-      const advanceToStep = Effect.fn("SessionRunner.advanceToStep")((begin: Effect.Effect<StepState>) =>
+      const advanceToStep = Effect.fn("SessionRunner.advanceToStep")((begin: Begin) =>
         Effect.uninterruptibleMask((restore) =>
           Effect.gen(function* () {
             while (true) {
@@ -122,7 +127,9 @@ const layer = Layer.effect(
                     sessionID,
                     entering || !continuing ? "input" : "steer",
                   )
-                  if (next?.type === "compaction")
+                  if (next?.type === "compaction") {
+                    // A compaction is runnable work: a recovered waiting turn is charged before it is delivered.
+                    yield* runnable
                     yield* bus.publishAll([
                       [SessionEvent.InboxDelivered, { sessionID, inboxID: next.id }],
                       [
@@ -130,6 +137,7 @@ const layer = Layer.effect(
                         { sessionID, reason: next.payload.reason ?? "manual", inputID: next.id },
                       ],
                     ])
+                  }
                   if (next?.type === "move")
                     yield* restore(
                       Effect.gen(function* () {
@@ -250,12 +258,15 @@ const layer = Layer.effect(
         // Resolved once per Step, as it is about to route: a Step the claim's record names continues as itself (same
         // routing id, send history and hold), and a held one first waits out its hold, before anything routes or
         // sends for it again. Any other Step is new; its routing identity doubles as its first assistant message.
+        // The end of that wait is where a recovered waiting turn becomes runnable, so its recovery is charged there,
+        // before anything routes.
         const begin = Effect.suspend(() => {
           if (state) return Effect.succeed(state)
           const recover = first
           first = false
           return (recover ? SessionStepRoute.read(db, sessionID) : Effect.succeed(undefined)).pipe(
             Effect.tap((resumed) => (resumed?.hold ? awaitHold(sessionID, resumed, resumed.hold) : Effect.void)),
+            Effect.tap(() => runnable),
             Effect.map((resumed): StepState => {
               const stepID = SessionMessage.ID.create()
               return resumed
