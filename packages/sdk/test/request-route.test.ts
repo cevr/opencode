@@ -41,7 +41,7 @@ const model = {
   limit: { context: 128_000, output: 16_000 },
 }
 
-const start = async (policy: Policy, answer: (sent: Sent, index: number) => Answer, data?: string) => {
+const start = async (policy: Policy, answer: (sent: Sent, index: number) => Answer) => {
   const sends: Sent[] = []
   const resolves: Array<{ kind: string; origin: string; available: boolean; model: string; step?: SessionRouteStep }> =
     []
@@ -117,7 +117,7 @@ const start = async (policy: Policy, answer: (sent: Sent, index: number) => Answ
         })
     },
   }
-  const directory = data ?? (await tmpdir("opencode-request-route-")).path
+  const directory = (await tmpdir("opencode-request-route-")).path
   const config = join(directory, "config")
   const work = join(directory, "work")
   await mkdir(config, { recursive: true })
@@ -425,117 +425,5 @@ test("a cancel during a hold wins: nothing is sent afterwards", async () => {
   }
 }, 20_000)
 
-test("a step held across a restart is delivered once by the next host", async () => {
-  const shared = (await tmpdir("opencode-request-route-restart-")).path
-  const first = await start(
-    {
-      resolve: (event) => {
-        if (event.kind === "primary") event.defer = { reason: "held over restart", until: Date.now() + 60_000 }
-      },
-    },
-    () => say("never"),
-    shared,
-  )
-  const session = await first.host.session.create({ location: { directory: first.work } })
-  try {
-    await first.host.session.prompt({ sessionID: session.id, text: "survive restart" })
-    await Bun.sleep(500)
-    expect(first.sends).toEqual([])
-  } finally {
-    await first.close()
-  }
-  const second = await start({}, () => say("after restart"), shared)
-  try {
-    const end = Date.now() + 8_000
-    while (second.sends.length === 0 && Date.now() < end) await Bun.sleep(50)
-    await settle(second, session.id)
-    expect(second.sends.map((sent) => [sent.session, sent.provider])).toEqual([[session.id, "alpha"]])
-    expect(users(second.sends[0]!, "survive restart")).toBe(1)
-    const transcript = JSON.stringify(await second.host.message.list({ sessionID: session.id, limit: 30 }))
-    expect(transcript.split("survive restart").length - 1).toBe(1)
-  } finally {
-    await second.close()
-  }
-}, 30_000)
-
-// A bounded model of one Step's routing: every sequence of up to two holds or refusals, then a send or a cancel.
-// The model says what the host must do; the run drives the real runner through the same decisions.
-type Decision = "defer" | "refuse"
-const sequences = (length: number): Decision[][] =>
-  length === 0
-    ? [[]]
-    : sequences(length - 1).flatMap((prefix) => [
-        [...prefix, "defer" as const],
-        [...prefix, "refuse" as const],
-      ])
-const cases = [0, 1, 2]
-  .flatMap(sequences)
-  .flatMap((prefix) => [
-    { prefix, end: "send" as const },
-    ...(prefix.length === 1 ? [{ prefix, end: "cancel" as const }] : []),
-  ])
-
-const expectRoute = (prefix: Decision[], end: "send" | "cancel") => {
-  // Holds: a defer always waits; a refusal waits only right after an immediate re-route.
-  let immediate = false
-  let holds = 0
-  for (const decision of prefix) {
-    if (decision === "defer" || immediate) {
-      holds++
-      immediate = false
-    } else immediate = true
-  }
-  return {
-    sends: end === "send" ? 1 : 0,
-    attempts: end === "send" ? prefix.length + 1 : prefix.length,
-    outcome: end === "send" ? ("succeeded" as const) : ("interrupted" as const),
-    holds,
-  }
-}
-
-for (const { prefix, end } of cases) {
-  test(`step routing [${[...prefix, end].join(" > ")}] matches the model`, async () => {
-    const expected = expectRoute(prefix, end)
-    const attempt = (step: SessionRouteStep | undefined) => (step ? prefix[step.attempt - 1] : undefined)
-    const held = end === "cancel" ? prefix.length : Infinity
-    const f = await start(
-      {
-        resolve: (event) => {
-          if (event.kind !== "primary") return
-          if (event.step && event.step.attempt > held)
-            event.defer = { reason: "held for cancel", until: Date.now() + 60_000 }
-          else if (attempt(event.step) === "defer") event.defer = { reason: "model hold", until: 0 }
-        },
-        send: (event) => {
-          if (attempt(event.step) === "refuse") event.refuse = { reason: "model refusal" }
-        },
-      },
-      () => say("done"),
-    )
-    try {
-      const session = await f.host.session.create({ location: { directory: f.work } })
-      const started = Date.now()
-      await f.host.session.prompt({ sessionID: session.id, text: "modelled prompt" })
-      if (end === "cancel") {
-        const until = Date.now() + 5_000
-        while (f.resolves.filter((entry) => entry.kind === "primary").length <= prefix.length && Date.now() < until)
-          await Bun.sleep(20)
-        await f.host.session.interrupt({ sessionID: session.id })
-      }
-      await settle(f, session.id, 10_000)
-      // Each hold waits at least a second, so no decision sequence spins.
-      if (end === "send") expect(Date.now() - started).toBeGreaterThanOrEqual(expected.holds * 1_000 - 50)
-      const steps = f.resolves.filter((entry) => entry.kind === "primary").map((entry) => entry.step!)
-      expect(f.sends.length).toBe(expected.sends)
-      if (expected.sends) expect(users(f.sends[0]!, "modelled prompt")).toBe(1)
-      expect(steps.slice(0, expected.attempts).map((step) => step.attempt)).toEqual(
-        Array.from({ length: expected.attempts }, (_, index) => index + 1),
-      )
-      expect(new Set(steps.map((step) => step.id)).size).toBe(1)
-      expect(steps.every((step) => step.previous?.sent !== true)).toBe(true)
-      expect((await f.host.session.get({ sessionID: session.id })).outcome).toBe(expected.outcome)
-    } finally {
-      await f.close()
-    }
-  }, 20_000)
-}
+// Holds across restarts, send history and the bounded routing model: request-route-restart.test.ts and
+// request-route-model.test.ts.
