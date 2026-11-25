@@ -30,7 +30,7 @@ import {
 } from "@opencode/protocol/errors"
 import { AbsolutePath } from "@opencode/core/schema"
 import { locationErrors } from "../location"
-import { failedMessageDecode, failedSnapshot, missingMessage, missingSession } from "./session-error"
+import { failedMessageDecode, failedSnapshot, missingMessage, missingSession, skillLoadFailed } from "./session-error"
 
 function missingForm(id: Form.ID) {
   return new FormNotFoundError({ id, message: `Form not found: ${id}` })
@@ -321,6 +321,7 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
                 Effect.catchTag("Session.SkillNotFoundError", (error) =>
                   Effect.fail(new InvalidRequestError({ message: `Skill not found: ${error.skill}`, field: "skills" })),
                 ),
+                Effect.catchTag("Skill.LoadError", skillLoadFailed),
                 locationErrors,
               ),
           }
@@ -378,6 +379,7 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
               Effect.catchTag("Session.SkillNotFoundError", (error) =>
                 Effect.fail(new SkillNotFoundError({ skill: error.skill, message: `Skill not found: ${error.skill}` })),
               ),
+              Effect.catchTag("Skill.LoadError", skillLoadFailed),
               locationErrors,
             )
           return HttpApiSchema.NoContent.make()
