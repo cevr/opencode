@@ -120,6 +120,13 @@ This section is the single source for scroll containers across `app`, `ui`, `ses
 
 This section is the single source for what may move or restyle the session timeline. It applies to every component and stylesheet that renders in or around the timeline, across `app`, `ui`, `session-ui` and `gui-plugins`. Each rule comes from a regression that shipped.
 
+### Transcript size
+
+- A session keeps every history page the reader loads, so a pass over the whole transcript costs more with each page. A history page that lands shifts every index of the message list, and each memo that reads the list runs again and reads every message through the store.
+- Read a message's parts through a memo for that message (`mapArray` over the messages with a `createMemo` inside, as `messageParts` in `packages/session-ui/src/timeline/projection.ts` and `createSessionBackground` do), and fold over the memos. A page that lands, or a tool that updates, then reads that page or that message.
+- Do not read the transcript for something that cannot show: the todo pill reads it only while a turn runs and todos are on.
+- Still whole-transcript: `Timeline.constructSessionMessageRows` and its indexes. It was 24 of 68 ms of script when a page landed with 30 pages loaded.
+
 ### Scroll position
 
 - The timeline moves when the reader scrolls it or asks to go somewhere (a jump, a search hit, a link). Nothing else scrolls it: not focus, not an update, not a row that mounts.
@@ -134,6 +141,12 @@ This section is the single source for what may move or restyle the session timel
 - A native scroll write (`scrollTo`, `scrollTop =`) forces a layout when anything is dirty. TanStack corrects the scroll position once for each row it resizes above the view, so a batch of measured rows forced one layout for each row.
 - `scrollToFn` in `src/session/timeline/virtualizer.tsx` holds the corrections made while a batch of sizes is applied and writes the last one once. Keep scroll writes for size changes on that path, and call `flushHeldScroll` before code inside the batch reads the native offset.
 - Keeper: "corrects the scroll position once for each batch of rows an older page measures" in `e2e/regression/timeline-history.spec.ts`.
+
+### Scroll events
+
+- A scroll event must read before it writes. A style write followed by a read of `scrollTop`, `scrollHeight` or a rect, in the same event, makes the browser recalculate style (and lay out, when the write changed a size) inside the event.
+- `ScrollView` (`packages/ui/src/components/scroll-view.tsx`) therefore reads the thumb's geometry first (`readThumb`), forwards the event to the timeline, and writes the thumb in the next animation frame (`applyThumb`). Keep that order when you add work to a scroll handler.
+- Keeper: "handles a scroll event without a forced style or layout pass" in `e2e/regression/timeline-geometry.spec.ts`, for both timelines. It counts the passes in a Chrome trace; the old order forced one in every scroll event.
 
 ### Transcript reads
 
