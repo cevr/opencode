@@ -385,6 +385,11 @@ export const layer = Layer.effect(
         if (index >= 0 && !failed && tailTokens(context, index) <= existing.tailLimit) return
         // Summarizing up to the same response again would repeat the same request.
         if (index >= 0 && (existing.keepID === anchor.id || failures >= PRECOMPUTE_MAX_FAILURES)) return
+        yield* Effect.logInfo("background compaction replaced", {
+          sessionID,
+          keepID: existing.keepID,
+          reason: index < 0 ? "history changed" : failed ? "failed" : "fell behind",
+        })
         yield* Fiber.interrupt(existing.fiber)
         precomputed.delete(sessionID)
       }
@@ -400,7 +405,17 @@ export const layer = Layer.effect(
       const fiber = yield* summarize({ reason: "auto", context: model.context }, model.cap, settings.keep, {
         messages: context.messages.slice(0, anchorIndex),
         usage: (recorded) => usage.push(recorded),
-      }).pipe(Effect.forkIn(scope))
+      }).pipe(
+        Effect.tapCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.void
+            : Effect.logWarning("background compaction failed", { sessionID, keepID: anchor.id, cause }),
+        ),
+        Effect.withSpan("SessionCompaction.background", {
+          attributes: { "session.id": sessionID, "compaction.keep_id": anchor.id },
+        }),
+        Effect.forkIn(scope),
+      )
       precomputed.set(sessionID, {
         firstID: context.messages[0]?.id,
         keepID: anchor.id,
@@ -426,11 +441,23 @@ export const layer = Layer.effect(
       const context = trigger.context
       const index = heldIndex(held, context)
       if (native || index < 0 || tailTokens(context, index) > tailLimit(budget)) {
+        yield* Effect.logInfo("background compaction discarded", {
+          sessionID: context.session.id,
+          keepID: held.keepID,
+          reason: native ? "native compaction" : index < 0 ? "history changed" : "tail too long",
+        })
         yield* Fiber.interrupt(held.fiber)
         return undefined
       }
 
+      const pending = held.fiber.pollUnsafe() === undefined
+      const waitStarted = yield* Clock.currentTimeMillis
       const exit = yield* Fiber.await(held.fiber).pipe(Effect.onInterrupt(() => Fiber.interrupt(held.fiber)))
+      yield* Effect.annotateCurrentSpan({
+        "compaction.background.pending": pending,
+        "compaction.background.wait_ms": (yield* Clock.currentTimeMillis) - waitStarted,
+        "compaction.background.failed": Exit.isFailure(exit),
+      })
       if (Exit.isFailure(exit)) return undefined
       // Background calls were billed as they finished; the compaction's message still shows what it cost.
       held.usage.forEach((usage) => addSpent(context.session.id, usage))
