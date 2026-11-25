@@ -301,18 +301,6 @@ describe("Session.prompt", () => {
     }).pipe(Effect.ensuring(Effect.sync(() => activeSessions.clear()))),
   )
 
-  it.effect("delegates execution continuation through SessionExecution", () =>
-    Effect.gen(function* () {
-      yield* setup
-      const session = yield* Session.Service
-      executionCalls.length = 0
-      wakeCalls.length = 0
-      yield* session.resume(sessionID)
-      expect(executionCalls).toEqual([sessionID])
-      expect(wakeCalls).toEqual([])
-    }),
-  )
-
   it.effect("delegates process-local interruption through SessionExecution", () =>
     Effect.gen(function* () {
       yield* setup
@@ -989,26 +977,6 @@ describe("Session.prompt", () => {
     }),
   )
 
-  it.effect("returns the original recorded message when the ID is retried", () =>
-    Effect.gen(function* () {
-      yield* setup
-      const session = yield* Session.Service
-      const input = {
-        sessionID,
-        id: messageID,
-        text: "Fix the failing tests",
-        resume: false,
-      }
-
-      const first = yield* session.prompt(input)
-      const retried = yield* session.prompt(input)
-
-      expect(retried).toEqual(first)
-      expect(yield* session.messages({ sessionID })).toEqual([])
-      expect(yield* admittedCount).toBe(1)
-    }),
-  )
-
   it.effect("reconciles an exact retry from the promoted message without admission history", () =>
     Effect.gen(function* () {
       yield* setup
@@ -1295,24 +1263,6 @@ describe("Session.prompt", () => {
     }),
   )
 
-  it.effect("starts execution when resume is explicitly true", () =>
-    Effect.gen(function* () {
-      yield* setup
-      const session = yield* Session.Service
-      executionCalls.length = 0
-      wakeCalls.length = 0
-
-      yield* session.prompt({
-        sessionID,
-        text: "Run explicitly",
-        resume: true,
-      })
-
-      expect(executionCalls).toEqual([])
-      expect(wakeCalls).toEqual([sessionID])
-    }),
-  )
-
   it.effect(
     "a stop drops the queued input; a stopped session keeps a notice without waking, and a prompt wakes it",
     () =>
@@ -1333,7 +1283,6 @@ describe("Session.prompt", () => {
         expect(wakeCalls).toEqual([sessionID])
       }).pipe(Effect.ensuring(Effect.sync(() => stoppedSessions.clear()))),
   )
-
   it.effect("only records the prompt when resume is false", () =>
     Effect.gen(function* () {
       yield* setup

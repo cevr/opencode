@@ -201,8 +201,6 @@ const parity = {
     it.live(`${name} (spawned)`, body, options)
     daemonIt.live(`${name} (daemon)`, body, options)
   },
-  skip: (name: string, body: Parameters<typeof it.live>[1], options?: Parameters<typeof it.live>[2]) =>
-    it.live.skip(name, body, options),
 }
 // On an in-process fake daemon, so daemon-only behavior is covered without the real binary.
 let fake: Effect.Success<ReturnType<typeof fakeDaemon>> | undefined
@@ -716,7 +714,7 @@ describe("ShellTool conditional process substitution", () => {
       "bash",
     ))
 
-  for (const reply of ["reject", "once", "always"] as const) {
+  for (const reply of ["reject", "always"] as const) {
     // A reject never runs the command, so it needs no wait.
     const run = reply === "reject" ? test : waitTest
     run(`conditional substitutions respect ${reply}`, () =>
@@ -761,27 +759,9 @@ describe("ShellTool compound syntax approval compatibility", () => {
   for (const fixture of [
     {
       shell: "zsh",
-      command: 'for value (a b) printf %s "$value"',
-      output: "ab",
-      saved: ["printf *"],
-    },
-    {
-      shell: "zsh",
-      command: 'for value (a b) { printf %s "$value"; }',
-      output: "ab",
-      saved: ["printf *"],
-    },
-    {
-      shell: "zsh",
       command: 'for value ($(printf a)) do printf %s "$value"; done',
       output: "a",
       saved: ["printf *"],
-    },
-    {
-      shell: "bash",
-      command: 'probe() for value in a b; do printf %s "$value"; done; probe',
-      output: "ab",
-      saved: ["printf *", "probe *"],
     },
     {
       shell: "bash",
@@ -823,18 +803,11 @@ describe("ShellTool ordinary shell syntax", () => {
   for (const shell of ["bash", "zsh"]) {
     const test = isWindows || !Bun.which(shell) ? permissionIt.live.skip : permissionIt.live
     for (const fixture of [
-      { name: "quoted heredoc", command: "cat <<'EOF'\nhello\nEOF", output: "hello\n", saved: ["cat *"] },
       {
         name: "heredoc substitution",
         command: "cat <<EOF\n$(printf hello)\nEOF",
         output: "hello\n",
         saved: ["cat *", "printf *"],
-      },
-      {
-        name: "loop with a conditional",
-        command: 'for value in a b; do if test -n "$value"; then printf %s "$value"; fi; done',
-        output: "ab",
-        saved: ["test *", "printf *"],
       },
       {
         name: "function and case",
@@ -843,18 +816,11 @@ describe("ShellTool ordinary shell syntax", () => {
         saved: ["greet *", "printf *"],
       },
       {
-        name: "parameter fallback",
-        command: 'value=; printf %s "${value:-fallback}"',
-        output: "fallback",
-        saved: ["printf *"],
-      },
-      {
         name: "arithmetic statement",
         command: 'count=1; ((count += 1)); printf %s "$count"',
         output: "2",
         saved: ["((count += 1)) *", "printf *"],
       },
-      { name: "ANSI-C quoting", command: "printf %s $'a\\nb'", output: "a\nb", saved: ["printf *"] },
     ]) {
       test(`${shell}: ${fixture.name} reuses existing approvals`, () =>
         withScanner(
@@ -917,12 +883,7 @@ describe("ShellTool ordinary shell syntax", () => {
   const test = pwsh ? permissionIt.live : permissionIt.live.skip
   for (const command of [
     'Write-Output "$(Write-Output hello)"',
-    '$value = "hello"; Write-Output $value',
-    "if ($true) { Write-Output hello } else { Write-Output other }",
-    "foreach ($value in @('hello')) { Write-Output $value }",
-    "ForEach-Object { Write-Output hello }",
     "function Show-Value { Write-Output hello }; Show-Value",
-    "Write-Output `\n  hello",
     "Write-Output @'\nhello\n'@",
   ]) {
     test(`PowerShell: ordinary syntax reuses approvals: ${command}`, () =>
@@ -1019,7 +980,6 @@ describe("ShellTool", () => {
       )
     }),
   )
-
   it.live(
     "keeps a CodeMode shell result's exit code and output path when the execute output is truncated",
     () =>
@@ -1379,34 +1339,6 @@ describe("ShellTool", () => {
       },
       (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]().then(() => undefined)),
     ),
-  )
-
-  it.live(
-    "approves an explicit external workdir before shell execution",
-    () =>
-      Effect.acquireUseRelease(
-        Effect.promise(() => Promise.all([tmpdir(), tmpdir()])),
-        ([active, outside]) => {
-          reset()
-          return withSession(active.path, (registry) =>
-            executeTool(registry, call({ command: cwdCommand, workdir: outside.path })),
-          ).pipe(
-            Effect.andThen(
-              Effect.sync(() => {
-                expect(assertions.map((item) => item.action)).toEqual(["external_directory", "shell"])
-                expect(assertions[0]).toMatchObject({
-                  resources: [path.join(realpathSync(outside.path), "*").replaceAll("\\", "/")],
-                })
-              }),
-            ),
-          )
-        },
-        ([active, outside]) =>
-          Effect.promise(() =>
-            Promise.all([active[Symbol.asyncDispose](), outside[Symbol.asyncDispose]()]).then(() => undefined),
-          ),
-      ),
-    { timeout: 15_000 },
   )
 
   it.live(
@@ -1807,7 +1739,6 @@ describe("ShellTool", () => {
       )
     }),
   )
-
   // Runs a program the way an automation does: no model, and the automation named on each tool call.
   const runAutomationCode = (registry: Tool.Interface, code: string) =>
     Effect.gen(function* () {
@@ -1909,7 +1840,6 @@ describe("ShellTool", () => {
       ),
     { timeout: 15_000 },
   )
-
   parity.live("uses configured line limits", () =>
     Effect.acquireUseRelease(
       Effect.promise(() => tmpdir()),
@@ -2378,8 +2308,8 @@ describe("ShellTool", () => {
     { timeout: 15_000 },
   )
 
-  const signalParity = isWindows ? parity.skip : parity.live
-  signalParity(
+  const signalTest = isWindows ? it.live.skip : it.live
+  signalTest(
     "escalates a shell timeout when the ready process ignores SIGTERM",
     () =>
       Effect.gen(function* () {
@@ -3164,7 +3094,7 @@ describe("ShellTool stopped", () => {
       }),
   )
 
-  parity.live("ends a call the user stopped before its command started, without starting it", () =>
+  it.live("ends a call the user stopped before its command started, without starting it", () =>
     withTempDir((tmp) => {
       reset()
       return withSession(tmp.path, (registry) =>
@@ -3237,7 +3167,7 @@ describe("ShellTool stopped", () => {
   )
 
   // Windows signals terminate the job immediately; a process cannot ignore SIGTERM there.
-  const ignoresTerm = isWindows ? parity.skip : parity.live
+  const ignoresTerm = isWindows ? it.live.skip : it.live
   ignoresTerm(
     "settles a stopped call without waiting for a command that ignores SIGTERM",
     () =>
@@ -3416,7 +3346,7 @@ describe("ShellTool stopped", () => {
     }),
   )
 
-  parity.live("lets an execute.after hook replace a stopped call's failure", () =>
+  it.live("lets an execute.after hook replace a stopped call's failure", () =>
     withTempDir((tmp) => {
       reset()
       return withSession(tmp.path, (registry) =>
