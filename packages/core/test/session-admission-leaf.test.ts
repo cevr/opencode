@@ -34,7 +34,7 @@ const turns: { sessionID: Session.ID; took: string[] }[] = []
 const armed: { sessionID?: Session.ID; action?: Effect.Effect<void> } = {}
 
 /** The services the drain reads, set by the test before it admits. */
-const deps: { database?: Database.Service["Service"]; bus?: Bus.Service["Service"] } = {}
+const deps: { database?: Database.Service["Service"]; inbox?: SessionInbox.Service["Service"] } = {}
 
 const runner = Layer.succeed(
   SessionRunner.Service,
@@ -42,9 +42,9 @@ const runner = Layer.succeed(
     drain: (input) =>
       Effect.gen(function* () {
         const database = deps.database!
-        const bus = deps.bus!
+        const inbox = deps.inbox!
         const before = (yield* SessionInbox.list(database.db, input.sessionID)).map((item) => item.id)
-        while (((yield* SessionInbox.promote(database.db, bus, input.sessionID, "input")) ?? 0) > 0);
+        while (((yield* inbox.promote(input.sessionID, "input")) ?? 0) > 0);
         const after = new Set((yield* SessionInbox.list(database.db, input.sessionID)).map((item) => item.id))
         turns.push({ sessionID: input.sessionID, took: before.filter((id) => !after.has(id)) })
         return SessionRunner.DrainResult.Complete()
@@ -130,7 +130,7 @@ const provoked = Effect.fnUntraced(function* (id: string, source: "plugin" | "sh
   const database = yield* Database.Service
   const sessionID = yield* seed(id)
   deps.database = database
-  deps.bus = yield* Bus.Service
+  deps.inbox = yield* SessionInbox.Service
   // The courier's read (`ctx.session.get`): the session is live.
   expect((yield* sessions.get(sessionID)).time.archived).toBeUndefined()
   // The owner's archive (`PATCH /api/session/:id {"archived":true}`) lands after Session.synthetic's own read.

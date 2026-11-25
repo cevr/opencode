@@ -70,6 +70,7 @@ const layer = Layer.effect(
     const context = yield* SessionContext.Service
     const modelTransport = yield* SessionModelTransport.Service
     const db = (yield* Database.Service).db
+    const inbox = yield* SessionInbox.Service
     const compaction = yield* SessionCompaction.Service
     const plugins = yield* Plugin.Service
     const hooks = yield* PluginHooks.Service
@@ -124,7 +125,7 @@ const layer = Layer.effect(
                 })
               }
               // Location entry and idle boundaries allow queued controls, not necessarily queued prompts.
-              const pending = yield* SessionInbox.serialized(
+              const pending = yield* inbox.serialized(
                 sessionID,
                 Effect.gen(function* () {
                   const next = yield* SessionInbox.nextPromotable(
@@ -232,9 +233,7 @@ const layer = Layer.effect(
                 Effect.gen(function* () {
                   const state = yield* begin
                   const selected = yield* prepareContext(sessionID, state.route)
-                  const promoted = yield* SessionInbox.promote(
-                    db,
-                    bus,
+                  const promoted = yield* inbox.promote(
                     sessionID,
                     entering && !continuing ? promotable : "steer",
                     hooks,
@@ -644,6 +643,7 @@ export const node = makeLocationNode({
     SessionContext.node,
     SessionModelTransport.node,
     SessionStore.node,
+    SessionInbox.node,
     SessionCompaction.node,
     Plugin.node,
     PluginHooks.node,

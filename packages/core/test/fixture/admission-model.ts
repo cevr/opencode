@@ -136,7 +136,7 @@ export const run = Effect.fnUntraced(function* (id: string, events: readonly Eve
   const sessions = yield* Session.Service
   const execution = yield* SessionExecution.Service
   const store = yield* SessionStore.Service
-  const bus = yield* Bus.Service
+  const inbox = yield* SessionInbox.Service
   const ids = [Session.ID.make(`${id}_0`), Session.ID.make(`${id}_1`)]
   for (const sessionID of ids) yield* seedSession(database, sessionID)
   const state = ids.map(() => ({ archived: false, stopped: false, deleted: false }))
@@ -166,7 +166,7 @@ export const run = Effect.fnUntraced(function* (id: string, events: readonly Eve
         if (gate) yield* Deferred.await(gate)
       }
       const before = (yield* SessionInbox.list(db, sessionID)).map((item) => item.id)
-      while (((yield* SessionInbox.promote(db, bus, sessionID, "input")) ?? 0) > 0);
+      while (((yield* inbox.promote(sessionID, "input")) ?? 0) > 0);
       const after = new Set((yield* SessionInbox.list(db, sessionID)).map((item) => item.id))
       const took = before.filter((item) => !after.has(item))
       if (took.length === 0) return

@@ -1068,6 +1068,9 @@ describe("ShellTool", () => {
           expect(running).toMatchObject({ id: expect.stringMatching(/^sh_/), state: "running", backgrounded: "limit" })
           // A foreground command is never killed by its limit: it moves to the background instead.
           expect(timeouts).toEqual([0, 0])
+          // A script's shell names the execute call, the one clients have in the transcript.
+          const shell = yield* Shell.Service
+          expect((yield* shell.get(ID.make(runningID))).metadata.callID).toBe("call-parallel-shells")
           yield* Effect.promise(() => Bun.write(path.join(tmp.path, "release"), ""))
           expect((yield* Fiber.join(notice)).valueOrUndefined?.data.item.payload).toMatchObject({
             // The handle already showed its output, so the notice shows none new.

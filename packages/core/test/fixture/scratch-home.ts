@@ -18,9 +18,24 @@ import { afterAll, mock } from "bun:test"
 export function useScratchHome() {
   if (process.env.OPENCODE_TEST_HOME) return
   const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "opencode-test-home-")))
-  // Bun runs no exit handlers after a test run; a preload's afterAll runs once all of its tests end.
-  afterAll(() => fs.rmSync(home, { recursive: true, force: true }))
+  // Bun runs no exit handlers after a test run; a preload's afterAll runs once all of its tests end. A preload
+  // outside the test runner (`bun --preload ./test/preload.ts -e …`) has no afterAll: there the exit handler does.
+  const remove = () => fs.rmSync(home, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 })
+  try {
+    afterAll(remove)
+  } catch {
+    process.once("exit", () => {
+      try {
+        remove()
+      } catch {}
+    })
+  }
+  // Temporary files go under the scratch home as well, as packages/core's script/test.ts sets them.
+  const temporary = path.join(home, "tmp")
+  fs.mkdirSync(temporary)
+  if (process.platform === "win32") Object.assign(process.env, { TMP: temporary, TEMP: temporary })
   Object.assign(process.env, {
+    TMPDIR: temporary,
     OPENCODE_TEST_HOME: home,
     XDG_CONFIG_HOME: path.join(home, ".config"),
     XDG_DATA_HOME: path.join(home, ".local", "share"),

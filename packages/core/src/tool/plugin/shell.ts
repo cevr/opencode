@@ -8,6 +8,7 @@ import type { Tool } from "@opencode/schema/tool"
 import { Deferred, Duration, Effect, Fiber, Option, Schema, Stream } from "effect"
 import { Agent } from "../../agent.js"
 import { Bus } from "../../bus.js"
+import { CodeModeTool } from "../../codemode/tool.js"
 import { Config } from "../../config.js"
 import { ConfigEntryObserver } from "../../config/plugin/entry-observer.js"
 import { Environment } from "../../environment/index.js"
@@ -738,6 +739,8 @@ export const Plugin = {
                 shell: yield* compatibleShell,
                 metadata: {
                   sessionID: context.sessionID,
+                  // The call in the transcript that started the command, so clients can tell whose it is.
+                  callID: (yield* CodeModeTool.Parent) ?? context.id,
                   ...(input.description ? { description: input.description } : {}),
                   ...(background ? { background: true } : {}),
                 },

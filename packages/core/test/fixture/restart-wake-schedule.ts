@@ -141,7 +141,7 @@ const gates = () => {
 const run = Effect.fnUntraced(function* (id: string, scenario: Scenario) {
   const { events, crash } = scenario
   const database = yield* Database.Service
-  const bus = yield* Bus.Service
+  const inbox = yield* SessionInbox.Service
   const kv = yield* KV.Service
   const store = yield* SessionStore.Service
   const sessions = yield* Session.Service
@@ -158,7 +158,7 @@ const run = Effect.fnUntraced(function* (id: string, scenario: Scenario) {
   const take = (sessionID: Session.ID, turn: boolean) =>
     Effect.gen(function* () {
       const before = new Set((yield* SessionInbox.list(database.db, sessionID)).map((item) => item.id))
-      yield* SessionInbox.promote(database.db, bus, sessionID, "steer")
+      yield* inbox.promote(sessionID, "steer")
       const after = new Set((yield* SessionInbox.list(database.db, sessionID)).map((item) => item.id))
       const took = [...before].filter((item) => !after.has(item))
       // A drain that also takes the user's work is that work's turn (resumed after a crash too), not a wake.

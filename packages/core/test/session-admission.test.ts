@@ -2,7 +2,6 @@
 // (session/admission.ts), on the real Session, coordinator, inbox and KV, with a drain that records what it takes.
 import { describe, expect } from "bun:test"
 import { Cause, Effect, Exit } from "effect"
-import { Bus } from "@opencode/core/bus"
 import { Database } from "@opencode/core/database/database"
 import { Project } from "@opencode/core/project"
 import { ProjectTable } from "@opencode/core/project/sql"
@@ -43,12 +42,12 @@ const seed = Effect.fnUntraced(function* (id: string) {
 /** Drains record the inputs they take; returns the record. */
 const recording = Effect.gen(function* () {
   const { db } = yield* Database.Service
-  const bus = yield* Bus.Service
+  const inbox = yield* SessionInbox.Service
   const drains: { sessionID: Session.ID; took: string[] }[] = []
   current.drain = (sessionID) =>
     Effect.gen(function* () {
       const before = (yield* SessionInbox.list(db, sessionID)).map((item) => item.id)
-      while (((yield* SessionInbox.promote(db, bus, sessionID, "input")) ?? 0) > 0);
+      while (((yield* inbox.promote(sessionID, "input")) ?? 0) > 0);
       const after = new Set((yield* SessionInbox.list(db, sessionID)).map((item) => item.id))
       drains.push({ sessionID, took: before.filter((id) => !after.has(id)) })
     }).pipe(Effect.orDie)
